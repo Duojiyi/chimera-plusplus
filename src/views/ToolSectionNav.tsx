@@ -37,8 +37,7 @@ const plugins: ToolSection = {
  * `onSectionChange` and keep these in its sidebar.
  */
 export const TOOL_SECTIONS: Record<string, readonly ToolSection[]> = {
-  // Official sign-ins (TOOLS_WITH_ACCOUNTS) are a sub-item of the lines
-  // section: an official account is one more way to run the tool.
+  // The shell adds official accounts as a peer section for TOOLS_WITH_ACCOUNTS.
   "claude-code": [lines, resources, install],
   // Claude Desktop has no managed Skills or MCP (its third-party mode cannot
   // load them), and its installation status sits with its configuration
@@ -56,8 +55,7 @@ export const TOOL_SECTIONS: Record<string, readonly ToolSection[]> = {
   omp: [routes, plugins, install],
 };
 
-/** Tools whose official sign-ins are part of their lines: 官方账号 is shown
- * as a sub-item under 线路 (sidebar) and is the `accounts` section. */
+/** Tools with an independent `accounts` section, shown alongside lines. */
 export const TOOLS_WITH_ACCOUNTS: ReadonlySet<string> = new Set([
   "claude-code",
   "claude-desktop",

@@ -1018,6 +1018,14 @@ pub async fn cancel_official_device_login(flow_id: String) -> Result<(), AppErro
 }
 
 #[tauri::command]
+pub async fn submit_official_browser_callback(
+    flow_id: String,
+    input: String,
+) -> Result<(), AppError> {
+    codex_accounts::login::submit_callback(&flow_id, &input).await
+}
+
+#[tauri::command]
 pub async fn remove_official_account(
     state: tauri::State<'_, AppState>,
     key: String,

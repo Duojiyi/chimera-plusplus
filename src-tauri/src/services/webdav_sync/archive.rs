@@ -273,6 +273,13 @@ fn zip_dir_recursive(
                 );
                 continue;
             }
+            Err(error) if is_skill_link(&path) => {
+                log::warn!(
+                    "[WebDAV] Skipping unresolvable link in skills: {}: {error}",
+                    path.display()
+                );
+                continue;
+            }
             Err(_) => path.clone(),
         };
 
@@ -355,6 +362,15 @@ fn copy_dir_recursive_inner(
         let entry = entry.map_err(|e| AppError::io(src, e))?;
         let path = entry.path();
         let dest_path = dest.join(entry.file_name());
+        if is_skill_link(&path) {
+            if let Err(error) = fs::canonicalize(&path) {
+                log::warn!(
+                    "[WebDAV] Skipping unresolvable link in skills: {}: {error}",
+                    path.display()
+                );
+                continue;
+            }
+        }
         if path.is_dir() {
             copy_dir_recursive_inner(&path, &dest_path, visited)?;
         } else {
@@ -362,6 +378,17 @@ fn copy_dir_recursive_inner(
         }
     }
     Ok(())
+}
+
+// Adapted from farion1231/cc-switch f94b702affe0e4ee1d7f557efbe91a22010503e7 (MIT).
+// Copyright (c) 2025 Jason Young. Modified: keep the local root and cycle guards.
+// Inspect the entry itself, not its target. Rust 1.95 also identifies Windows
+// junctions as symlinks; unrelated reparse points and regular-file errors are
+// not eligible for the unresolvable-link exception.
+fn is_skill_link(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
 }
 
 fn mark_visited_dir(path: &Path, visited: &mut HashSet<PathBuf>) -> Result<bool, AppError> {
@@ -471,5 +498,194 @@ mod tests {
             0,
             "should not write when the first chunk exceeds limit"
         );
+    }
+
+    #[cfg(any(unix, windows))]
+    fn link_skill_directory(target: &Path, link: &Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // Junctions work without Windows Developer Mode or symlink privileges.
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link.components().collect::<std::path::PathBuf>())
+                .arg(target.components().collect::<std::path::PathBuf>())
+                .creation_flags(0x08000000)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+        }
+        assert!(super::is_skill_link(link));
+    }
+
+    fn skill_zip_files(
+        source: &Path,
+    ) -> Result<std::collections::BTreeMap<String, Vec<u8>>, crate::error::AppError> {
+        use std::io::Read;
+
+        let temp = tempdir().unwrap();
+        let archive_path = temp.path().join("skills.zip");
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&archive_path).unwrap());
+        let root = std::fs::canonicalize(source).unwrap();
+        let mut visited = HashSet::new();
+        mark_visited_dir(&root, &mut visited)?;
+        super::zip_dir_recursive(
+            &root,
+            &root,
+            &mut writer,
+            zip::write::SimpleFileOptions::default(),
+            &mut visited,
+        )?;
+        writer.finish().unwrap();
+        let mut archive =
+            zip::ZipArchive::new(std::fs::File::open(&archive_path).unwrap()).unwrap();
+        let mut files = std::collections::BTreeMap::new();
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            if !entry.is_dir() {
+                let name = entry.name().unwrap().into_owned();
+                let mut contents = Vec::new();
+                entry.read_to_end(&mut contents).unwrap();
+                assert!(files.insert(name, contents).is_none(), "duplicate ZIP file");
+            }
+        }
+        Ok(files)
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn skills_link_sync_skips_top_level_and_nested_dangling_directories() {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("skills");
+        let nested = source.join("valid");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("SKILL.md"), "keep skill").unwrap();
+        for (index, link) in [source.join("broken"), nested.join("broken")]
+            .into_iter()
+            .enumerate()
+        {
+            let target = temp.path().join(format!("removed-target-{index}"));
+            std::fs::create_dir(&target).unwrap();
+            link_skill_directory(&target, &link);
+            std::fs::remove_dir(&target).unwrap();
+            assert!(super::is_skill_link(&link));
+            assert!(std::fs::canonicalize(&link).is_err());
+        }
+
+        let files = skill_zip_files(&source).expect("dangling links must not abort ZIP");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files["valid/SKILL.md"], b"keep skill");
+        let dest = temp.path().join("copied");
+        super::copy_dir_recursive(&source, &dest).expect("dangling links must not abort copy");
+        assert_eq!(
+            std::fs::read(dest.join("valid/SKILL.md")).unwrap(),
+            b"keep skill"
+        );
+        for link in [dest.join("broken"), dest.join("valid/broken")] {
+            assert_eq!(
+                std::fs::symlink_metadata(link).unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn skills_link_sync_preserves_valid_internal_links_and_cycle_guards() {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("skills");
+        let skill = source.join("z-skill");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(skill.join("SKILL.md"), "linked skill").unwrap();
+        link_skill_directory(&skill, &source.join("a-alias"));
+        link_skill_directory(&source, &skill.join("loop"));
+        link_skill_directory(&source, &source.join("root-loop"));
+
+        let files = skill_zip_files(&source).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files["z-skill/SKILL.md"], b"linked skill");
+        let dest = temp.path().join("copied");
+        super::copy_dir_recursive(&source, &dest).unwrap();
+        // Directory enumeration may visit the alias or its target first.
+        let copied = [dest.join("a-alias"), dest.join("z-skill")];
+        let present: Vec<_> = copied.iter().filter(|path| path.exists()).collect();
+        assert_eq!(present.len(), 1, "copy canonical directories only once");
+        assert_eq!(
+            std::fs::read(present[0].join("SKILL.md")).unwrap(),
+            b"linked skill"
+        );
+        assert!(!present[0].join("loop").exists());
+        assert!(!dest.join("root-loop").exists());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn skills_link_sync_zip_still_excludes_targets_outside_root() {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("skills");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(source.join("SKILL.md"), "local").unwrap();
+        std::fs::write(outside.join("private.txt"), "private").unwrap();
+        link_skill_directory(&outside, &source.join("external"));
+
+        let files = skill_zip_files(&source).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files["SKILL.md"], b"local");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skills_link_sync_skips_dangling_file_symlinks() {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("skills");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("SKILL.md"), "keep").unwrap();
+        std::os::unix::fs::symlink(source.join("missing.txt"), source.join("broken.txt")).unwrap();
+
+        let files = skill_zip_files(&source).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files["SKILL.md"], b"keep");
+        let dest = temp.path().join("copied");
+        super::copy_dir_recursive(&source, &dest).unwrap();
+        assert_eq!(std::fs::read(dest.join("SKILL.md")).unwrap(), b"keep");
+        assert!(std::fs::symlink_metadata(dest.join("broken.txt")).is_err());
+    }
+
+    #[test]
+    fn skills_link_sync_regular_file_copy_errors_still_fail() {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("skills");
+        let dest = temp.path().join("copied");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("SKILL.md"), "keep").unwrap();
+        std::fs::create_dir_all(dest.join("SKILL.md")).unwrap();
+
+        assert!(super::copy_dir_recursive(&source, &dest).is_err());
+        assert_eq!(std::fs::read(source.join("SKILL.md")).unwrap(), b"keep");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn skills_link_sync_locked_regular_files_still_fail_zip_and_copy() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("skills");
+        std::fs::create_dir(&source).unwrap();
+        let file = source.join("SKILL.md");
+        std::fs::write(&file, "locked").unwrap();
+        let locked = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&file)
+            .unwrap();
+        assert!(!super::is_skill_link(&file));
+        assert!(skill_zip_files(&source).is_err());
+        assert!(super::copy_dir_recursive(&source, &temp.path().join("copied")).is_err());
+        drop(locked);
     }
 }

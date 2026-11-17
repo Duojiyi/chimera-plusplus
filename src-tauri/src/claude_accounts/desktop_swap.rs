@@ -46,8 +46,8 @@ const KEEP_STASH: usize = 5;
 /// the folder it left half-changed is put back before anything else is done.
 const PENDING_FILE: &str = ".swap-pending.json";
 const CONFIG_FILE: &str = "config.json";
-/// Marks a folder that a crashed save left behind.
-const LEFTOVER_PREFIXES: &[&str] = &[".staging-", ".old-"];
+/// A durable mapping from a replacement's working folders to its final snapshot.
+const SNAPSHOT_SAVE_PREFIX: &str = ".snapshot-save-";
 
 /// Files in the data folder that make up the sign-in. `Local State` is
 /// paired with the cookies and `config.json` because its
@@ -78,15 +78,6 @@ const AUTH_DIRS: &[&str] = &[
     "Session Storage",
     "IndexedDB",
     "WebStorage",
-];
-
-/// Files that, while Desktop runs, are held open.
-#[cfg(windows)]
-const LOCK_PROBES: &[&str] = &[
-    "lockfile",
-    "Network/Cookies",
-    "Cookies",
-    "Local Storage/leveldb/LOCK",
 ];
 
 pub(crate) fn supported() -> bool {
@@ -144,26 +135,16 @@ fn same_uuid_opt(a: Option<&str>, b: Option<&str>) -> bool {
     matches!((a, b), (Some(a), Some(b)) if same_uuid(a, b))
 }
 
-/// Whether Desktop has the data folder open. The files it holds open cannot
-/// be opened without sharing.
-#[cfg(windows)]
-pub(crate) fn data_locked(dir: &Path) -> bool {
-    use std::os::windows::fs::OpenOptionsExt;
-    LOCK_PROBES.iter().any(|rel| {
-        let path = dir.join(rel);
-        path.is_file()
-            && fs::OpenOptions::new()
-                .read(true)
-                .share_mode(0)
-                .open(&path)
-                .is_err()
-    })
+/// Deployment mode is separate from the cached official sign-in. In API mode
+/// the official cookies stay on disk, but that account is not the active route.
+pub(crate) fn api_mode(main: &Path) -> bool {
+    fs::read_to_string(main.join(CONFIG_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(strip_bom(&text)).ok())
+        .is_some_and(|config| config.get("deploymentMode").and_then(Value::as_str) == Some("3p"))
 }
 
-#[cfg(not(windows))]
-pub(crate) fn data_locked(_dir: &Path) -> bool {
-    false
-}
+pub(crate) use crate::claude_desktop_paths::data_locked;
 
 // ===== snapshots =====
 
@@ -180,7 +161,7 @@ fn snapshots_root(vault: &CodeVault) -> PathBuf {
     vault.root().join(SNAPSHOTS_DIR)
 }
 
-fn snapshot_dir(vault: &CodeVault, id: &str) -> Result<PathBuf, AppError> {
+pub(crate) fn snapshot_dir(vault: &CodeVault, id: &str) -> Result<PathBuf, AppError> {
     validate_account_id(id)?;
     Ok(snapshots_root(vault).join(id))
 }
@@ -313,46 +294,166 @@ fn has_sign_in_files(dir: &Path) -> bool {
         && (dir.join("Network/Cookies").is_file() || dir.join("Cookies").is_file())
 }
 
+#[derive(Serialize, Deserialize)]
+struct SnapshotSave {
+    target: String,
+}
+
+fn snapshot_save_path(parent: &Path, token: &str) -> PathBuf {
+    parent.join(format!("{SNAPSHOT_SAVE_PREFIX}{token}.json"))
+}
+
+fn snapshot_save_error() -> AppError {
+    AppError::Message(
+        "Desktop 快照保存尚未恢复，已保留原快照和暂存文件。请检查快照目录后重试。".to_string(),
+    )
+}
+
+/// Only direct, ordinary directories may be moved or recursively cleaned up.
+fn snapshot_directory_exists(path: &Path) -> Result<bool, AppError> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() && !crate::security_limits::is_link_or_reparse_point(&meta) => {
+            Ok(true)
+        }
+        Ok(_) => Err(snapshot_save_error()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(AppError::io(path, error)),
+    }
+}
+
+fn snapshot_complete(path: &Path) -> bool {
+    has_sign_in_files(path) && read_meta(path).is_some()
+}
+
+fn write_snapshot_save(parent: &Path, token: &str, target: &str) -> Result<(), AppError> {
+    let data = serde_json::to_vec(&SnapshotSave {
+        target: target.to_string(),
+    })
+    .map_err(|source| AppError::JsonSerialize { source })?;
+    crate::config::atomic_write_checked::<AppError, _>(
+        &snapshot_save_path(parent, token),
+        &data,
+        true,
+        || Ok(()),
+    )
+}
+
+/// Keep the old snapshot until publication, or finish cleaning a published one.
+/// A first capture with no old copy can safely publish its complete staging copy.
+fn recover_snapshot_save(parent: &Path, token: &str) -> Result<(), AppError> {
+    validate_account_id(token).map_err(|_| snapshot_save_error())?;
+    let record = snapshot_save_path(parent, token);
+    let data = crate::security_limits::read_limited(&record, 4096)
+        .map_err(|error| AppError::io(&record, error))?;
+    let save: SnapshotSave = serde_json::from_slice(&data).map_err(|_| snapshot_save_error())?;
+    // Account IDs and stash timestamps are plain names. Never accept paths or
+    // the dot-prefixed folders reserved for recovery itself.
+    if save.target.is_empty()
+        || save.target.len() > 128
+        || save.target.starts_with('.')
+        || save.target.ends_with('.')
+        || !save
+            .target
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return Err(snapshot_save_error());
+    }
+    let target = parent.join(&save.target);
+    let staging = parent.join(format!(".staging-{token}"));
+    let old = parent.join(format!(".old-{token}"));
+    let target_exists = snapshot_directory_exists(&target)?;
+    let old_exists = snapshot_directory_exists(&old)?;
+    let staging_exists = snapshot_directory_exists(&staging)?;
+    if !target_exists {
+        let source = if old_exists && snapshot_complete(&old) {
+            &old
+        } else if !old_exists && staging_exists && snapshot_complete(&staging) {
+            &staging
+        } else {
+            return Err(snapshot_save_error());
+        };
+        fs::rename(source, &target).map_err(|error| AppError::io(&target, error))?;
+    }
+    if !snapshot_complete(&target) {
+        return Err(snapshot_save_error());
+    }
+    // Every destructive step follows recovery of a complete final snapshot.
+    remove_if_exists(&old).map_err(|error| AppError::io(&old, error))?;
+    remove_if_exists(&staging).map_err(|error| AppError::io(&staging, error))?;
+    fs::remove_file(&record).map_err(|error| AppError::io(&record, error))
+}
+
+fn recover_snapshot_saves(parent: &Path) -> Result<(), AppError> {
+    if !snapshot_directory_exists(parent)? {
+        return Ok(());
+    }
+    let entries = fs::read_dir(parent).map_err(|error| AppError::io(parent, error))?;
+    let mut tokens = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| AppError::io(parent, error))?;
+        let name = entry.file_name();
+        if let Some(token) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(SNAPSHOT_SAVE_PREFIX))
+            .and_then(|name| name.strip_suffix(".json"))
+        {
+            tokens.push(token.to_string());
+        }
+    }
+    tokens.sort();
+    for token in tokens {
+        recover_snapshot_save(parent, &token)?;
+    }
+    Ok(())
+}
+
 /// A copy of the sign-in files into a fresh folder next to the final one, put
-/// in place only when complete; the folder it replaces is kept until then.
+/// in place only when complete; its recovery record precedes either rename.
 fn save_snapshot(main: &Path, target: &Path, meta: &SnapshotMeta) -> Result<(), AppError> {
     let parent = target
         .parent()
         .ok_or_else(|| AppError::Message("快照路径无效".to_string()))?;
     fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
+    recover_snapshot_saves(parent)?;
+    let name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(snapshot_save_error)?;
     let token = super::new_account_id();
     let staging = parent.join(format!(".staging-{token}"));
     let old = parent.join(format!(".old-{token}"));
+    let mut journaled = false;
     let result = (|| {
         copy_auth_set(main, &staging).map_err(|e| AppError::io(&staging, e))?;
         write_meta(&staging, meta)?;
-        let had_old = fs::symlink_metadata(target).is_ok();
+        let had_old = snapshot_directory_exists(target)?;
+        write_snapshot_save(parent, &token, name)?;
+        journaled = true;
         if had_old {
             fs::rename(target, &old).map_err(|e| AppError::io(target, e))?;
         }
-        match fs::rename(&staging, target) {
-            Ok(()) => {
-                let _ = remove_if_exists(&old);
-                Ok(())
-            }
-            Err(error) => {
-                if had_old {
-                    let _ = fs::rename(&old, target);
-                }
-                Err(AppError::io(target, error))
-            }
-        }
+        fs::rename(&staging, target).map_err(|e| AppError::io(target, e))
     })();
-    if result.is_err() {
-        let _ = fs::remove_dir_all(&staging);
+    if journaled {
+        // Also tries the immediate rollback on a failed rename. If recovery
+        // fails, keep the record and both working folders for the next attempt.
+        recover_snapshot_save(parent, &token).map_err(|recovery| {
+            AppError::Message(format!("保存 Desktop 登录后未能完成恢复：{recovery}"))
+        })?;
+    } else if result.is_err() {
+        let _ = remove_if_exists(&staging);
     }
     result
 }
 
-/// Removes what a crashed save left next to the snapshots, and the snapshots
-/// of logins that no longer exist (a delete that could not remove them).
-fn sweep_leftovers(vault: &CodeVault) {
+/// Recover interrupted saves before removing orphaned snapshots. Complete
+/// legacy working copies have no trustworthy target mapping and are retained.
+fn sweep_leftovers(vault: &CodeVault) -> Result<(), AppError> {
     let root = snapshots_root(vault);
+    for dir in [&root, &root.join(STASH_DIR)] {
+        recover_snapshot_saves(dir)?;
+    }
     let known = code::all_account_ids(vault);
     for entry in fs::read_dir(&root).into_iter().flatten().flatten() {
         let name = entry.file_name();
@@ -368,14 +469,15 @@ fn sweep_leftovers(vault: &CodeVault) {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if LEFTOVER_PREFIXES
-                .iter()
-                .any(|prefix| name.starts_with(prefix))
+            if name.starts_with(".staging-")
+                && !has_sign_in_files(&entry.path())
+                && read_meta(&entry.path()).is_none()
             {
                 let _ = remove_if_exists(&entry.path());
             }
         }
     }
+    Ok(())
 }
 
 fn pending_path(vault: &CodeVault) -> PathBuf {
@@ -476,10 +578,67 @@ pub(crate) fn capture_in(vault: &CodeVault, main: &Path, id: &str) -> Result<(),
     if data_locked(main) {
         return Err(running_error());
     }
-    sweep_leftovers(vault);
+    sweep_leftovers(vault)?;
     recover_interrupted(vault, main)?;
     let (target, meta) = capture_target(vault, main, id)?;
     save_snapshot(main, &target, &meta)
+}
+
+/// Validates the identity selected in the import dialog, including after Desktop closes.
+pub(crate) fn check_import(main: &Path, expected_uuid: &str) -> Result<(), AppError> {
+    let login = login_of(main);
+    if !login.signed_in {
+        return Err(not_signed_in_error());
+    }
+    if expected_uuid.trim().is_empty()
+        || !same_uuid_opt(login.account_uuid.as_deref(), Some(expected_uuid.trim()))
+    {
+        return Err(AppError::Message(
+            "本机 Desktop 的登录已变化，请重新检测后再导入。".to_string(),
+        ));
+    }
+    if !has_sign_in_files(main) {
+        return Err(AppError::Message(
+            "Desktop 登录文件不完整，请打开 Desktop 确认已登录后再试。".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Publishes an account only after its Desktop sign-in has been safely captured.
+pub(crate) fn import_in(
+    vault: &CodeVault,
+    main: &Path,
+    expected_uuid: &str,
+    email: Option<&str>,
+) -> Result<code::CodeAccountDto, AppError> {
+    if data_locked(main) {
+        return Err(running_error());
+    }
+    sweep_leftovers(vault)?;
+    recover_interrupted(vault, main)?;
+    check_import(main, expected_uuid)?;
+    code::save_desktop_login_in(vault, expected_uuid, email, |id| {
+        let target = snapshot_dir(vault, id)?;
+        let meta = SnapshotMeta {
+            account_id: id.to_string(),
+            account_uuid: Some(expected_uuid.trim().to_string()),
+            captured_at: Utc::now().to_rfc3339(),
+        };
+        save_snapshot(main, &target, &meta)
+    })
+}
+
+/// A whole, identity-checked snapshot for read-only quota queries.
+pub(crate) fn quota_data_dir(vault: &CodeVault, id: &str) -> Result<Option<PathBuf>, AppError> {
+    let dir = snapshot_dir(vault, id)?;
+    let expected = code::account_uuid_of(vault, id)?;
+    let valid = read_meta(&dir).is_some_and(|meta| {
+        meta.account_id == id
+            && same_uuid_opt(meta.account_uuid.as_deref(), expected.as_deref())
+            && same_uuid_opt(login_of(&dir).account_uuid.as_deref(), expected.as_deref())
+    });
+    Ok((valid && has_sign_in_files(&dir)).then_some(dir))
 }
 
 /// Keeps only the newest `KEEP_STASH` outgoing sign-ins that matched no saved login.
@@ -491,6 +650,7 @@ fn prune_stash(vault: &CodeVault) {
     let mut names: Vec<String> = entries
         .flatten()
         .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| !name.starts_with('.'))
         .collect();
     names.sort();
     while names.len() > KEEP_STASH {
@@ -512,6 +672,7 @@ pub struct SwitchResult {
 
 /// The snapshot a switch would put in place, if it can be.
 fn switch_meta(vault: &CodeVault, id: &str) -> Result<SnapshotMeta, AppError> {
+    recover_snapshot_saves(&snapshots_root(vault))?;
     let source = snapshot_dir(vault, id)?;
     let meta = read_meta(&source).ok_or_else(|| {
         AppError::Message(
@@ -548,7 +709,11 @@ fn reject_current(main: &Path, meta: &SnapshotMeta) -> Result<(), AppError> {
 /// Whether a switch to this login can be done, before Desktop is closed for it.
 pub(crate) fn check_switch(vault: &CodeVault, main: &Path, id: &str) -> Result<(), AppError> {
     let meta = switch_meta(vault, id)?;
-    reject_current(main, &meta)
+    if api_mode(main) {
+        Ok(())
+    } else {
+        reject_current(main, &meta)
+    }
 }
 
 /// Replaces the default Desktop's sign-in with this login's snapshot.
@@ -558,8 +723,32 @@ pub(crate) fn switch_in(
     vault: &CodeVault,
     main: &Path,
     id: &str,
+    activate_official: impl FnOnce() -> Result<(), AppError>,
 ) -> Result<SwitchResult, AppError> {
-    switch_with(vault, main, id, apply_auth_set)
+    if needs_recovery(vault) {
+        if data_locked(main) {
+            return Err(running_error());
+        }
+        recover_interrupted(vault, main)?;
+    }
+    let meta = switch_meta(vault, id)?;
+    if api_mode(main) && reject_current(main, &meta).is_err() {
+        if data_locked(main) {
+            return Err(running_error());
+        }
+        // The cached login may be newer than its snapshot. Only change mode.
+        activate_official()?;
+        return Ok(SwitchResult {
+            stashed_outgoing: false,
+            saved_outgoing_for: None,
+        });
+    }
+    switch_with(vault, main, id, |source, destination| {
+        apply_auth_set(source, destination)?;
+        // Last fallible step: the provider service compensates its own writes;
+        // change_sign_in restores the previous auth set if activation fails.
+        activate_official().map_err(|error| io::Error::other(error.to_string()))
+    })
 }
 
 fn switch_with(
@@ -637,9 +826,13 @@ pub(crate) fn prepare_login_in(
     vault: &CodeVault,
     main: &Path,
     id: &str,
+    activate_official: impl FnOnce() -> Result<(), AppError>,
 ) -> Result<SwitchResult, AppError> {
     check_prepare(vault, main, id)?;
-    change_sign_in(vault, main, id, None, clear_sign_in)
+    change_sign_in(vault, main, id, None, |main| {
+        clear_sign_in(main)?;
+        activate_official().map_err(|error| io::Error::other(error.to_string()))
+    })
 }
 
 /// Whether a swap was cut short and its folder not put back yet. Desktop must
@@ -669,7 +862,7 @@ fn change_sign_in(
     if data_locked(main) {
         return Err(running_error());
     }
-    sweep_leftovers(vault);
+    sweep_leftovers(vault)?;
     recover_interrupted(vault, main)?;
     fs::create_dir_all(main).map_err(|e| AppError::io(main, e))?;
 
@@ -765,6 +958,8 @@ pub struct SwapStatus {
     /// Desktop has its data open.
     pub running: bool,
     pub signed_in: bool,
+    /// An official login can be cached while the API route is active.
+    pub api_mode: bool,
     pub account_uuid: Option<String>,
     /// The saved login Desktop is signed in as, when it is one.
     pub current_account_id: Option<String>,
@@ -773,9 +968,11 @@ pub struct SwapStatus {
 
 pub(crate) fn status_in(vault: &CodeVault, main: Option<&Path>) -> SwapStatus {
     let login = main.map(login_of).unwrap_or_default();
+    let api_mode = main.is_some_and(api_mode);
     let current_account_id = login
         .account_uuid
         .as_deref()
+        .filter(|_| login.signed_in)
         .and_then(|uuid| code::find_by_account_uuid(vault, uuid));
     let mut snapshots = Vec::new();
     for (id, _) in code::saved_names(vault) {
@@ -788,7 +985,8 @@ pub(crate) fn status_in(vault: &CodeVault, main: Option<&Path>) -> SwapStatus {
                 continue;
             }
             snapshots.push(SnapshotDto {
-                is_current: login.signed_in
+                is_current: !api_mode
+                    && login.signed_in
                     && same_uuid_opt(meta.account_uuid.as_deref(), login.account_uuid.as_deref()),
                 account_id: id,
                 captured_at: meta.captured_at,
@@ -799,6 +997,7 @@ pub(crate) fn status_in(vault: &CodeVault, main: Option<&Path>) -> SwapStatus {
         supported: supported() && main.is_some(),
         running: main.is_some_and(data_locked),
         signed_in: login.signed_in,
+        api_mode,
         account_uuid: login.account_uuid,
         current_account_id,
         snapshots,
@@ -808,6 +1007,7 @@ pub(crate) fn status_in(vault: &CodeVault, main: Option<&Path>) -> SwapStatus {
 /// Removes a login's snapshot (when the login is deleted or on request).
 pub(crate) fn remove_snapshot(vault: &CodeVault, id: &str) -> Result<(), AppError> {
     let dir = snapshot_dir(vault, id)?;
+    sweep_leftovers(vault)?;
     remove_if_exists(&dir).map_err(|e| AppError::io(&dir, e))
 }
 
@@ -818,7 +1018,7 @@ pub(crate) fn forget_account(
     id: &str,
     account_uuid: Option<&str>,
 ) -> Result<(), AppError> {
-    let removed = remove_snapshot(vault, id);
+    remove_snapshot(vault, id)?;
     if let Some(uuid) = account_uuid {
         let stash = snapshots_root(vault).join(STASH_DIR);
         for entry in fs::read_dir(&stash).into_iter().flatten().flatten() {
@@ -831,8 +1031,7 @@ pub(crate) fn forget_account(
             }
         }
     }
-    sweep_leftovers(vault);
-    removed
+    sweep_leftovers(vault)
 }
 
 // ===== the Desktop process =====
@@ -989,6 +1188,194 @@ mod tests {
             .to_string()
     }
 
+    /// Creates the on-disk state immediately before either replacement rename.
+    fn snapshot_save_test_transaction(
+        root: &Path,
+        parent: &Path,
+        name: &str,
+    ) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let before = desktop(&root.join("before"), "uuid-a", "old");
+        let incoming = desktop(&root.join("incoming"), "uuid-a", "new");
+        let token = "aregression1";
+        let target = parent.join(name);
+        let staging = parent.join(format!(".staging-{token}"));
+        let old = parent.join(format!(".old-{token}"));
+        let meta = SnapshotMeta {
+            account_id: if parent.file_name().is_some_and(|name| name == STASH_DIR) {
+                String::new()
+            } else {
+                name.to_string()
+            },
+            account_uuid: Some("uuid-a".to_string()),
+            captured_at: "2026-11-17T00:00:00Z".to_string(),
+        };
+        copy_auth_set(&before, &target).unwrap();
+        write_meta(&target, &meta).unwrap();
+        copy_auth_set(&incoming, &staging).unwrap();
+        write_meta(&staging, &meta).unwrap();
+        write_snapshot_save(parent, token, name).unwrap();
+        (target, staging, old, snapshot_save_path(parent, token))
+    }
+
+    #[test]
+    fn snapshot_save_recovers_every_replace_boundary() {
+        for in_stash in [false, true] {
+            for boundary in 0..4 {
+                let temp = tempfile::tempdir().unwrap();
+                let parent = if in_stash {
+                    temp.path().join("desktop-auth").join(STASH_DIR)
+                } else {
+                    temp.path().join("desktop-auth")
+                };
+                let name = if in_stash {
+                    "20261117T000000.000"
+                } else {
+                    "saved-account"
+                };
+                let (target, staging, old, record) =
+                    snapshot_save_test_transaction(temp.path(), &parent, name);
+                if boundary >= 1 {
+                    fs::rename(&target, &old).unwrap();
+                }
+                if boundary >= 2 {
+                    fs::rename(&staging, &target).unwrap();
+                }
+                if boundary >= 3 {
+                    remove_if_exists(&old).unwrap();
+                }
+                recover_snapshot_saves(&parent).unwrap();
+                let expected = if boundary < 2 { "old" } else { "new" };
+                assert_eq!(marker_of(&target), expected);
+                assert!(snapshot_complete(&target));
+                assert!(!staging.exists() && !old.exists() && !record.exists());
+                recover_snapshot_saves(&parent).unwrap();
+                assert_eq!(marker_of(&target), expected, "recovery must be idempotent");
+            }
+        }
+    }
+
+    #[test]
+    fn snapshot_save_recovers_first_capture_without_old_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("desktop-auth");
+        let (target, staging, old, record) =
+            snapshot_save_test_transaction(temp.path(), &parent, "saved-account");
+        remove_if_exists(&target).unwrap();
+        recover_snapshot_saves(&parent).unwrap();
+        assert_eq!(marker_of(&target), "new");
+        assert!(snapshot_complete(&target));
+        assert!(!staging.exists() && !old.exists() && !record.exists());
+    }
+
+    #[test]
+    fn snapshot_save_retains_copies_when_recovery_cannot_proceed() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("desktop-auth");
+        let (target, staging, old, record) =
+            snapshot_save_test_transaction(temp.path(), &parent, "saved-account");
+        fs::rename(&target, &old).unwrap();
+        // A deterministic blocker models an unsuccessful rename-back.
+        fs::create_dir(&target).unwrap();
+        assert!(recover_snapshot_saves(&parent).is_err());
+        assert_eq!(marker_of(&old), "old");
+        assert_eq!(marker_of(&staging), "new");
+        assert!(record.exists());
+        fs::remove_dir(&target).unwrap();
+        recover_snapshot_saves(&parent).unwrap();
+        assert_eq!(marker_of(&target), "old");
+        assert!(!staging.exists() && !old.exists() && !record.exists());
+    }
+
+    #[test]
+    fn snapshot_save_rejects_journal_path_traversal() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("desktop-auth");
+        let (target, staging, old, record) =
+            snapshot_save_test_transaction(temp.path(), &parent, "saved-account");
+        fs::rename(&target, &old).unwrap();
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("sentinel"), b"untouched").unwrap();
+        write_snapshot_save(&parent, "aregression1", "../outside").unwrap();
+        assert!(recover_snapshot_saves(&parent).is_err());
+        assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"untouched");
+        assert_eq!(marker_of(&old), "old");
+        assert_eq!(marker_of(&staging), "new");
+        assert!(record.exists() && !target.exists());
+    }
+
+    #[test]
+    fn snapshot_save_sweep_recovers_before_other_account_capture() {
+        let f = fixture();
+        let a = saved(&f, "a@example.com", "uuid-a");
+        let b = saved(&f, "b@example.com", "uuid-b");
+        let temp = tempfile::tempdir().unwrap();
+        let root = snapshots_root(&f.vault);
+        let (target, staging, old, record) = snapshot_save_test_transaction(temp.path(), &root, &a);
+        fs::rename(&target, &old).unwrap();
+        let main = desktop(&temp.path().join("other"), "uuid-b", "other");
+        capture_in(&f.vault, &main, &b).unwrap();
+        assert_eq!(marker_of(&target), "old");
+        assert_eq!(marker_of(&snapshot_dir(&f.vault, &b).unwrap()), "other");
+        assert!(!staging.exists() && !old.exists() && !record.exists());
+    }
+
+    #[test]
+    fn snapshot_save_preserves_legacy_backups_during_sweep_and_pruning() {
+        let f = fixture();
+        let temp = tempfile::tempdir().unwrap();
+        let stash = snapshots_root(&f.vault).join(STASH_DIR);
+        let (target, staging, old, record) =
+            snapshot_save_test_transaction(temp.path(), &stash, "20261117T000000.000");
+        fs::rename(&target, &old).unwrap();
+        fs::remove_file(&record).unwrap(); // Legacy versions wrote no journal.
+        for day in 1..=7 {
+            fs::create_dir(stash.join(format!("202601{day:02}T000000.000"))).unwrap();
+        }
+        sweep_leftovers(&f.vault).unwrap();
+        prune_stash(&f.vault);
+        assert_eq!(marker_of(&old), "old");
+        assert_eq!(marker_of(&staging), "new");
+        let kept = fs::read_dir(&stash)
+            .unwrap()
+            .flatten()
+            .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+            .count();
+        assert_eq!(kept, KEEP_STASH);
+    }
+
+    #[test]
+    fn snapshot_save_forget_retains_copies_when_recovery_is_blocked() {
+        let f = fixture();
+        let a = saved(&f, "a@example.com", "uuid-a");
+        let temp = tempfile::tempdir().unwrap();
+        let stash = snapshots_root(&f.vault).join(STASH_DIR);
+        let (target, staging, old, record) =
+            snapshot_save_test_transaction(temp.path(), &stash, "20261117T000000.000");
+        fs::rename(&target, &old).unwrap();
+        fs::create_dir(&target).unwrap();
+        assert!(forget_account(&f.vault, &a, Some("uuid-a")).is_err());
+        assert_eq!(marker_of(&old), "old");
+        assert_eq!(marker_of(&staging), "new");
+        assert!(record.exists());
+        fs::remove_dir(&target).unwrap();
+        forget_account(&f.vault, &a, Some("uuid-a")).unwrap();
+        assert!(!target.exists() && !staging.exists() && !old.exists() && !record.exists());
+    }
+
+    #[test]
+    fn snapshot_save_deletion_does_not_resurrect_pending_snapshot() {
+        let f = fixture();
+        let a = saved(&f, "a@example.com", "uuid-a");
+        let temp = tempfile::tempdir().unwrap();
+        let root = snapshots_root(&f.vault);
+        let (target, staging, old, record) = snapshot_save_test_transaction(temp.path(), &root, &a);
+        fs::rename(&target, &old).unwrap();
+        remove_snapshot(&f.vault, &a).unwrap();
+        sweep_leftovers(&f.vault).unwrap();
+        assert!(!target.exists() && !staging.exists() && !old.exists() && !record.exists());
+    }
+
     #[test]
     fn who_is_signed_in_comes_from_the_config_file() {
         let temp = tempfile::tempdir().unwrap();
@@ -1007,6 +1394,72 @@ mod tests {
         )
         .unwrap();
         assert!(!login_of(&dir).signed_in, "no token cache: not signed in");
+    }
+
+    #[test]
+    fn importing_local_desktop_creates_one_card_with_a_complete_snapshot() {
+        let f = fixture();
+        let temp = tempfile::tempdir().unwrap();
+        let main = desktop(temp.path(), "uuid-a", "A");
+        let a = import_in(&f.vault, &main, "UUID-A", Some("a@example.com")).unwrap();
+        assert_eq!(a.kind, code::SlotKind::DesktopOnly);
+        let snap = quota_data_dir(&f.vault, &a.id).unwrap().unwrap();
+        assert_eq!(marker_of(&snap), "A");
+        assert!(!snap.join("claude_desktop_config.json").exists());
+        code::rename_in(&f.vault, &a.id, "我的账号").unwrap();
+        let again = import_in(&f.vault, &main, "uuid-a", None).unwrap();
+        assert_eq!(again.id, a.id);
+        assert_eq!(again.name, "我的账号");
+        assert_eq!(code::all_account_ids(&f.vault).len(), 1);
+        let state = status_in(&f.vault, Some(&main));
+        assert_eq!(state.current_account_id.as_deref(), Some(a.id.as_str()));
+        assert_eq!(state.snapshots.len(), 1);
+    }
+
+    #[test]
+    fn changed_or_incomplete_desktop_login_cannot_publish_an_import() {
+        let f = fixture();
+        let temp = tempfile::tempdir().unwrap();
+        let main = desktop(temp.path(), "uuid-b", "B");
+        assert!(import_in(&f.vault, &main, "uuid-a", None).is_err());
+        fs::remove_file(main.join("Local State")).unwrap();
+        assert!(import_in(&f.vault, &main, "uuid-b", None).is_err());
+        assert!(code::all_account_ids(&f.vault).is_empty());
+    }
+
+    #[test]
+    fn saved_quota_rejects_a_snapshot_with_the_wrong_identity() {
+        let f = fixture();
+        let a = saved(&f, "a@example.com", "uuid-a");
+        let temp = tempfile::tempdir().unwrap();
+        let main = desktop(temp.path(), "uuid-a", "A");
+        capture_in(&f.vault, &main, &a).unwrap();
+        let snap = quota_data_dir(&f.vault, &a).unwrap().unwrap();
+        fs::write(
+            snap.join("config.json"),
+            json!({
+                "lastKnownAccountUuid": "uuid-b", "oauth:tokenCacheV2": "v10B"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(quota_data_dir(&f.vault, &a).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_stale_account_uuid_after_logout_is_not_the_current_desktop_account() {
+        let f = fixture();
+        saved(&f, "a@example.com", "uuid-a");
+        let temp = tempfile::tempdir().unwrap();
+        let main = desktop(temp.path(), "uuid-a", "A");
+        fs::write(
+            main.join("config.json"),
+            json!({"lastKnownAccountUuid": "uuid-a"}).to_string(),
+        )
+        .unwrap();
+        let state = status_in(&f.vault, Some(&main));
+        assert!(!state.signed_in);
+        assert!(state.current_account_id.is_none());
     }
 
     #[test]
@@ -1080,7 +1533,7 @@ mod tests {
         let main = desktop(temp.path(), "uuid-a", "A2");
         fs::write(main.join("window-state.json"), "{\"x\":99}").unwrap();
 
-        let result = switch_in(&f.vault, &main, &b).unwrap();
+        let result = switch_in(&f.vault, &main, &b, || Ok(())).unwrap();
         assert_eq!(result.saved_outgoing_for.as_deref(), Some(a.as_str()));
         assert!(!result.stashed_outgoing);
         assert_eq!(marker_of(&main), "B");
@@ -1101,7 +1554,7 @@ mod tests {
         assert!(!snapshots_root(&f.vault).join(ROLLBACK_DIR).exists());
 
         // And back.
-        switch_in(&f.vault, &main, &a).unwrap();
+        switch_in(&f.vault, &main, &a, || Ok(())).unwrap();
         assert_eq!(marker_of(&main), "A2");
         let status = status_in(&f.vault, Some(&main));
         assert_eq!(status.current_account_id.as_deref(), Some(a.as_str()));
@@ -1122,7 +1575,7 @@ mod tests {
                 json!({"lastKnownAccountUuid": "uuid-stranger", "oauth:tokenCacheV2": format!("v10S{round}")}).to_string(),
             )
             .unwrap();
-            let result = switch_in(&f.vault, &main, &b).unwrap();
+            let result = switch_in(&f.vault, &main, &b, || Ok(())).unwrap();
             assert!(result.stashed_outgoing && result.saved_outgoing_for.is_none());
             assert_eq!(marker_of(&main), "B");
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1173,7 +1626,7 @@ mod tests {
         let _b = saved(&f, "b@example.com", "uuid-b");
         let temp = tempfile::tempdir().unwrap();
         let main = desktop(temp.path(), "uuid-c", "C");
-        assert!(switch_in(&f.vault, &main, &a)
+        assert!(switch_in(&f.vault, &main, &a, || Ok(()))
             .err()
             .unwrap()
             .to_string()
@@ -1186,7 +1639,7 @@ mod tests {
         )
         .unwrap();
         code::manage::set_disabled_in(&f.vault, &f.paths, &a, true).unwrap();
-        assert!(switch_in(&f.vault, &main, &a)
+        assert!(switch_in(&f.vault, &main, &a, || Ok(()))
             .err()
             .unwrap()
             .to_string()
@@ -1228,7 +1681,7 @@ mod tests {
             .unwrap()
             .to_string()
             .contains("还开着"));
-        assert!(switch_in(&f.vault, &main, &b)
+        assert!(switch_in(&f.vault, &main, &b, || Ok(()))
             .err()
             .unwrap()
             .to_string()
@@ -1309,7 +1762,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = switch_in(&f.vault, &main, &b).unwrap();
+        let result = switch_in(&f.vault, &main, &b, || Ok(())).unwrap();
         assert_eq!(result.saved_outgoing_for.as_deref(), Some(a.as_str()));
         let config: Value =
             serde_json::from_str(&fs::read_to_string(main.join("config.json")).unwrap()).unwrap();
@@ -1394,7 +1847,10 @@ mod tests {
         fs::remove_file(snapshot_dir(&f.vault, &b).unwrap().join("Local State")).unwrap();
 
         assert!(status_in(&f.vault, Some(&main)).snapshots.is_empty());
-        let error = switch_in(&f.vault, &main, &b).err().unwrap().to_string();
+        let error = switch_in(&f.vault, &main, &b, || Ok(()))
+            .err()
+            .unwrap()
+            .to_string();
         assert!(error.contains("不完整"), "{error}");
         assert_eq!(marker_of(&main), "A", "nothing changed");
 
@@ -1518,7 +1974,7 @@ mod tests {
         .unwrap();
 
         check_prepare(&f.vault, &main, &b).unwrap();
-        let result = prepare_login_in(&f.vault, &main, &b).unwrap();
+        let result = prepare_login_in(&f.vault, &main, &b, || Ok(())).unwrap();
         assert_eq!(result.saved_outgoing_for.as_deref(), Some(a.as_str()));
         // Signed out of nothing: A's session is in its snapshot, whole.
         assert_eq!(marker_of(&snapshot_dir(&f.vault, &a).unwrap()), "A");
@@ -1550,7 +2006,7 @@ mod tests {
             fs::write(main.join(rel), format!("B:{rel}")).unwrap();
         }
         capture_in(&f.vault, &main, &b).unwrap();
-        switch_in(&f.vault, &main, &a).unwrap();
+        switch_in(&f.vault, &main, &a, || Ok(())).unwrap();
         assert_eq!(marker_of(&main), "A");
     }
 
@@ -1589,9 +2045,80 @@ mod tests {
                 .to_string(),
         )
         .unwrap();
-        let error = switch_in(&f.vault, &main, &a).err().unwrap().to_string();
+        let error = switch_in(&f.vault, &main, &a, || Ok(()))
+            .err()
+            .unwrap()
+            .to_string();
         assert!(error.contains("不用切换"), "{error}");
         assert_eq!(marker_of(&main), "A-newer", "the newer copy stays");
+    }
+
+    #[test]
+    fn switching_from_api_to_the_cached_official_account_keeps_its_newer_auth() {
+        let f = fixture();
+        let a = saved(&f, "a@example.com", "uuid-a");
+        let temp = tempfile::tempdir().unwrap();
+        let main = desktop(temp.path(), "uuid-a", "A");
+        capture_in(&f.vault, &main, &a).unwrap();
+        fs::write(
+            main.join("config.json"),
+            json!({
+                "deploymentMode": "3p", "lastKnownAccountUuid": "uuid-a",
+                "oauth:tokenCacheV2": "v10A-newer"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        copy_auth_set(&main, &rollback_path(&f.vault)).unwrap();
+        fs::write(pending_path(&f.vault), "{}").unwrap();
+        fs::write(main.join("Cookies"), "partial:Cookies").unwrap();
+        let status = status_in(&f.vault, Some(&main));
+        assert!(status.api_mode);
+        assert!(!status.snapshots[0].is_current);
+        check_switch(&f.vault, &main, &a).unwrap();
+        switch_in(&f.vault, &main, &a, || {
+            let mut config: Value =
+                serde_json::from_slice(&fs::read(main.join("config.json")).unwrap()).unwrap();
+            config.as_object_mut().unwrap().remove("deploymentMode");
+            fs::write(main.join("config.json"), config.to_string()).unwrap();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(marker_of(&main), "A-newer");
+        assert_eq!(
+            fs::read_to_string(main.join("Cookies")).unwrap(),
+            "A:Cookies"
+        );
+        assert!(!needs_recovery(&f.vault));
+        assert!(!api_mode(&main));
+        assert!(status_in(&f.vault, Some(&main)).snapshots[0].is_current);
+    }
+
+    #[test]
+    fn failed_official_activation_restores_the_previous_auth_and_api_mode() {
+        let f = fixture();
+        let a = saved(&f, "a@example.com", "uuid-a");
+        let b = saved(&f, "b@example.com", "uuid-b");
+        let saved_b = tempfile::tempdir().unwrap();
+        capture_in(&f.vault, &desktop(saved_b.path(), "uuid-b", "B"), &b).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let main = desktop(temp.path(), "uuid-a", "A-newer");
+        let mut config: Value =
+            serde_json::from_slice(&fs::read(main.join("config.json")).unwrap()).unwrap();
+        config["deploymentMode"] = json!("3p");
+        fs::write(main.join("config.json"), config.to_string()).unwrap();
+        let before = fs::read(main.join("config.json")).unwrap();
+        let error = switch_in(&f.vault, &main, &b, || {
+            assert_eq!(marker_of(&main), "B");
+            Err(AppError::Message("activation failed".into()))
+        })
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("已恢复原来的登录"));
+        assert_eq!(fs::read(main.join("config.json")).unwrap(), before);
+        assert_eq!(marker_of(&snapshot_dir(&f.vault, &a).unwrap()), "A-newer");
+        assert!(api_mode(&main));
+        assert!(!needs_recovery(&f.vault));
     }
 
     #[test]
@@ -1613,7 +2140,7 @@ mod tests {
         let orphan = snapshots_root(&f.vault).join("gone1234");
         fs::create_dir_all(orphan.join("Network")).unwrap();
         fs::write(orphan.join("Local State"), "x").unwrap();
-        sweep_leftovers(&f.vault);
+        sweep_leftovers(&f.vault).unwrap();
         assert!(!orphan.exists());
         assert!(
             snapshot_dir(&f.vault, &a).unwrap().is_dir(),

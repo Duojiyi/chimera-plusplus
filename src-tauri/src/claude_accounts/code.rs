@@ -730,6 +730,10 @@ impl Slot {
         self.kind
     }
 
+    pub(crate) fn disabled(&self) -> bool {
+        self.disabled
+    }
+
     pub(crate) fn name(&self) -> &str {
         &self.name
     }
@@ -939,6 +943,17 @@ pub(crate) fn save_desktop_only_in(
     account_uuid: &str,
     email: Option<&str>,
 ) -> Result<CodeAccountDto, AppError> {
+    save_desktop_login_in(vault, account_uuid, email, |_| Ok(()))
+}
+
+/// The sign-in files must be saved successfully before publishing a new account.
+/// Holding CODE_LOCK also prevents a simultaneous import from creating a duplicate.
+pub(crate) fn save_desktop_login_in(
+    vault: &CodeVault,
+    account_uuid: &str,
+    email: Option<&str>,
+    before_commit: impl FnOnce(&str) -> Result<(), AppError>,
+) -> Result<CodeAccountDto, AppError> {
     let uuid = account_uuid.trim();
     if uuid.is_empty() || uuid.len() > 64 {
         return Err(AppError::Message(
@@ -950,7 +965,9 @@ pub(crate) fn save_desktop_only_in(
         .filter(|email| !email.is_empty() && email.len() <= 320 && email.contains('@'));
     let _guard = CODE_LOCK.lock()?;
     if let Some(id) = find_by_account_uuid(vault, uuid) {
-        return Ok(vault.read_slot(&id)?.dto(None));
+        let slot = vault.read_slot(&id)?;
+        before_commit(&id)?;
+        return Ok(slot.dto(None));
     }
     let name = fitted_name(email.unwrap_or_default(), DEFAULT_NAME);
     let mut slot = blank_slot(vault, name)?;
@@ -961,6 +978,7 @@ pub(crate) fn save_desktop_only_in(
         account.insert("emailAddress".to_string(), Value::from(email));
     }
     slot.oauth_account = Some(Value::Object(account));
+    before_commit(&slot.id)?;
     vault.write_slot(&slot)?;
     Ok(slot.dto(None))
 }
@@ -1096,18 +1114,23 @@ fn write_checked(
     })
 }
 
-fn restore(path: &Path, original: Option<&[u8]>, private: bool) -> Result<(), AppError> {
+/// Undo only bytes this switch wrote; a running client may have refreshed them.
+fn restore(
+    path: &Path,
+    original: Option<&[u8]>,
+    written: &[u8],
+    private: bool,
+) -> Result<(), AppError> {
     let result = match original {
-        Some(bytes) => {
-            crate::config::atomic_write_checked::<AppError, _>(path, bytes, private, || Ok(()))
-        }
-        None => fs::remove_file(path).or_else(|error| {
-            if error.kind() == io::ErrorKind::NotFound {
-                Ok(())
-            } else {
-                Err(AppError::io(path, error))
+        Some(bytes) => write_checked(path, bytes, private, Some(written)),
+        None => (|| {
+            if read_optional(path)?.as_deref() != Some(written) {
+                return Err(AppError::Conflict(
+                    "Claude Code 已更新登录文件，已保留最新内容。".to_string(),
+                ));
             }
-        }),
+            fs::remove_file(path).map_err(|error| AppError::io(path, error))
+        })(),
     };
     if let Err(error) = &result {
         log::error!(
@@ -1116,6 +1139,48 @@ fn restore(path: &Path, original: Option<&[u8]>, private: bool) -> Result<(), Ap
         );
     }
     result
+}
+
+/// The callback lets tests deterministically model a client refresh between writes.
+fn commit_live_files(
+    paths: &LivePaths,
+    live: &Live,
+    new_credentials: Option<&[u8]>,
+    new_claude_json: Option<&[u8]>,
+    before_account_write: impl FnOnce(),
+) -> Result<(), AppError> {
+    if let Some(data) = new_credentials {
+        write_checked(&paths.credentials, data, true, live.credentials.as_deref())?;
+    }
+    before_account_write();
+    if let Some(data) = new_claude_json {
+        if let Err(error) =
+            write_checked(&paths.claude_json, data, false, live.claude_json.as_deref())
+        {
+            if let Some(written) = new_credentials {
+                match restore(
+                    &paths.credentials,
+                    live.credentials.as_deref(),
+                    written,
+                    true,
+                ) {
+                    Ok(()) => {}
+                    Err(AppError::Conflict(_)) => {
+                        return Err(AppError::Conflict(format!(
+                            "切换失败（{error}）；登录文件已被外部更新，已保留最新内容。请重新检测登录后重试。"
+                        )));
+                    }
+                    Err(_) => {
+                        return Err(AppError::Message(format!(
+                            "切换失败，且未能恢复原来的登录（{error}）。上一次登录已加密备份；请在 Claude Code 中用 /login 重新登录。"
+                        )));
+                    }
+                }
+            }
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 /// The `customApiKeyResponses` object with the last 20 characters of `key`
@@ -1384,23 +1449,13 @@ pub(crate) fn switch_in(
         ("claude.json", live.claude_json.as_deref()),
     ])?;
 
-    if let Some(data) = &new_credentials {
-        write_checked(&paths.credentials, data, true, live.credentials.as_deref())?;
-    }
-    if let Some(data) = &new_claude_json {
-        if let Err(error) =
-            write_checked(&paths.claude_json, data, false, live.claude_json.as_deref())
-        {
-            if restore(&paths.credentials, live.credentials.as_deref(), true).is_err() {
-                // The tokens are the new account's but `.claude.json` still
-                // names the old one; the user has to log in again to fix it.
-                return Err(AppError::Message(format!(
-                    "切换失败，且未能恢复原来的登录（{error}）。上一次登录已加密备份；请在 Claude Code 中用 /login 重新登录。"
-                )));
-            }
-            return Err(error);
-        }
-    }
+    commit_live_files(
+        paths,
+        &live,
+        new_credentials.as_deref(),
+        new_claude_json.as_deref(),
+        || {},
+    )?;
     Ok(SwitchOutcome {
         status: SwitchStatus::Switched,
         auto_saved_id,
@@ -1644,6 +1699,127 @@ pub(crate) mod tests {
         .unwrap();
     }
 
+    fn credential_test_paths(dir: &Path, original: Option<&[u8]>) -> LivePaths {
+        let paths = LivePaths {
+            credentials: dir.join(".credentials.json"),
+            claude_json: dir.join(".claude.json"),
+        };
+        if let Some(bytes) = original {
+            fs::write(&paths.credentials, bytes).unwrap();
+        }
+        fs::write(
+            &paths.claude_json,
+            br#"{"oauthAccount":{"accountUuid":"original"}}"#,
+        )
+        .unwrap();
+        paths
+    }
+
+    #[test]
+    fn credential_rollback_preserves_concurrent_updates() {
+        let original = br#"{"claudeAiOauth":{"accessToken":"original"}}"#;
+        let written = br#"{"claudeAiOauth":{"accessToken":"incoming"}}"#;
+        let refreshed = br#"{"claudeAiOauth":{"accessToken":"external-refresh"}}"#;
+        let external_account = br#"{"oauthAccount":{"accountUuid":"external"}}"#;
+        for original in [None, Some(original.as_slice())] {
+            let temp = tempdir().unwrap();
+            let paths = credential_test_paths(temp.path(), original);
+            let live = read_live(&paths).unwrap();
+            let error = commit_live_files(
+                &paths,
+                &live,
+                Some(written),
+                Some(br#"{"oauthAccount":{"accountUuid":"incoming"}}"#),
+                || {
+                    assert_eq!(fs::read(&paths.credentials).unwrap(), written);
+                    fs::write(&paths.credentials, refreshed).unwrap();
+                    fs::write(&paths.claude_json, external_account).unwrap();
+                },
+            )
+            .unwrap_err();
+            assert!(matches!(error, AppError::Conflict(_)));
+            assert_eq!(fs::read(&paths.credentials).unwrap(), refreshed);
+            assert_eq!(fs::read(&paths.claude_json).unwrap(), external_account);
+        }
+    }
+
+    #[test]
+    fn credential_rollback_restores_only_our_unchanged_write() {
+        let original = br#"{"claudeAiOauth":{"accessToken":"original"}}"#;
+        let external_account = br#"{"oauthAccount":{"accountUuid":"external"}}"#;
+        for original in [None, Some(original.as_slice())] {
+            let temp = tempdir().unwrap();
+            let paths = credential_test_paths(temp.path(), original);
+            let live = read_live(&paths).unwrap();
+            let error = commit_live_files(
+                &paths,
+                &live,
+                Some(br#"{"claudeAiOauth":{"accessToken":"incoming"}}"#),
+                Some(br#"{"oauthAccount":{"accountUuid":"incoming"}}"#),
+                || fs::write(&paths.claude_json, external_account).unwrap(),
+            )
+            .unwrap_err();
+            assert!(matches!(error, AppError::Conflict(_)));
+            assert_eq!(
+                read_optional(&paths.credentials).unwrap().as_deref(),
+                original
+            );
+            assert_eq!(fs::read(&paths.claude_json).unwrap(), external_account);
+        }
+    }
+
+    #[test]
+    fn credential_rollback_skips_credentials_when_they_were_not_written() {
+        let original = br#"{"claudeAiOauth":{"accessToken":"original"}}"#;
+        let refreshed = br#"{"claudeAiOauth":{"accessToken":"external-refresh"}}"#;
+        let external_account = br#"{"oauthAccount":{"accountUuid":"external"}}"#;
+        for original in [None, Some(original.as_slice())] {
+            let temp = tempdir().unwrap();
+            let paths = credential_test_paths(temp.path(), original);
+            let live = read_live(&paths).unwrap();
+            let error = commit_live_files(
+                &paths,
+                &live,
+                None,
+                Some(br#"{"oauthAccount":{"accountUuid":"incoming"}}"#),
+                || {
+                    fs::write(&paths.credentials, refreshed).unwrap();
+                    fs::write(&paths.claude_json, external_account).unwrap();
+                },
+            )
+            .unwrap_err();
+            assert!(matches!(error, AppError::Conflict(_)));
+            assert_eq!(fs::read(&paths.credentials).unwrap(), refreshed);
+            assert_eq!(fs::read(&paths.claude_json).unwrap(), external_account);
+        }
+    }
+
+    #[test]
+    fn credential_rollback_stops_after_a_first_write_conflict() {
+        let temp = tempdir().unwrap();
+        let paths = credential_test_paths(
+            temp.path(),
+            Some(br#"{"claudeAiOauth":{"accessToken":"original"}}"#),
+        );
+        let live = read_live(&paths).unwrap();
+        let refreshed = br#"{"claudeAiOauth":{"accessToken":"external-refresh"}}"#;
+        fs::write(&paths.credentials, refreshed).unwrap();
+        let error = commit_live_files(
+            &paths,
+            &live,
+            Some(br#"{"claudeAiOauth":{"accessToken":"incoming"}}"#),
+            Some(br#"{"oauthAccount":{"accountUuid":"incoming"}}"#),
+            || panic!("the second write must not be attempted"),
+        )
+        .unwrap_err();
+        assert!(matches!(error, AppError::Conflict(_)));
+        assert_eq!(fs::read(&paths.credentials).unwrap(), refreshed);
+        assert_eq!(
+            fs::read(&paths.claude_json).unwrap(),
+            live.claude_json.unwrap()
+        );
+    }
+
     fn live_token(paths: &LivePaths) -> String {
         let value: Value =
             serde_json::from_str(&fs::read_to_string(&paths.credentials).unwrap()).unwrap();
@@ -1651,6 +1827,42 @@ pub(crate) mod tests {
             .as_str()
             .unwrap()
             .to_string()
+    }
+
+    #[test]
+    fn failed_desktop_capture_does_not_publish_an_account() {
+        let f = fixture();
+        let result = save_desktop_login_in(&f.vault, "uuid-new", Some("a@example.com"), |_| {
+            Err(AppError::Message("capture failed".into()))
+        });
+        assert!(result.is_err());
+        assert!(all_account_ids(&f.vault).is_empty());
+    }
+
+    #[test]
+    fn desktop_import_deduplicates_by_uuid_and_preserves_existing_metadata() {
+        let f = fixture();
+        login(&f.paths, "same@example.com", "uuid-a", "token-a");
+        let a = save_current_in(&f.vault, &f.paths, Some("工作账号")).unwrap();
+        set_note_in(&f.vault, &a.id, "团队订阅").unwrap();
+        let updated =
+            save_desktop_login_in(&f.vault, "UUID-A", Some("renamed@example.com"), |id| {
+                assert_eq!(id, a.id);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(updated.id, a.id);
+        assert_eq!(updated.kind, SlotKind::Oauth);
+        assert_eq!(updated.name, "工作账号");
+        assert_eq!(updated.note.as_deref(), Some("团队订阅"));
+        assert_eq!(updated.email.as_deref(), Some("same@example.com"));
+        let other = save_desktop_login_in(&f.vault, "uuid-b", Some("same@example.com"), |_| Ok(()))
+            .unwrap();
+        assert_ne!(
+            other.id, a.id,
+            "a matching display email must not merge distinct UUIDs"
+        );
+        assert_eq!(all_account_ids(&f.vault).len(), 2);
     }
 
     #[test]

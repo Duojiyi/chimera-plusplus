@@ -23,6 +23,13 @@ export interface SwitchResult {
   routingEnabled?: boolean | null;
 }
 
+export interface DesktopProviderSwitchOutcome {
+  status: "desktop_running" | "done";
+  wasRunning: boolean;
+  restarted: boolean;
+  warnings: string[];
+}
+
 export interface OpenTerminalOptions {
   cwd?: string;
 }
@@ -65,6 +72,18 @@ export interface ClaudeDesktopDefaultRoute {
 }
 
 export const providersApi = {
+  async switchClaudeDesktop(
+    id: string,
+    closeDesktop = false,
+    provider?: Provider,
+  ): Promise<DesktopProviderSwitchOutcome> {
+    return await invoke("switch_claude_desktop_provider", {
+      id,
+      closeDesktop,
+      provider,
+    });
+  },
+
   async getAll(appId: AppId): Promise<Record<string, Provider>> {
     return await invoke("get_providers", { app: appId });
   },

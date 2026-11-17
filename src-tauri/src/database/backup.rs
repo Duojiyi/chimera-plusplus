@@ -12,6 +12,7 @@ use rusqlite::Connection;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
 
 const CC_SWITCH_SQL_EXPORT_HEADER: &str = "-- CC Switch SQLite 导出";
@@ -150,6 +151,31 @@ const IMPORT_ALLOWED_FUNCTIONS: &[&str] = &[
 
 /// Largest SQL file accepted for import.
 const MAX_IMPORT_SQL_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_IMPORT_SQL_STEPS: u64 = 100_000_000;
+const MAX_IMPORT_SQL_TIME: Duration = Duration::from_secs(10);
+
+// Size alone cannot bound recursive queries. Cancel the staging execution on
+// either budget, then remove the callback before trusted schema maintenance.
+fn execute_bounded_import(
+    conn: &mut Connection,
+    sql: &str,
+    max_steps: u64,
+    max_time: Duration,
+) -> rusqlite::Result<()> {
+    let started = Instant::now();
+    let mut steps = 0u64;
+    conn.progress_handler(
+        1_000,
+        Some(move || {
+            steps = steps.saturating_add(1_000);
+            steps >= max_steps || started.elapsed() >= max_time
+        }),
+    )?;
+    let result = conn.execute_batch(sql);
+    let cleared = conn.progress_handler(0, None::<fn() -> bool>);
+    result?;
+    cleared
+}
 
 /// External SQL must stay inside the staging database and must not install
 /// temporary or executable schema objects. Temporary tables can shadow main
@@ -417,11 +443,24 @@ impl Database {
         temp_conn
             .authorizer(Some(import_authorizer))
             .map_err(|e| AppError::Database(format!("无法为 SQL 导入启用安全检查: {e}")))?;
-        let batch_result = temp_conn.execute_batch(sql_content);
+        let batch_result = execute_bounded_import(
+            &mut temp_conn,
+            sql_content,
+            MAX_IMPORT_SQL_STEPS,
+            MAX_IMPORT_SQL_TIME,
+        );
         let unguarded = temp_conn.authorizer(
             None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>,
         );
-        batch_result.map_err(|e| AppError::Database(format!("执行 SQL 导入失败: {e}")))?;
+        batch_result.map_err(|e| {
+            if e.sqlite_error_code() == Some(rusqlite::ErrorCode::OperationInterrupted) {
+                AppError::InvalidInput(
+                    "SQL 备份执行超出处理上限，导入已取消，本机数据保持不变。".into(),
+                )
+            } else {
+                AppError::Database(format!("执行 SQL 导入失败: {e}"))
+            }
+        })?;
         unguarded.map_err(|e| AppError::Database(format!("无法结束 SQL 导入的安全检查: {e}")))?;
 
         // Reject executable schema before any trusted migration or local-data write.
@@ -1656,6 +1695,52 @@ mod tests {
             );
 
             let _ = std::fs::remove_file(&target);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn recursive_import_is_cancelled_without_changing_the_database() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let before = db.export_sql_string()?;
+        let malicious = format!(
+            "{}\nWITH RECURSIVE forever(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM forever) SELECT x FROM forever WHERE x < 0;",
+            super::CC_SWITCH_SQL_EXPORT_HEADER
+        );
+        let error = db.import_sql_string(&malicious).unwrap_err();
+        assert!(error.to_string().contains("处理上限"), "{error}");
+        // Export headers carry a wall-clock timestamp; compare every schema/data line.
+        let stable_sql = |sql: &str| {
+            sql.lines()
+                .filter(|line| !line.starts_with("-- 生成时间: "))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert_eq!(stable_sql(&db.export_sql_string()?), stable_sql(&before));
+        // The connection and operation can still be used after interruption.
+        assert!(db
+            .export_sql_string()?
+            .contains(super::CC_SWITCH_SQL_EXPORT_HEADER));
+        Ok(())
+    }
+
+    #[test]
+    fn import_budget_handles_deadline_and_removes_progress_callback() -> rusqlite::Result<()> {
+        let mut conn = rusqlite::Connection::open_in_memory()?;
+        let query = "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n) SELECT x FROM n WHERE x < 0;";
+        for (steps, timeout) in [
+            (2_000, std::time::Duration::from_secs(60)),
+            (u64::MAX, std::time::Duration::ZERO),
+        ] {
+            let error =
+                super::execute_bounded_import(&mut conn, query, steps, timeout).unwrap_err();
+            assert_eq!(
+                error.sqlite_error_code(),
+                Some(rusqlite::ErrorCode::OperationInterrupted)
+            );
+            // A new query would also be cancelled if the exhausted callback remained.
+            let count: i64 = conn.query_row("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<2000) SELECT count(*) FROM n", [], |row| row.get(0))?;
+            assert_eq!(count, 2000);
         }
         Ok(())
     }

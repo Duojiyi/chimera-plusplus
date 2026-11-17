@@ -249,7 +249,7 @@ impl std::fmt::Debug for AccountIdentity {
 pub(crate) enum LoginClass {
     /// A complete ChatGPT login with a known, consistent identity.
     Chatgpt(AccountIdentity),
-    /// ChatGPT tokens whose account ids disagree: a file mixed from two
+    /// ChatGPT tokens whose user or account ids disagree: a file mixed from two
     /// accounts (a refresh that landed across a switch). Never captured or
     /// applied.
     Conflict,
@@ -300,6 +300,16 @@ pub(crate) fn classify(auth: &Value) -> LoginClass {
     }
     let user_id = claim_string(id_claims.as_ref(), "chatgpt_user_id")
         .or_else(|| claim_string(id_claims.as_ref(), "user_id"));
+    let access_user_id = claim_string(access_claims.as_ref(), "chatgpt_user_id")
+        .or_else(|| claim_string(access_claims.as_ref(), "user_id"));
+    // Team members share a workspace id. Matching workspaces alone must not
+    // let another member's access token enter this user's saved login.
+    // Opaque access tokens and JWTs without a user claim remain supported.
+    if let (Some(id_user), Some(access_user)) = (&user_id, &access_user_id) {
+        if id_user != access_user {
+            return LoginClass::Conflict;
+        }
+    }
     let account_id = claimed_account_ids[0].clone().or(file_account_id);
     match (user_id, account_id) {
         (Some(user_id), Some(account_id)) => LoginClass::Chatgpt(AccountIdentity {
@@ -420,6 +430,88 @@ mod tests {
     use super::test_support::{chatgpt_login, identity, jwt};
     use super::*;
     use serde_json::json;
+
+    fn team_login(id_user_claim: &str, access_user_claim: &str, access_user: &str) -> Value {
+        let mut login = chatgpt_login("a", "2026-09-27T12:00:00Z");
+        let mut id_claims = json!({
+            "https://api.openai.com/auth": {"chatgpt_account_id": "acct-team"}
+        });
+        id_claims["https://api.openai.com/auth"][id_user_claim] = json!("user-a");
+        let mut access_claims = json!({
+            "https://api.openai.com/auth": {"chatgpt_account_id": "acct-team"}
+        });
+        access_claims["https://api.openai.com/auth"][access_user_claim] = json!(access_user);
+        login["tokens"]["id_token"] = json!(jwt(id_claims));
+        login["tokens"]["access_token"] = json!(jwt(access_claims));
+        login["tokens"]["account_id"] = json!("acct-team");
+        login
+    }
+
+    #[test]
+    fn same_workspace_tokens_from_different_users_are_a_conflict() {
+        for id_claim in ["chatgpt_user_id", "user_id"] {
+            for access_claim in ["chatgpt_user_id", "user_id"] {
+                let login = team_login(id_claim, access_claim, "user-b");
+                assert_eq!(
+                    classify(&login),
+                    LoginClass::Conflict,
+                    "different users must be rejected for {id_claim}/{access_claim}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn same_workspace_matching_users_and_access_tokens_without_user_claims_are_supported() {
+        let expected = AccountIdentity {
+            user_id: "user-a".into(),
+            account_id: "acct-team".into(),
+        };
+        for id_claim in ["chatgpt_user_id", "user_id"] {
+            for access_claim in ["chatgpt_user_id", "user_id"] {
+                assert_eq!(
+                    classify(&team_login(id_claim, access_claim, "user-a")),
+                    LoginClass::Chatgpt(expected.clone())
+                );
+            }
+        }
+        let mut login = team_login("chatgpt_user_id", "chatgpt_user_id", "user-a");
+        for access_token in [
+            "opaque-access-token".to_string(),
+            jwt(json!({
+                "https://api.openai.com/auth": {"chatgpt_account_id": "acct-team"}
+            })),
+        ] {
+            login["tokens"]["access_token"] = json!(access_token);
+            assert_eq!(classify(&login), LoginClass::Chatgpt(expected.clone()));
+        }
+    }
+
+    #[test]
+    fn same_workspace_mixed_tokens_cannot_replace_a_saved_vault_login() {
+        use crate::codex_accounts::vault::{SlotSource, Vault};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = Vault::open_at(dir.path().join("vault")).unwrap();
+        let login = team_login("chatgpt_user_id", "chatgpt_user_id", "user-a");
+        let LoginClass::Chatgpt(account) = classify(&login) else {
+            panic!("matching team login should classify");
+        };
+        vault
+            .store_slot(&account, &login, SlotSource::Live)
+            .unwrap();
+        let mut mixed = team_login("chatgpt_user_id", "chatgpt_user_id", "user-b");
+        mixed["last_refresh"] = json!("2026-09-28T12:00:00Z");
+
+        assert!(vault
+            .store_slot(&account, &mixed, SlotSource::Live)
+            .is_err());
+        assert_eq!(
+            vault.read_slot(&account.key()).unwrap().unwrap().auth,
+            login
+        );
+        assert_eq!(vault.applicable_slot(&account.key()).unwrap().auth, login);
+    }
 
     // ACC-T1
     #[test]

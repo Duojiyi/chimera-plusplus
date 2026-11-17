@@ -1036,6 +1036,9 @@ fn thread_rows(db: CodexRuntimeDb) -> &'static [(&'static str, &'static str)] {
             ("thread_artifacts", "thread_id"),
             ("thread_spawn_edges", "parent_thread_id"),
             ("thread_spawn_edges", "child_thread_id"),
+            // Adapted from openai/codex 0ada5d8806cdad498230d5b1b2924091e04c8feb
+            // (Apache-2.0, modified): receipts have no FK cascade; delete before threads.
+            ("thread_read_receipts", "thread_id"),
             ("threads", "id"),
         ],
     }
@@ -2862,6 +2865,203 @@ mod tests {
 
     fn rollout_name(id: &str, extension: &str) -> String {
         format!("rollout-2026-03-06T21-50-12-{id}.{extension}")
+    }
+
+    // Stable Codex rust-v0.169.0 migration 0061, from openai/codex
+    // 0ada5d8806cdad498230d5b1b2924091e04c8feb (Apache-2.0).
+    // Keep STATE_SCHEMA unchanged to retain coverage of older databases.
+    const READ_RECEIPTS_SCHEMA: &str = "
+        CREATE TABLE thread_read_receipts (
+            thread_id TEXT PRIMARY KEY NOT NULL,
+            first_unread_turn TEXT,
+            revision TEXT NOT NULL,
+            last_published_turn TEXT
+        );
+    ";
+
+    fn state_with_read_receipts(home: &Path, ids: &[&str]) -> Connection {
+        create_runtime_dbs(home, &[CodexRuntimeDb::State]);
+        let conn = Connection::open(home.join(CODEX_STATE_DB_FILENAME)).unwrap();
+        conn.execute_batch(READ_RECEIPTS_SCHEMA).unwrap();
+        for id in ids {
+            conn.execute(
+                "INSERT INTO threads (id, rollout_path, title) VALUES (?1, 'rollout.jsonl', 'keep title')",
+                [id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO thread_read_receipts VALUES (?1, 'unread-turn', 'revision-1', 'published-turn')",
+                [id],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    #[test]
+    fn codex_read_receipts_deletes_target_and_preserves_unrelated_state() {
+        let temp = tempdir().unwrap();
+        let conn = state_with_read_receipts(temp.path(), &[ROOT_ID, OTHER_ID]);
+        let ids = vec![ROOT_ID.to_string()];
+        assert!(tables_with_thread_rows(CodexRuntimeDb::State, &conn, &ids)
+            .unwrap()
+            .contains(&"thread_read_receipts"));
+
+        delete_thread_rows(
+            CodexRuntimeDb::State,
+            &temp.path().join(CODEX_STATE_DB_FILENAME),
+            &ids,
+        )
+        .unwrap();
+        assert!(tables_with_thread_rows(CodexRuntimeDb::State, &conn, &ids)
+            .unwrap()
+            .is_empty());
+        for (table, column) in [("threads", "id"), ("thread_read_receipts", "thread_id")] {
+            assert_eq!(
+                count_rows(temp.path(), CodexRuntimeDb::State, table, column, ROOT_ID),
+                0
+            );
+            assert_eq!(
+                count_rows(temp.path(), CodexRuntimeDb::State, table, column, OTHER_ID),
+                1
+            );
+        }
+        let preserved: (String, String, String, String) = conn
+            .query_row(
+                "SELECT threads.title, first_unread_turn, revision, last_published_turn
+             FROM threads JOIN thread_read_receipts ON thread_id = id WHERE id = ?1",
+                [OTHER_ID],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            preserved,
+            (
+                "keep title".to_string(),
+                "unread-turn".to_string(),
+                "revision-1".to_string(),
+                "published-turn".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn codex_read_receipts_detects_and_cleans_orphans_without_thread_row() {
+        let temp = tempdir().unwrap();
+        let conn = state_with_read_receipts(temp.path(), &[OTHER_ID]);
+        conn.execute(
+            "INSERT INTO thread_read_receipts VALUES (?1, NULL, 'orphan-revision', NULL)",
+            [ROOT_ID],
+        )
+        .unwrap();
+        let ids = vec![ROOT_ID.to_string()];
+        assert_eq!(
+            tables_with_thread_rows(CodexRuntimeDb::State, &conn, &ids).unwrap(),
+            vec!["thread_read_receipts"]
+        );
+
+        delete_thread_rows(
+            CodexRuntimeDb::State,
+            &temp.path().join(CODEX_STATE_DB_FILENAME),
+            &ids,
+        )
+        .unwrap();
+        assert!(tables_with_thread_rows(CodexRuntimeDb::State, &conn, &ids)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            count_rows(
+                temp.path(),
+                CodexRuntimeDb::State,
+                "thread_read_receipts",
+                "thread_id",
+                OTHER_ID
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn codex_read_receipts_legacy_database_without_table_still_deletes() {
+        let temp = tempdir().unwrap();
+        create_runtime_dbs(temp.path(), &[CodexRuntimeDb::State]);
+        let conn = Connection::open(temp.path().join(CODEX_STATE_DB_FILENAME)).unwrap();
+        assert!(!has_column(&conn, "thread_read_receipts", "thread_id").unwrap());
+        for id in [ROOT_ID, OTHER_ID] {
+            conn.execute(
+                "INSERT INTO threads VALUES (?1, 'rollout.jsonl', 'title')",
+                [id],
+            )
+            .unwrap();
+        }
+        let ids = vec![ROOT_ID.to_string()];
+        delete_thread_rows(
+            CodexRuntimeDb::State,
+            &temp.path().join(CODEX_STATE_DB_FILENAME),
+            &ids,
+        )
+        .unwrap();
+        assert!(tables_with_thread_rows(CodexRuntimeDb::State, &conn, &ids)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            count_rows(
+                temp.path(),
+                CodexRuntimeDb::State,
+                "threads",
+                "id",
+                OTHER_ID
+            ),
+            1
+        );
+        assert!(!has_column(&conn, "thread_read_receipts", "thread_id").unwrap());
+    }
+
+    #[test]
+    fn codex_read_receipts_batch_failure_rolls_back_and_can_retry() {
+        let temp = tempdir().unwrap();
+        let conn = state_with_read_receipts(temp.path(), &[ROOT_ID, CHILD_ID, OTHER_ID]);
+        conn.execute_batch(&format!(
+            "CREATE TRIGGER reject_child_delete BEFORE DELETE ON threads
+             WHEN OLD.id = '{CHILD_ID}' BEGIN
+                 SELECT RAISE(ABORT, 'blocked child delete');
+             END;"
+        ))
+        .unwrap();
+        let ids = vec![ROOT_ID.to_string(), CHILD_ID.to_string()];
+        let db_path = temp.path().join(CODEX_STATE_DB_FILENAME);
+        let error = delete_thread_rows(CodexRuntimeDb::State, &db_path, &ids).unwrap_err();
+        assert!(error.contains("blocked child delete"), "{error}");
+        for (table, column) in [("threads", "id"), ("thread_read_receipts", "thread_id")] {
+            for id in [ROOT_ID, CHILD_ID, OTHER_ID] {
+                assert_eq!(
+                    count_rows(temp.path(), CodexRuntimeDb::State, table, column, id),
+                    1
+                );
+            }
+        }
+        assert!(tables_with_thread_rows(CodexRuntimeDb::State, &conn, &ids)
+            .unwrap()
+            .contains(&"thread_read_receipts"));
+
+        conn.execute_batch("DROP TRIGGER reject_child_delete")
+            .unwrap();
+        delete_thread_rows(CodexRuntimeDb::State, &db_path, &ids).unwrap();
+        assert!(tables_with_thread_rows(CodexRuntimeDb::State, &conn, &ids)
+            .unwrap()
+            .is_empty());
+        for (table, column) in [("threads", "id"), ("thread_read_receipts", "thread_id")] {
+            for id in [ROOT_ID, CHILD_ID] {
+                assert_eq!(
+                    count_rows(temp.path(), CodexRuntimeDb::State, table, column, id),
+                    0
+                );
+            }
+            assert_eq!(
+                count_rows(temp.path(), CodexRuntimeDb::State, table, column, OTHER_ID),
+                1
+            );
+        }
     }
 
     #[test]

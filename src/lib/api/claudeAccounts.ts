@@ -137,6 +137,8 @@ export interface ClaudeDesktopSwapStatus {
   supported: boolean;
   /** Claude Desktop has its data open. */
   running: boolean;
+  /** The official login may stay cached while an API route is active. */
+  apiMode?: boolean;
   signedIn: boolean;
   accountUuid?: string | null;
   /** The saved login Desktop is signed in as, when it is one. */
@@ -152,6 +154,10 @@ export interface ClaudeDesktopSwapOutcome {
   restarted: boolean;
   savedOutgoingFor?: string | null;
   stashedOutgoing: boolean;
+}
+
+export interface ClaudeDesktopImportOutcome extends ClaudeDesktopSwapOutcome {
+  account?: ClaudeCodeAccount | null;
 }
 
 /** Written by an export: the file holds live tokens. */
@@ -177,7 +183,7 @@ export interface ClaudeLoginImportReport {
 }
 
 export type ClaudeBrowserLoginPoll =
-  | { state: "waiting" }
+  | { state: "waiting"; authorizationUrl?: string | null }
   | { state: "done"; account: ClaudeCodeAccount; created: boolean }
   | { state: "failed"; message: string }
   /** Finished, cancelled, or the app restarted. */
@@ -236,6 +242,7 @@ export interface ClaudeDesktopProfile {
 
 /** A Claude Desktop account's plan and quota, read with its own sign-in. */
 export interface ClaudeDesktopQuota {
+  accountUuid?: string | null;
   email?: string | null;
   plan?: string | null;
   quota: ClaudeQuota;
@@ -370,6 +377,27 @@ export const claudeAccountsApi = {
       closeDesktop,
     }),
 
+  /** Imports the detected Desktop identity and captures its sign-in together. */
+  importDesktopLogin: (
+    expectedAccountUuid: string,
+    email: string | null,
+    closeDesktop = false,
+  ): Promise<ClaudeDesktopImportOutcome> =>
+    invoke<ClaudeDesktopImportOutcome>("import_claude_desktop_login", {
+      expectedAccountUuid,
+      email,
+      closeDesktop,
+    }),
+
+  desktopAccountQuota: (
+    id: string,
+    force = false,
+  ): Promise<ClaudeDesktopQuota> =>
+    invoke<ClaudeDesktopQuota>("get_claude_desktop_account_quota", {
+      id,
+      force,
+    }),
+
   /** Opens a save dialog; `null` when it was cancelled. `ids` limits the export. */
   exportLogins: (ids?: string[]): Promise<ClaudeLoginExport | null> =>
     invoke<ClaudeLoginExport | null>("export_claude_logins", {
@@ -386,6 +414,9 @@ export const claudeAccountsApi = {
 
   pollBrowserLogin: (id: string): Promise<ClaudeBrowserLoginPoll> =>
     invoke<ClaudeBrowserLoginPoll>("poll_claude_browser_login", { id }),
+
+  submitBrowserCallback: (id: string, input: string): Promise<void> =>
+    invoke<void>("submit_claude_browser_callback", { id, input }),
 
   cancelBrowserLogin: (id: string): Promise<void> =>
     invoke<void>("cancel_claude_browser_login", { id }),

@@ -444,14 +444,14 @@ async fn profile_apply_reports_dangling_references_and_continues() {
         "m1 enabled despite warnings"
     );
 
-    // best-effort 完成后仍标记为所属分组的当前项目
+    // 部分应用失败时不绑定当前项目，防止下一次自动保存覆盖目标快照。
     assert_eq!(
         state
             .db
             .get_current_profile_id("claude")
             .expect("get current profile id")
             .as_deref(),
-        Some("dangling-test")
+        None
     );
 }
 
@@ -940,4 +940,290 @@ async fn concurrent_profile_apply_finishes_as_one_complete_profile() {
             "Live settings must match the profile recorded as current"
         );
     }
+}
+
+fn save_profile_payload(
+    state: &chimera_plus_plus_lib::AppState,
+    id: &str,
+    payload: serde_json::Value,
+) -> chimera_plus_plus_lib::Profile {
+    let profile = chimera_plus_plus_lib::Profile {
+        id: id.to_string(),
+        name: id.to_string(),
+        payload: payload.to_string(),
+        sort_order: None,
+        created_at: Some(1_000),
+        updated_at: Some(1_000),
+    };
+    state
+        .db
+        .save_profile(&profile)
+        .expect("save profile fixture");
+    profile
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn profile_regression_empty_prompt_restores_claude_flags_and_live_file() {
+    reset_test_fs();
+    let home = ensure_test_home();
+    let state = create_test_state().expect("create test state");
+    state
+        .db
+        .save_prompt("claude", &prompt("rules", false))
+        .unwrap();
+    let empty = ProfileService::create(&state, "No prompt", ProfileScope::Claude).unwrap();
+    let payload: ProfilePayload = serde_json::from_str(&empty.payload).unwrap();
+    assert_eq!(payload.prompts.claude, None);
+    assert!(payload.scope_captured(ProfileScope::Claude));
+
+    PromptService::enable_prompt(&state, AppType::Claude, "rules").unwrap();
+    let enabled = ProfileService::create(&state, "With prompt", ProfileScope::Claude).unwrap();
+    let (warnings, _) = ProfileService::apply(&state, &enabled.id, ProfileScope::Claude)
+        .await
+        .unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let live = home.join(".claude").join("CLAUDE.md");
+    assert_eq!(fs::read_to_string(&live).unwrap(), "# prompt rules\n");
+
+    let (warnings, _) = ProfileService::apply(&state, &empty.id, ProfileScope::Claude)
+        .await
+        .unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(state
+        .db
+        .get_prompts("claude")
+        .unwrap()
+        .values()
+        .all(|p| !p.enabled));
+    assert_eq!(fs::read_to_string(&live).unwrap(), "");
+    assert_eq!(
+        state
+            .db
+            .get_current_profile_id("claude")
+            .unwrap()
+            .as_deref(),
+        Some(empty.id.as_str())
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn profile_regression_empty_prompt_disables_all_codex_entries_preserving_user_text() {
+    reset_test_fs();
+    let home = ensure_test_home();
+    let state = create_test_state().expect("create test state");
+    let live = home.join(".codex").join("AGENTS.md");
+    fs::create_dir_all(live.parent().unwrap()).unwrap();
+    let user_text = "# User instructions\r\nKeep these bytes.\r\n";
+    fs::write(&live, user_text).unwrap();
+    for id in ["one", "two"] {
+        state.db.save_prompt("codex", &prompt(id, false)).unwrap();
+    }
+    let empty = ProfileService::create(&state, "No Codex prompt", ProfileScope::Codex).unwrap();
+    for id in ["one", "two"] {
+        PromptService::set_prompt_enabled(&state, AppType::Codex, id, true).unwrap();
+    }
+    assert_eq!(
+        state
+            .db
+            .get_prompts("codex")
+            .unwrap()
+            .values()
+            .filter(|p| p.enabled)
+            .count(),
+        2
+    );
+    assert!(fs::read_to_string(&live).unwrap().contains("# prompt two"));
+
+    let (warnings, _) = ProfileService::apply(&state, &empty.id, ProfileScope::Codex)
+        .await
+        .unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(state
+        .db
+        .get_prompts("codex")
+        .unwrap()
+        .values()
+        .all(|p| !p.enabled));
+    assert_eq!(fs::read(&live).unwrap(), user_text.as_bytes());
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn profile_regression_uncaptured_prompt_scope_keeps_live_prompt() {
+    reset_test_fs();
+    let home = ensure_test_home();
+    let state = create_test_state().expect("create test state");
+    let codex_only = ProfileService::create(&state, "Codex only", ProfileScope::Codex).unwrap();
+    state
+        .db
+        .save_prompt("claude", &prompt("rules", false))
+        .unwrap();
+    PromptService::enable_prompt(&state, AppType::Claude, "rules").unwrap();
+    let live = home.join(".claude").join("CLAUDE.md");
+    let before = fs::read(&live).unwrap();
+
+    let (warnings, _) = ProfileService::apply(&state, &codex_only.id, ProfileScope::Claude)
+        .await
+        .unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("no claude configuration captured"));
+    assert!(state.db.get_prompts("claude").unwrap()["rules"].enabled);
+    assert_eq!(fs::read(&live).unwrap(), before);
+    assert_eq!(
+        state
+            .db
+            .get_current_profile_id("claude")
+            .unwrap()
+            .as_deref(),
+        Some(codex_only.id.as_str())
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn profile_regression_missing_prompt_slots_keep_live_prompt() {
+    reset_test_fs();
+    let home = ensure_test_home();
+    let state = create_test_state().expect("create test state");
+    state
+        .db
+        .save_prompt("claude", &prompt("rules", false))
+        .unwrap();
+    PromptService::enable_prompt(&state, AppType::Claude, "rules").unwrap();
+    let live = home.join(".claude").join("CLAUDE.md");
+    let before = fs::read(&live).unwrap();
+
+    for (id, payload) in [
+        (
+            "missing-field",
+            json!({"mcp": {"claude": []}, "skills": {"claude": []}}),
+        ),
+        (
+            "missing-app",
+            json!({"mcp": {"claude": []}, "skills": {"claude": []}, "prompts": {"codex": null}}),
+        ),
+    ] {
+        let profile = save_profile_payload(&state, id, payload);
+        let (warnings, _) = ProfileService::apply(&state, &profile.id, ProfileScope::Claude)
+            .await
+            .unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(state.db.get_prompts("claude").unwrap()["rules"].enabled);
+        assert_eq!(fs::read(&live).unwrap(), before);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn profile_regression_partial_apply_does_not_autosave_over_either_snapshot() {
+    reset_test_fs();
+    let home = ensure_test_home();
+    let state = create_test_state().expect("create test state");
+    for id in ["old-rules", "new-rules"] {
+        state.db.save_prompt("claude", &prompt(id, false)).unwrap();
+    }
+    PromptService::enable_prompt(&state, AppType::Claude, "old-rules").unwrap();
+    let original = ProfileService::create(&state, "Original", ProfileScope::Claude).unwrap();
+    let (warnings, _) = ProfileService::apply(&state, &original.id, ProfileScope::Claude)
+        .await
+        .unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let failed = save_profile_payload(
+        &state,
+        "failed",
+        json!({
+            "providers": {"claude": "missing-provider"},
+            "mcp": {"claude": []},
+            "skills": {"claude": []},
+            "prompts": {"claude": "new-rules"}
+        }),
+    );
+    state
+        .db
+        .set_current_profile_id("codex", Some(&original.id))
+        .unwrap();
+
+    let (warnings, _) = ProfileService::apply(&state, &failed.id, ProfileScope::Claude)
+        .await
+        .unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("missing-provider"));
+    assert!(state.db.get_prompts("claude").unwrap()["new-rules"].enabled);
+    assert_eq!(
+        fs::read_to_string(home.join(".claude").join("CLAUDE.md")).unwrap(),
+        "# prompt new-rules\n"
+    );
+    assert_eq!(state.db.get_current_profile_id("claude").unwrap(), None);
+    assert_eq!(
+        state.db.get_current_profile_id("codex").unwrap().as_deref(),
+        Some(original.id.as_str())
+    );
+
+    let (warnings, _) = ProfileService::apply(&state, &original.id, ProfileScope::Claude)
+        .await
+        .unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(
+        state.db.get_profile(&failed.id).unwrap().unwrap().payload,
+        failed.payload
+    );
+    assert_eq!(
+        state.db.get_profile(&original.id).unwrap().unwrap().payload,
+        original.payload
+    );
+    assert!(state.db.get_prompts("claude").unwrap()["old-rules"].enabled);
+    assert_eq!(
+        state
+            .db
+            .get_current_profile_id("claude")
+            .unwrap()
+            .as_deref(),
+        Some(original.id.as_str())
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn profile_regression_empty_prompt_write_failure_keeps_flags_and_snapshot() {
+    reset_test_fs();
+    let home = ensure_test_home();
+    let state = create_test_state().expect("create test state");
+    state
+        .db
+        .save_prompt("claude", &prompt("rules", false))
+        .unwrap();
+    let empty = ProfileService::create(&state, "No prompt", ProfileScope::Claude).unwrap();
+    PromptService::enable_prompt(&state, AppType::Claude, "rules").unwrap();
+    let enabled = ProfileService::create(&state, "With prompt", ProfileScope::Claude).unwrap();
+    let (warnings, _) = ProfileService::apply(&state, &enabled.id, ProfileScope::Claude)
+        .await
+        .unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let live = home.join(".claude").join("CLAUDE.md");
+    let before = fs::read(&live).unwrap();
+    fs::remove_file(&live).unwrap();
+    fs::create_dir(&live).unwrap(); // Deterministic I/O failure on every supported OS.
+
+    let (warnings, _) = ProfileService::apply(&state, &empty.id, ProfileScope::Claude)
+        .await
+        .unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("prompt 'rules'"));
+    assert!(state.db.get_prompts("claude").unwrap()["rules"].enabled);
+    assert!(live.is_dir());
+    assert_eq!(state.db.get_current_profile_id("claude").unwrap(), None);
+
+    fs::remove_dir(&live).unwrap();
+    fs::write(&live, &before).unwrap();
+    let (warnings, _) = ProfileService::apply(&state, &enabled.id, ProfileScope::Claude)
+        .await
+        .unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(
+        state.db.get_profile(&empty.id).unwrap().unwrap().payload,
+        empty.payload
+    );
+    assert_eq!(fs::read(&live).unwrap(), before);
 }

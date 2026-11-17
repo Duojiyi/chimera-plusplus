@@ -5,12 +5,14 @@
 //! --claudeai` runs with its own private `CLAUDE_CONFIG_DIR`, so the live
 //! `~/.claude` login is neither read nor written while the browser flow runs.
 //! The CLI does the OAuth itself (it opens the browser, listens for the
-//! callback, and asks for the pasted login code in its console window when
-//! the callback cannot reach it). When it exits, the two files it wrote are
+//! callback, and accepts a pasted login code on stdin when the callback cannot
+//! reach it). The app captures the public link and bridges manual input. When it exits, the two files it wrote are
 //! validated and the login is stored in the vault like any other, and the
 //! staging folder is scrubbed. Nothing here handles an OAuth client or code.
 
-use std::process::{Child, Command};
+use std::io::{Read, Write};
+use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::transfer::valid_oauth;
@@ -35,8 +37,11 @@ const CLI_ENV: &str = "CHIMERA_LOGIN_CLI";
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum LoginPoll {
-    /// The browser (or the console window) is still waiting for the user.
-    Waiting,
+    /// The CLI is waiting for the browser callback or a manually pasted code.
+    Waiting {
+        #[serde(rename = "authorizationUrl")]
+        authorization_url: Option<String>,
+    },
     Done {
         account: CodeAccountDto,
         /// False when the account was already saved and only got fresh tokens.
@@ -54,6 +59,8 @@ struct Flow {
     dir: PathBuf,
     child: Child,
     started: Instant,
+    output: Arc<Mutex<String>>,
+    submitted: bool,
 }
 
 static FLOW: Mutex<Option<Flow>> = Mutex::new(None);
@@ -179,11 +186,11 @@ fn probe_script() -> String {
     format!("\"%{CLI_ENV}%\" auth login --help")
 }
 
-/// `start /wait` gives the CLI a console window of its own, which the user
-/// needs for pasting the login code, while this process waits for it to end.
+/// Run the official non-interactive login command with piped input/output.
+/// No shell interpolation of user input; manual codes go only through stdin.
 #[cfg(windows)]
 fn login_script() -> String {
-    format!("start \"Claude Login\" /wait \"%{CLI_ENV}%\" auth login {LOGIN_FLAG}")
+    format!("\"%{CLI_ENV}%\" auth login {LOGIN_FLAG}")
 }
 
 #[cfg(windows)]
@@ -202,6 +209,10 @@ fn probe_command(_cli: &Path, _dir: &Path) -> Result<Command, AppError> {
 fn login_command(cli: &Path, dir: &Path) -> Result<Command, AppError> {
     let mut command = cmd_script(cli, &login_script());
     prepare_env(&mut command, dir);
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     Ok(command)
 }
 
@@ -304,14 +315,9 @@ pub(crate) fn begin(vault: &CodeVault, cli: &Path) -> Result<String, AppError> {
         return Err(unsupported());
     }
     let mut flow = FLOW.lock()?;
-    if let Some(running) = flow.as_mut() {
-        if matches!(running.child.try_wait(), Ok(None)) {
-            return Ok(running.id.clone());
-        }
-        if let Some(mut finished) = flow.take() {
-            stop(&mut finished.child);
-            remove_staging(vault, &finished.dir);
-        }
+    if let Some(mut previous) = flow.take() {
+        stop(&mut previous.child);
+        remove_staging(vault, &previous.dir);
     }
     sweep_orphans(vault, None);
     let (id, dir) = new_staging(vault)?;
@@ -323,12 +329,21 @@ pub(crate) fn begin(vault: &CodeVault, cli: &Path) -> Result<String, AppError> {
                 .map_err(|_| AppError::Message("无法启动 Claude Code 的授权登录。".to_string()))
         });
     match started {
-        Ok(child) => {
+        Ok(mut child) => {
+            let output = Arc::new(Mutex::new(String::new()));
+            if let Some(stdout) = child.stdout.take() {
+                capture_output(stdout, output.clone());
+            }
+            if let Some(stderr) = child.stderr.take() {
+                capture_output(stderr, output.clone());
+            }
             *flow = Some(Flow {
                 id: id.clone(),
                 dir,
                 child,
                 started: Instant::now(),
+                output,
+                submitted: false,
             });
             Ok(id)
         }
@@ -339,13 +354,96 @@ pub(crate) fn begin(vault: &CodeVault, cli: &Path) -> Result<String, AppError> {
     }
 }
 
+/// Capture only a bounded amount of CLI text. It is never logged or returned.
+fn capture_output(mut source: impl Read + Send + 'static, output: Arc<Mutex<String>>) {
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 4096];
+        while let Ok(read) = source.read(&mut buffer) {
+            if read == 0 {
+                break;
+            }
+            let Ok(mut text) = output.lock() else {
+                break;
+            };
+            if text.len() < PROBE_OUTPUT_BYTES {
+                text.push_str(&String::from_utf8_lossy(&buffer[..read]));
+            }
+        }
+    });
+}
+
+fn parse_authorization_url(output: &str) -> Option<String> {
+    let text = crate::oauth_callback::plain_terminal_text(output);
+    text.split_inclusive(char::is_whitespace)
+        .filter(|word| word.ends_with(char::is_whitespace))
+        .find_map(|word| {
+            let url = url::Url::parse(word.trim()).ok()?;
+            (url.scheme() == "https"
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.port_or_known_default() == Some(443)
+                && url.fragment().is_none()
+                && matches!(
+                    url.host_str(),
+                    Some("claude.ai" | "platform.claude.com" | "console.anthropic.com")
+                )
+                && url.path() == "/oauth/authorize"
+                && url
+                    .query_pairs()
+                    .any(|(name, value)| name == "state" && !value.is_empty()))
+            .then(|| url.to_string())
+        })
+}
+
+fn authorization_url(flow: &Flow) -> Option<String> {
+    flow.output
+        .lock()
+        .ok()
+        .and_then(|output| parse_authorization_url(&output))
+}
+
+pub(crate) fn submit_callback(id: &str, input: &str) -> Result<(), AppError> {
+    let mut slot = FLOW.lock()?;
+    let flow = slot
+        .as_mut()
+        .filter(|flow| flow.id == id)
+        .ok_or_else(|| AppError::Message("这次授权已结束，请重新开始。".to_string()))?;
+    if flow.started.elapsed() >= FLOW_TIMEOUT || !matches!(flow.child.try_wait(), Ok(None)) {
+        return Err(AppError::Message(
+            "这次授权已结束，请重新开始。".to_string(),
+        ));
+    }
+    let url = authorization_url(flow)
+        .ok_or_else(|| AppError::Message("授权链接还在准备中，请稍后再试。".to_string()))?;
+    let code = crate::oauth_callback::manual_code(input, &url)?;
+    if flow.submitted {
+        return Err(AppError::Message(
+            "授权结果已提交，正在等待确认；如需重试，请重新开始。".to_string(),
+        ));
+    }
+    let stdin = flow
+        .child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| AppError::Message("授权输入通道已关闭，请重新开始。".to_string()))?;
+    writeln!(stdin, "{code}")
+        .and_then(|()| stdin.flush())
+        .map_err(|_| AppError::Message("无法提交授权结果，请重新开始。".to_string()))?;
+    flow.submitted = true;
+    Ok(())
+}
+
 pub(crate) fn poll(vault: &CodeVault, id: &str) -> Result<LoginPoll, AppError> {
     let mut slot = FLOW.lock()?;
     let Some(flow) = slot.as_mut().filter(|flow| flow.id == id) else {
         return Ok(LoginPoll::Unknown);
     };
     match flow.child.try_wait() {
-        Ok(None) if flow.started.elapsed() < FLOW_TIMEOUT => return Ok(LoginPoll::Waiting),
+        Ok(None) if flow.started.elapsed() < FLOW_TIMEOUT => {
+            return Ok(LoginPoll::Waiting {
+                authorization_url: authorization_url(flow),
+            })
+        }
         Ok(None) => {
             if let Some(mut expired) = slot.take() {
                 stop(&mut expired.child);
@@ -522,7 +620,7 @@ mod tests {
         assert_eq!(probe_script(), "\"%CHIMERA_LOGIN_CLI%\" auth login --help");
         assert_eq!(
             login_script(),
-            "start \"Claude Login\" /wait \"%CHIMERA_LOGIN_CLI%\" auth login --claudeai"
+            "\"%CHIMERA_LOGIN_CLI%\" auth login --claudeai"
         );
         let hostile = Path::new(r"C:\Program Files\a&b %PATH%\claude.cmd");
         let command = cmd_script(hostile, &login_script());
@@ -550,5 +648,108 @@ mod tests {
             LoginPoll::Unknown
         ));
         cancel(&f.vault, "flow-nope").unwrap();
+    }
+    #[test]
+    fn authorization_links_are_complete_official_urls_without_terminal_decoration() {
+        let address = "https://claude.ai/oauth/authorize?state=current&code_challenge=challenge";
+        assert!(parse_authorization_url(address).is_none(), "partial output");
+        assert_eq!(
+            parse_authorization_url(&format!("Open: \x1b[94m{address}\x1b[0m\n")),
+            Some(address.to_string())
+        );
+        assert_eq!(
+            parse_authorization_url(&format!("\x1b]8;;{address}\x07{address}\x1b]8;;\x07\n")),
+            Some(address.to_string())
+        );
+        for invalid in [
+            address.replace("https:", "http:"),
+            address.replace("claude.ai", "claude.ai.evil.test"),
+            address.replace("claude.ai", "user@claude.ai"),
+            address.replace("claude.ai", "claude.ai:444"),
+            address.replace("/oauth/authorize", "/other"),
+            address.replace("state=current", "state="),
+        ] {
+            assert!(parse_authorization_url(&format!("{invalid}\n")).is_none());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn manual_browser_login_bridges_stdin_and_cancels_only_the_matching_flow() {
+        let f = fixture();
+        struct Cleanup<'a>(&'a CodeVault);
+        impl Drop for Cleanup<'_> {
+            fn drop(&mut self) {
+                if let Ok(mut slot) = FLOW.lock() {
+                    if let Some(mut flow) = slot.take() {
+                        stop(&mut flow.child);
+                        remove_staging(self.0, &flow.dir);
+                    }
+                }
+            }
+        }
+        let _cleanup = Cleanup(&f.vault);
+        let cli = f.vault.root.join("stand-in.cmd");
+        ensure_private_dir(&f.vault.root).unwrap();
+        fs::write(
+            &cli,
+            concat!(
+                "@echo off\r\n",
+                "if \"%~3\"==\"--help\" (echo --claudeai & exit /b 0)\r\n",
+                "echo https://claude.ai/oauth/authorize?state=current\r\n",
+                "set /p \"code=\"\r\n",
+                ">received.txt echo %code%\r\n",
+                ":wait\r\n",
+                "if not exist finish goto wait\r\n"
+            ),
+        )
+        .unwrap();
+        let first = begin(&f.vault, &cli).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if matches!(
+                poll(&f.vault, &first).unwrap(),
+                LoginPoll::Waiting {
+                    authorization_url: Some(_)
+                }
+            ) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "authorization link never appeared"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let dir = FLOW.lock().unwrap().as_ref().unwrap().dir.clone();
+        assert!(submit_callback(&first, "code#stale").is_err());
+        assert!(!dir.join("received.txt").exists());
+        submit_callback(&first, "code#current").unwrap();
+        assert!(
+            submit_callback(&first, "code#current").is_err(),
+            "duplicate input"
+        );
+        loop {
+            if fs::read_to_string(dir.join("received.txt"))
+                .is_ok_and(|text| text.trim() == "code#current")
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "CLI did not receive the code");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let second = begin(&f.vault, &cli).unwrap();
+        assert_ne!(first, second);
+        assert!(!dir.exists());
+        cancel(&f.vault, &first).unwrap();
+        assert!(submit_callback(&first, "code#current").is_err());
+        assert!(matches!(
+            poll(&f.vault, &second).unwrap(),
+            LoginPoll::Waiting { .. }
+        ));
+        let second_dir = FLOW.lock().unwrap().as_ref().unwrap().dir.clone();
+        cancel(&f.vault, &second).unwrap();
+        assert!(!second_dir.exists());
+        assert!(submit_callback(&second, "code#current").is_err());
     }
 }

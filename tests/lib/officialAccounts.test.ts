@@ -16,6 +16,17 @@ const account: OfficialAccountDto = {
 };
 beforeEach(() => vi.mocked(invoke).mockReset());
 describe("official account login contract", () => {
+  it("routes pasted browser callbacks to the active native flow", async () => {
+    const input = "http://localhost:1455/auth/callback?code=test&state=current";
+    await officialAccountsApi.submitBrowserCallback("flow-current", input);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(
+      "submit_official_browser_callback",
+      {
+        flowId: "flow-current",
+        input,
+      },
+    );
+  });
   it.each([
     ["startBrowserLogin", "start_official_browser_login"],
     ["startDeviceLogin", "start_official_device_login"],
@@ -30,6 +41,22 @@ describe("official account login contract", () => {
     await expect(officialAccountsApi[method]()).resolves.toBe(started);
     expect(invoke).toHaveBeenCalledExactlyOnceWith(command);
   });
+});
+
+describe("official account local import contract", () => {
+  it.each([undefined, "", "Work account"])(
+    "saves the current local login with name %s",
+    async (name) => {
+      vi.mocked(invoke).mockResolvedValueOnce("saved-vault-key");
+      await expect(officialAccountsApi.saveCurrentLogin(name)).resolves.toBe(
+        "saved-vault-key",
+      );
+      expect(invoke).toHaveBeenCalledExactlyOnceWith(
+        "save_current_official_login",
+        { name: name || null },
+      );
+    },
+  );
 });
 
 describe("official account switch contract", () => {

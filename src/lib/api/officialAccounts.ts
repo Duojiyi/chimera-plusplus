@@ -101,6 +101,13 @@ export const officialAccountsApi = {
     return invoke<PollLoginDto>("poll_official_device_login", { flowId });
   },
 
+  submitBrowserCallback: async (
+    flowId: string,
+    input: string,
+  ): Promise<void> => {
+    return invoke<void>("submit_official_browser_callback", { flowId, input });
+  },
+
   cancelDeviceLogin: async (flowId: string): Promise<void> => {
     return invoke<void>("cancel_official_device_login", { flowId });
   },

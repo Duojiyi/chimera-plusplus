@@ -527,8 +527,8 @@ const toolViews: Array<[View, string]> = [
  * the tool the app opens on.
  */
 const workspaceViews: View[] = [
-  // 官方账号 is the second tab of 线路 (LinesAccountsTabs), not its own item.
   "providers",
+  "official-accounts",
   "prompts",
   "skills-mcp",
   "usage",
@@ -2746,8 +2746,7 @@ export default function ChimeraApp({
     setView(target);
   };
 
-  /** `sub`: shown as part of the item above it (官方账号 under 线路). */
-  const renderNavItem = (id: View, sub = false) => {
+  const renderNavItem = (id: View) => {
     const label = viewLabels[id];
     const Icon = navIconFor(id);
     const active = view === id;
@@ -2761,7 +2760,7 @@ export default function ChimeraApp({
         aria-current={active ? "page" : undefined}
         title={available ? undefined : `${label}：此版本未开放`}
         data-pencil-name={`能力 · ${label}`}
-        className={sub ? "v3-nav-item is-sub" : "v3-nav-item"}
+        className="v3-nav-item"
       >
         <Icon size={15} aria-hidden="true" className="v3-nav-icon" />
         <span className="v3-nav-text">{label}</span>
@@ -2798,9 +2797,7 @@ export default function ChimeraApp({
           resources ? `管理 ${currentToolName} 的 Skills 与 MCP` : undefined
         }
         data-pencil-name={`分区 · ${item.label}`}
-        className={
-          item.id === "accounts" ? "v3-nav-item is-sub" : "v3-nav-item"
-        }
+        className="v3-nav-item"
       >
         <Icon size={15} aria-hidden="true" className="v3-nav-icon" />
         <span className="v3-nav-text">{item.label}</span>
@@ -2969,8 +2966,7 @@ export default function ChimeraApp({
             {toolSectionList ? (
               <div className="v3-nav-group">
                 <div className="v3-nav-group-label">工作区</div>
-                {/* 提示词 sits right after the tool's lines, as in Codex. */}
-                {/* 官方账号 is part of 线路: a sub-item right under it. */}
+                {/* Accounts and prompts are peer sections after lines, as in Codex. */}
                 {toolSectionList
                   .flatMap((item, index) =>
                     index === 0
@@ -3003,14 +2999,7 @@ export default function ChimeraApp({
               <>
                 <div className="v3-nav-group">
                   <div className="v3-nav-group-label">工作区</div>
-                  {workspaceViews.flatMap((id) =>
-                    id === "providers"
-                      ? [
-                          renderNavItem(id),
-                          renderNavItem("official-accounts", true),
-                        ]
-                      : [renderNavItem(id)],
-                  )}
+                  {workspaceViews.map((id) => renderNavItem(id))}
                 </div>
 
                 <div className="v3-nav-group">
@@ -3244,7 +3233,7 @@ export default function ChimeraApp({
                 key={promptsTool ? promptsAppId : "codex"}
                 initialApp={promptsTool ? promptsAppId : "codex"}
                 refreshVersion={providerRefreshVersion}
-                visibleApps={toolSettings?.visibleApps ?? {}}
+                visibleApps={toolSettings?.visibleApps}
               />
             )}
             {view === "skills-mcp" && (

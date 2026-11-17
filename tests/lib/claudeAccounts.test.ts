@@ -72,6 +72,11 @@ describe("Claude accounts command contract", () => {
       undefined,
     ],
     [
+      () => claudeAccountsApi.submitBrowserCallback("flow-1", "code#state"),
+      "submit_claude_browser_callback",
+      { id: "flow-1", input: "code#state" },
+    ],
+    [
       () => claudeAccountsApi.pollBrowserLogin("flow-1"),
       "poll_claude_browser_login",
       { id: "flow-1" },
@@ -152,6 +157,25 @@ describe("Claude accounts command contract", () => {
       () => claudeAccountsApi.switchDesktop("a1", true),
       "switch_claude_desktop_account",
       { id: "a1", closeDesktop: true },
+    ],
+    [
+      () => claudeAccountsApi.importDesktopLogin("uuid-a", "a@example.com"),
+      "import_claude_desktop_login",
+      {
+        expectedAccountUuid: "uuid-a",
+        email: "a@example.com",
+        closeDesktop: false,
+      },
+    ],
+    [
+      () => claudeAccountsApi.importDesktopLogin("uuid-a", null, true),
+      "import_claude_desktop_login",
+      { expectedAccountUuid: "uuid-a", email: null, closeDesktop: true },
+    ],
+    [
+      () => claudeAccountsApi.desktopAccountQuota("a1", true),
+      "get_claude_desktop_account_quota",
+      { id: "a1", force: true },
     ],
     [
       () => claudeAccountsApi.listDesktop(),

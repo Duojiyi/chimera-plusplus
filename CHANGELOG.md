@@ -10,6 +10,28 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.1] - 2026-11-17
+
+### Changed
+
+- 官方账号成为 Codex、Claude Code 和 Claude Desktop 工具导航中的独立入口，与线路并列；统一账号卡片、添加入口、搜索筛选、状态反馈与小窗口布局。
+- 重新整理添加账号和浏览器授权窗口：提供关闭与取消操作，展示授权链接，支持复制链接、重新打开浏览器，以及手动提交 Claude 授权码或完整回调地址、Codex 完整回调地址。
+- 浏览器授权补充等待、提交、失败重试和取消状态；取消后忽略迟到的启动结果，避免重复提交或旧登录影响新流程。
+
+### Fixed
+
+- Claude Code 登录切换采用条件写入与回滚，避免覆盖其他进程刚刷新的凭据；Claude Desktop 切换保留本地会话与附件，失败时一并恢复，并优先恢复遗留的切换备份。
+- 修正同一工作区下不同 Codex 用户身份的识别、官方账号额度和重新登录反馈，以及 Gemini 显式 API 配置被账号推断覆盖的问题。
+- 修复配置方案恢复空提示词、部分应用失败后的当前方案绑定，以及 OMO 更新、切换和 OpenCode 配置写入失败时的回滚。
+- 改善 S3 兼容云服务的寻址与签名；同步和备份跳过失效的 skill 链接；Windows 原子配置替换支持长路径。
+- 删除 Codex 会话时同步清理读取回执并保留事务回滚；第三方 Responses 请求清理不受支持的私有字段，并归一化缺少 call_id 的工具输出。
+- 修复 Codex fork 会话的用量重复计费与重建边界，兼容父会话结束后的首次导入和重复扫描。
+
+### Security
+
+- 手动授权返回值绑定当前登录的 state；Codex 回调只发送到本次登录指定的本机地址，禁用代理与重定向。
+- 加强 SQL 备份导入的嵌套语句校验；更新内置 SQLite 和 OpenSSL 相关依赖以修复已披露的安全问题。
+
 ## [2.9.0] - 2026-11-12
 
 ### Changed

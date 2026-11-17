@@ -262,7 +262,7 @@
   margin-right: 4px;
 }
 
-/* Quota strip: two hairline meters, model chips, one quiet footer line. */
+/* Quota strip: consistent meters for time windows and models. */
 .claude-quota {
   display: flex;
   flex-direction: column;
@@ -328,28 +328,15 @@
   font-weight: 600;
 }
 .claude-quota-models {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
-.claude-quota-models li {
-  display: inline-flex;
-  gap: 4px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: var(--bg-subtle);
-  color: var(--text-2);
-  font-size: 11px;
-}
-.claude-quota-models li strong {
-  color: var(--text-1);
-  font-variant-numeric: tabular-nums;
-}
-.claude-quota-models li[data-reset] strong {
-  color: var(--success-fg);
+.claude-quota-models > li {
+  min-width: 0;
 }
 .claude-quota-extra {
   margin: 0;
@@ -403,6 +390,21 @@
   width: min(460px, calc(100vw - 48px));
   gap: 14px;
   padding: 22px;
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+}
+.claude-accounts-dialog-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.claude-accounts-dialog-heading > button {
+  flex-shrink: 0;
+}
+.claude-auth-dialog {
+  width: min(520px, calc(100vw - 48px));
+  max-width: 520px;
 }
 .claude-accounts-form {
   display: flex;
@@ -1100,4 +1102,229 @@
 }
 .claude-add-option small {
   color: var(--text-3);
+}
+
+/* Desktop accounts: one collection with clear identity, readiness and quota. */
+.claude-accounts-card[data-mode="desktop"] {
+  gap: 20px;
+  padding: 24px;
+  background: var(--bg-surface);
+  box-shadow: none;
+  border-color: var(--border-subtle);
+}
+.claude-accounts-card[data-mode="desktop"] .claude-accounts-heading {
+  align-items: center;
+}
+.claude-accounts-card[data-mode="desktop"] .claude-accounts-title h2 {
+  font-size: 18px;
+  letter-spacing: -0.3px;
+}
+.claude-accounts-card[data-mode="desktop"] .claude-accounts-title p {
+  margin-top: 5px;
+  font-size: 12px;
+}
+.claude-desktop-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 24px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.claude-desktop-summary > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.claude-desktop-summary strong {
+  color: var(--text-1);
+  font-size: 15px;
+}
+.claude-desktop-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.claude-desktop-status-dot[data-active] {
+  background: var(--success-fg);
+}
+.claude-accounts-card[data-mode="desktop"] .claude-accounts-toolbar {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.claude-accounts-card[data-mode="desktop"] .claude-accounts-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  gap: 16px;
+}
+.claude-accounts-card[data-mode="desktop"] .claude-account-card {
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  background: var(--bg-surface);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 3%);
+}
+.claude-accounts-card[data-mode="desktop"] .claude-account-card[data-current] {
+  border-color: var(--brand-text);
+  background: color-mix(in srgb, var(--brand-text) 3%, var(--bg-surface));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand-text) 12%, transparent);
+}
+.claude-accounts-card[data-mode="desktop"] .claude-account-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: var(--bg-subtle);
+  box-shadow: none;
+}
+.claude-accounts-card[data-mode="desktop"] .claude-account-card-quota {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.claude-accounts-card[data-mode="desktop"] .claude-account-card-tags {
+  gap: 6px;
+}
+.claude-accounts-card[data-mode="desktop"] .claude-account-card-foot {
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-subtle);
+}
+.claude-accounts-card[data-mode="desktop"] .claude-account-card-date {
+  color: var(--text-3);
+  font-size: 11px;
+}
+.claude-accounts-card[data-mode="desktop"]
+  .claude-account-tag[data-tone="warning"] {
+  color: var(--warning-fg);
+  background: var(--warning-bg);
+}
+.claude-accounts-card[data-mode="desktop"] .claude-detected-card {
+  border-style: dashed;
+  background: var(--bg-subtle);
+}
+.claude-detected-description {
+  flex: 1;
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.claude-desktop-empty,
+.claude-local-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 220px;
+  padding: 28px 20px;
+  text-align: center;
+  color: var(--text-3);
+}
+.claude-desktop-empty h3,
+.claude-local-empty strong {
+  margin: 0;
+  color: var(--text-1);
+  font-size: 15px;
+  font-weight: 600;
+}
+.claude-desktop-empty p,
+.claude-local-empty p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.claude-desktop-profiles {
+  padding-top: 16px;
+  border-top: 1px solid var(--border-subtle);
+}
+.claude-desktop-profiles > summary,
+.claude-add-advanced > summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.claude-desktop-profiles > summary > span {
+  margin-left: 6px;
+  color: var(--text-3);
+}
+.claude-desktop-profiles[open] > .claude-accounts-note {
+  margin: 12px 0;
+}
+.claude-local-import {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.claude-local-import-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.claude-local-login {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--bg-subtle);
+}
+.claude-local-login > svg {
+  flex-shrink: 0;
+  color: var(--brand-text);
+}
+.claude-local-login-identity {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+  overflow-wrap: anywhere;
+}
+.claude-local-login-identity strong {
+  color: var(--text-1);
+  font-size: 13px;
+}
+.claude-local-login-identity > span,
+.claude-local-login-identity small,
+.claude-local-import-note,
+.claude-add-advanced p {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.claude-local-login > button {
+  flex-shrink: 0;
+}
+.claude-add-advanced {
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-subtle);
+}
+.claude-add-advanced[open] > p {
+  margin: 12px 0;
+}
+@container (max-width: 520px) {
+  .claude-accounts-card[data-mode="desktop"] .claude-accounts-title {
+    flex-basis: calc(100% - 48px);
+  }
+  .claude-accounts-card[data-mode="desktop"] .claude-add-controls {
+    margin-left: auto;
+  }
+}
+@media (max-width: 520px) {
+  .claude-local-login {
+    flex-wrap: wrap;
+  }
+  .claude-local-login > button {
+    margin-left: auto;
+  }
 }

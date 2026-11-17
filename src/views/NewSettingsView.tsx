@@ -210,7 +210,7 @@ export function NewSettingsView({
     checkUpdate,
     installUpdate,
   } = useUpdate();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [recoveryBusy, setRecoveryBusy] = useState(false);
   const [directoryBusy, setDirectoryBusy] = useState(false);
   const [dbOpen, setDbOpen] = useState(false);
@@ -579,7 +579,9 @@ export function NewSettingsView({
           <p>
             Chimera++ {appVersion} ·{" "}
             {runningInTauri || designPreview
-              ? "这些设置只影响本应用，不改 Codex 配置"
+              ? i18n.language.startsWith("en")
+                ? "Manage app preferences, tool configuration folders, and Codex settings"
+                : "管理应用偏好、工具配置目录和 Codex 设置"
               : "浏览器预览，不读取本机数据"}
           </p>
         </div>

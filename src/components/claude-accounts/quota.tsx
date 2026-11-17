@@ -61,33 +61,41 @@ export type QuotaState = {
   /** Claude Desktop only: from the account's profile. */
   email?: string | null;
   plan?: string | null;
+  accountUuid?: string | null;
 };
 
 export function QuotaMeter({
   window: w,
   now,
+  remaining = false,
 }: {
   window: ClaudeQuotaWindow;
   now: number;
+  remaining?: boolean;
 }) {
   const used = Math.max(0, Math.min(100, w.utilization));
+  const shown = remaining ? 100 - used : used;
   const resetAt = w.resetAt ? Date.parse(w.resetAt) : Number.NaN;
+  const label = w.kind === "model" ? w.label.replace(/^每周 · /, "") : w.label;
   return (
     <div className="claude-quota-meter" data-kind={w.kind}>
       <div className="claude-quota-meter-head">
-        <span>{w.label}</span>
-        <strong>{Math.round(used)}%</strong>
+        <span>
+          {label}
+          {remaining ? " · 剩余" : ""}
+        </span>
+        <strong>{Math.round(shown)}%</strong>
       </div>
       <div
         className="claude-quota-bar"
         role="meter"
-        aria-label={`${w.label}已用`}
+        aria-label={`${w.label}${remaining ? "剩余" : "已用"}`}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-valuenow={Math.round(used)}
+        aria-valuenow={Math.round(shown)}
         data-level={used >= 90 ? "high" : used >= 70 ? "mid" : "low"}
       >
-        <span style={{ width: `${used}%` }} />
+        <span style={{ width: `${shown}%` }} />
       </div>
       <small>
         {w.reset ? (
@@ -114,12 +122,14 @@ export function QuotaStrip({
   onRefresh,
   label,
   statusText = QUOTA_STATUS_TEXT,
+  remaining = false,
 }: {
   state?: QuotaState;
   now: number;
   onRefresh: () => void;
   label: string;
   statusText?: Partial<Record<ClaudeQuota["status"], string>>;
+  remaining?: boolean;
 }) {
   const view = state?.view;
   const main = view?.windows.filter((w) => w.kind !== "model") ?? [];
@@ -130,19 +140,20 @@ export function QuotaStrip({
       {main.length > 0 ? (
         <div className="claude-quota-meters">
           {main.map((w) => (
-            <QuotaMeter key={w.name} window={w} now={now} />
+            <QuotaMeter
+              key={w.name}
+              window={w}
+              now={now}
+              remaining={remaining}
+            />
           ))}
         </div>
       ) : null}
       {models.length > 0 ? (
         <ul className="claude-quota-models" aria-label="按模型的每周额度">
           {models.map((w) => (
-            <li key={w.name} data-reset={w.reset || undefined}>
-              <span>{w.label.replace(/^每周 · /, "")}</span>
-              <strong>{Math.round(w.utilization)}%</strong>
-              {w.reset ? (
-                <span className="claude-quota-reset">已重置</span>
-              ) : null}
+            <li key={w.name}>
+              <QuotaMeter window={w} now={now} remaining={remaining} />
             </li>
           ))}
         </ul>
@@ -162,6 +173,9 @@ export function QuotaStrip({
         ) : note ? (
           <span className="claude-quota-note is-warning" role="status">
             {note}
+            {main.length > 0 || models.length > 0
+              ? " · 显示上次读取的数据"
+              : ""}
           </span>
         ) : view && main.length === 0 && models.length === 0 ? (
           <span className="claude-quota-note">服务未返回额度数据</span>

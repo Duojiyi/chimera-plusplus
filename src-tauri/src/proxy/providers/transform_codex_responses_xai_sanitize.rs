@@ -483,7 +483,7 @@ const MESSAGE_CONTENT_PART_TYPES: &[&str] = &["input_text", "input_image", "inpu
 /// them with a stored call.
 ///
 /// Adapted from farion1231/cc-switch 2b0ec81b (MIT).
-fn rewrite_xai_call_id_less_tool_outputs(body: &mut Value) -> bool {
+pub(crate) fn rewrite_xai_call_id_less_tool_outputs(body: &mut Value) -> bool {
     match body.get_mut("input") {
         Some(Value::Array(items)) => {
             let mut changed = false;

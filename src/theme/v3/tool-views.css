@@ -49,12 +49,9 @@
 
 .chimera-shell .tool-view .tool-title > p {
   margin: 0;
-  overflow: hidden;
-  font-size: 11px;
-  line-height: 15px;
+  font-size: 12px;
+  line-height: 18px;
   color: var(--text-3);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .chimera-shell .tool-view .tool-actions {
@@ -203,9 +200,10 @@
   backdrop-filter: blur(var(--v3-glass-blur)) saturate(150%);
 }
 
-/* 本机配置导入 / 官方账号登录：一行说明 + 右侧按钮 */
+/* 本机配置导入 / 官方账号登录：说明与操作在窄窗口内可换行。 */
 .chimera-shell .tool-view :is(.tool-discovery, .tool-official-guide) {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -222,9 +220,13 @@
 .chimera-shell .tool-view .tool-official-guide p,
 .chimera-shell .tool-view .tool-discovery p {
   margin: 2px 0 0;
-  font-size: 11px;
-  line-height: 16px;
+  font-size: 12px;
+  line-height: 18px;
   color: var(--text-2);
+}
+
+.chimera-shell .tool-view .tool-official-guide > div {
+  flex: 1 1 280px;
 }
 
 .chimera-shell .tool-view .tool-official-guide code {

@@ -536,6 +536,92 @@ pub fn is_codex_official_provider(provider: &Provider) -> bool {
         && provider.category.as_deref() == Some("official")
 }
 
+// Adapted from CC Switch (MIT), 08ec82aabc734eb2fdc59e7a364fd899ac93fff5
+// and 72e826edf3536ed8374aabe912bc75c20a997908; Copyright CC Switch contributors.
+// This is deliberately a field-level cleanup, not xAI's tool/type whitelist.
+const OPENAI_PRIVATE_ENCRYPTED_ITEM_TYPES: &[&str] = &[
+    "message",
+    "local_shell_call",
+    "function_call",
+    "tool_search_call",
+    "custom_tool_call",
+    "web_search_call",
+    "image_generation_call",
+];
+
+/// Remove OpenAI backend-private fields for third-party native Responses only.
+/// Preserve opaque reasoning/compaction data and unknown options; return whether
+/// the request changed. The caller excludes official and managed ChatGPT routes.
+pub fn normalize_third_party_codex_responses(body: &mut JsonValue) -> bool {
+    let Some(object) = body.as_object_mut() else {
+        return false;
+    };
+    let mut changed = object.remove("access_programs").is_some();
+    let mut remove_include = false;
+    if let Some(include) = object.get_mut("include").and_then(JsonValue::as_array_mut) {
+        let before = include.len();
+        include.retain(|value| value.as_str() != Some("output.encrypted_content"));
+        if before != include.len() {
+            changed = true;
+            remove_include = include.is_empty();
+        }
+    }
+    if remove_include {
+        object.remove("include");
+    }
+    let mut remove_options = false;
+    if let Some(options) = object
+        .get_mut("stream_options")
+        .and_then(JsonValue::as_object_mut)
+    {
+        if options.remove("reasoning_summary_delivery").is_some() {
+            changed = true;
+            remove_options = options.is_empty();
+        }
+    }
+    if remove_options {
+        object.remove("stream_options");
+    }
+    if let Some(input) = object.get_mut("input") {
+        if let Some(items) = input.as_array_mut() {
+            let before = items.len();
+            items.retain(|item| {
+                item.get("type").and_then(JsonValue::as_str) != Some("configuration_update")
+            });
+            changed |= before != items.len();
+            for item in items {
+                changed |= strip_private_codex_item_fields(item);
+            }
+        } else if input.get("type").and_then(JsonValue::as_str) == Some("configuration_update") {
+            *input = JsonValue::Array(Vec::new());
+            changed = true;
+        } else {
+            changed |= strip_private_codex_item_fields(input);
+        }
+    }
+    changed
+        | super::transform_codex_responses_xai_sanitize::rewrite_xai_call_id_less_tool_outputs(body)
+}
+
+fn strip_private_codex_item_fields(item: &mut JsonValue) -> bool {
+    let Some(object) = item.as_object_mut() else {
+        return false;
+    };
+    let mut changed = object
+        .remove("internal_chat_message_metadata_passthrough")
+        .is_some();
+    let kind = object.get("type").and_then(JsonValue::as_str);
+    let encrypted = kind.is_some_and(|kind| OPENAI_PRIVATE_ENCRYPTED_ITEM_TYPES.contains(&kind));
+    let function_call = kind == Some("function_call");
+    if encrypted {
+        changed |= object.remove("encrypted_content").is_some();
+    }
+    if function_call {
+        changed |= object.remove("encrypted_function_args").is_some();
+    }
+    changed
+}
+
 /// Provider table name that makes Codex treat a line as OpenAI and enable
 /// remote compaction v2 for it (openai/codex 0.157 `model-provider-info`
 /// `is_openai`, `model-provider/src/provider.rs` `capabilities`).
@@ -1282,6 +1368,120 @@ mod tests {
             icon: None,
             icon_color: None,
             in_failover_queue: false,
+        }
+    }
+
+    #[test]
+    fn third_party_responses_removes_private_fields_without_losing_context() {
+        let mut body = json!({
+            "model": "model-a",
+            "include": ["output.encrypted_content", "reasoning.encrypted_content", "web_search_call.action.sources"],
+            "access_programs": {"private": true},
+            "stream_options": {"reasoning_summary_delivery": "async", "include_usage": true},
+            "prompt_cache_key": "session-1",
+            "tools": [{"type": "custom", "name": "keep_me"}],
+            "input": [
+                {"type": "configuration_update", "reasoning": {"effort": "high"}},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}],
+                 "encrypted_content": "private", "internal_chat_message_metadata_passthrough": {"private": true}},
+                {"type": "function_call", "call_id": "call-1", "name": "read", "arguments": "{}",
+                 "encrypted_content": "private", "encrypted_function_args": "private"},
+                {"type": "function_call_output", "call_id": "call-1", "output": "result"},
+                {"type": "reasoning", "encrypted_content": "keep-reasoning", "summary": []},
+                {"type": "compaction", "encrypted_content": "keep-compaction"},
+                {"type": "future_item", "encrypted_content": "keep-future", "unknown_option": true}
+            ]
+        });
+        assert!(normalize_third_party_codex_responses(&mut body));
+        assert_eq!(
+            body,
+            json!({
+                "model": "model-a",
+                "include": ["reasoning.encrypted_content", "web_search_call.action.sources"],
+                "stream_options": {"include_usage": true},
+                "prompt_cache_key": "session-1",
+                "tools": [{"type": "custom", "name": "keep_me"}],
+                "input": [
+                    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+                    {"type": "function_call", "call_id": "call-1", "name": "read", "arguments": "{}"},
+                    {"type": "function_call_output", "call_id": "call-1", "output": "result"},
+                    {"type": "reasoning", "encrypted_content": "keep-reasoning", "summary": []},
+                    {"type": "compaction", "encrypted_content": "keep-compaction"},
+                    {"type": "future_item", "encrypted_content": "keep-future", "unknown_option": true}
+                ]
+            })
+        );
+        let normalized = body.clone();
+        assert!(!normalize_third_party_codex_responses(&mut body));
+        assert_eq!(body, normalized);
+    }
+
+    #[test]
+    fn third_party_responses_callless_outputs_preserve_text_images_and_valid_calls() {
+        use super::super::codex_chat_common::ORPHAN_TOOL_OUTPUT_MARKER;
+
+        let text = json!({"type": "input_text", "text": "screenshot follows"});
+        let image = json!({"type": "input_image", "image_url": "data:image/png;base64,test", "detail": "high"});
+        let valid = json!({"type": "function_call_output", "call_id": "call-1", "id": "fco_valid", "output": [text.clone(), image.clone()]});
+        let mut missing = json!({"type": "function_call_output", "id": "fco_missing", "output": [text.clone(), image.clone()]});
+        let mut null_call_id = missing.clone();
+        null_call_id["call_id"] = JsonValue::Null;
+        let mut blank = missing.clone();
+        blank["call_id"] = json!(" \t ");
+        let mut body = json!({"input": [missing.clone(), null_call_id, blank, valid.clone()]});
+        assert!(normalize_third_party_codex_responses(&mut body));
+        let items = body["input"].as_array().unwrap();
+        let expected = json!({
+            "type": "message", "role": "user",
+            "content": [{"type": "input_text", "text": ORPHAN_TOOL_OUTPUT_MARKER}, text, image]
+        });
+        assert_eq!(&items[..3], &[expected.clone(), expected.clone(), expected]);
+        assert_eq!(items[3], valid);
+
+        missing["output"] = json!("a tool result");
+        let mut scalar = json!({"input": missing});
+        assert!(normalize_third_party_codex_responses(&mut scalar));
+        assert_eq!(
+            scalar["input"],
+            json!({
+                "type": "message", "role": "user", "content": [{
+                    "type": "input_text", "text": format!("{ORPHAN_TOOL_OUTPUT_MARKER}\na tool result")
+                }]
+            })
+        );
+        assert!(!normalize_third_party_codex_responses(&mut scalar));
+    }
+
+    #[test]
+    fn third_party_responses_only_strips_known_encrypted_item_fields() {
+        for kind in OPENAI_PRIVATE_ENCRYPTED_ITEM_TYPES {
+            let mut body =
+                json!({"input": {"type": kind, "encrypted_content": "private", "other": "keep"}});
+            assert!(normalize_third_party_codex_responses(&mut body), "{kind}");
+            assert_eq!(body, json!({"input": {"type": kind, "other": "keep"}}));
+        }
+        let mut config = json!({
+            "include": ["output.encrypted_content"],
+            "stream_options": {"reasoning_summary_delivery": "async"},
+            "input": {"type": "configuration_update"}
+        });
+        assert!(normalize_third_party_codex_responses(&mut config));
+        assert_eq!(config, json!({"input": []}));
+    }
+
+    #[test]
+    fn third_party_responses_leaves_unrelated_requests_unchanged() {
+        for mut body in [
+            JsonValue::Null,
+            json!([1, 2]),
+            json!({"input": "hello"}),
+            json!({"include": [], "stream_options": {}}),
+            json!({"include": "custom", "stream_options": "custom", "input": {"type": "future_item", "encrypted_content": "keep"}}),
+            json!({"input": [{"type": "function_call_output", "call_id": "call-1", "output": "ok"}], "service_tier": "priority"}),
+        ] {
+            let before = body.clone();
+            assert!(!normalize_third_party_codex_responses(&mut body));
+            assert_eq!(body, before);
         }
     }
 

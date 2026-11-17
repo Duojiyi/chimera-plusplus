@@ -47,7 +47,7 @@
 .chimera-shell
   .official-accounts-page
   .accounts-header-actions
-  button:last-child {
+  button.accounts-import-action {
   background: var(--brand);
   border-color: transparent;
   color: #fff;
@@ -425,10 +425,11 @@
 /* ---------- 页头 ---------- */
 .chimera-shell .official-accounts-page .accounts-heading {
   display: flex;
+  flex-shrink: 0;
   align-items: flex-start;
   justify-content: space-between;
-  flex-wrap: nowrap;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 12px 16px;
   min-height: 44px;
 }
 
@@ -457,7 +458,7 @@
 
 .chimera-shell .official-accounts-page .accounts-header-actions {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
@@ -488,7 +489,7 @@
 .chimera-shell
   .official-accounts-page
   .accounts-header-actions
-  button:last-child {
+  button.accounts-import-action {
   border-color: transparent;
   background: #1f4d3a;
   color: #ffffff;
@@ -498,8 +499,33 @@
 .chimera-shell
   .official-accounts-page
   .accounts-header-actions
-  button:last-child:hover:not(:disabled) {
+  button.accounts-import-action:hover:not(:disabled) {
   background: #173d2e;
+}
+
+/* 添加方式菜单挂载在弹层中，与页头、空态共用语义。 */
+.accounts-add-menu {
+  border: 1px solid #dce5e0;
+  background: #f8faf9;
+  color: #0c1a24;
+  box-shadow: 0 12px 32px #0c1a241a;
+}
+.accounts-add-menu [role="menuitem"][data-highlighted] {
+  background: #1f4d3a0d;
+}
+.accounts-add-menu [role="menuitem"] > svg {
+  color: #1f4d3a;
+}
+.accounts-add-menu small {
+  color: #454e58;
+}
+.accounts-add-recommended {
+  background: #1f4d3a0d;
+  color: #1f4d3a;
+}
+.chimera-shell .official-accounts-page .accounts-switch-hint {
+  color: #454e58;
+  font-size: 11.5px;
 }
 
 /* ---------- 工具条 ---------- */
@@ -678,6 +704,7 @@
   flex-direction: column;
   gap: 10px;
   align-items: stretch;
+  min-width: 0;
   min-height: 0;
   padding: 14px 16px 12px;
   border: 1px solid #ffffff;
@@ -810,6 +837,7 @@
 /* 状态行：状态 chip 左、切换/删除右 */
 .chimera-shell .account-status-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   min-height: 22px;
@@ -868,6 +896,9 @@
 
 .chimera-shell .official-accounts-page .account-row-actions {
   display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
   align-items: center;
   gap: 2px;
   margin-left: auto;
@@ -879,11 +910,11 @@
   .official-accounts-page
   .account-row-actions
   .account-primary-action {
-  height: 22px;
+  height: 26px;
   padding: 0 8px;
   border: 0;
   border-radius: 7px;
-  background: transparent;
+  background: #1f4d3a0a;
   color: #1f4d3a;
   font-size: 11px;
   font-weight: 600;
@@ -905,6 +936,10 @@
 .chimera-shell .official-accounts-page .account-remove:hover:not(:disabled) {
   color: #b4342c;
   background: #0b1c2a0a;
+}
+
+.chimera-shell .official-accounts-page .account-row-actions > button {
+  flex-shrink: 0;
 }
 
 /* ---------- 额度条（条长 = 已用） ---------- */
@@ -1098,6 +1133,36 @@
   grid-column: 4;
   grid-row: 1;
   margin: 0;
+}
+
+/* 根据账号区的可用宽度收列，侧栏展开时也能容纳完整操作。 */
+@container official-accounts (max-width: 900px) {
+  .chimera-shell .official-accounts-page .accounts-toolbar {
+    flex-wrap: wrap;
+  }
+  .chimera-shell .official-accounts-page .accounts-search {
+    flex: 1 1 200px;
+  }
+  .chimera-shell .official-accounts-page .accounts-toolbar-spacer {
+    display: none;
+  }
+  .chimera-shell .official-accounts-page .accounts-list.is-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .chimera-shell .official-accounts-page .accounts-list.is-list .account-row {
+    display: flex;
+    align-items: stretch;
+    gap: 10px;
+  }
+}
+
+@container official-accounts (max-width: 580px) {
+  .chimera-shell .official-accounts-page .accounts-list.is-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .chimera-shell .official-accounts-page .accounts-bottom {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* 末格：添加账号虚位 */
@@ -1430,7 +1495,7 @@
   color: #33454f;
 }
 
-/* 空态（§3.5：图标 + 一句说明 + 一个主按钮） */
+/* 空态：优先导入本机账号，同时提供明确的浏览器登录选择。 */
 .chimera-shell .official-accounts-page .accounts-empty {
   align-items: flex-start;
   gap: 8px;
@@ -1462,6 +1527,18 @@
   color: #33454f;
 }
 
+.chimera-shell .official-accounts-page .accounts-empty-actions {
+  justify-content: flex-start;
+  margin-top: 6px;
+}
+.chimera-shell .official-accounts-page .accounts-empty-hint {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #454e58;
+}
+.chimera-shell .account-add-methods {
+  color: #1f4d3a;
+}
 .chimera-shell .official-accounts-page .accounts-privacy {
   display: flex;
   align-items: center;

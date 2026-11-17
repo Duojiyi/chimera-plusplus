@@ -385,6 +385,12 @@ where
                 .map_err(|e| AppError::io(&tmp, e))?;
         }
 
+        // Resolve Win32 long-path names before the final CAS check.
+        #[cfg(windows)]
+        let source = windows_replace_path(&tmp).map_err(|e| AppError::io(&tmp, e))?;
+        #[cfg(windows)]
+        let destination = windows_replace_path(path).map_err(|e| AppError::io(path, e))?;
+
         pre_commit()?;
 
         #[cfg(windows)]
@@ -392,16 +398,6 @@ where
             use windows_sys::Win32::Storage::FileSystem::{
                 MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
             };
-            let source: Vec<u16> = tmp
-                .as_os_str()
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect();
-            let destination: Vec<u16> = path
-                .as_os_str()
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect();
             let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
             retry_transient_replace(
                 || {
@@ -444,6 +440,27 @@ where
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+/// Raw Win32 replacement needs an absolute extended path to support filenames
+/// beyond MAX_PATH even when the running executable is not long-path aware.
+#[cfg(windows)]
+fn windows_replace_path(path: &Path) -> std::io::Result<Vec<u16>> {
+    use std::path::{Component, Prefix};
+
+    let absolute = std::path::absolute(path)?;
+    let encoded = absolute.as_os_str().encode_wide();
+    let mut wide: Vec<u16> = match absolute.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::UNC(_, _) => r"\\?\UNC\".encode_utf16().chain(encoded.skip(2)).collect(),
+            Prefix::Disk(_) => r"\\?\".encode_utf16().chain(encoded).collect(),
+            // Already verbatim, or a device namespace: retain its semantics.
+            _ => encoded.collect(),
+        },
+        _ => encoded.collect(),
+    };
+    wide.push(0);
+    Ok(wide)
 }
 
 /// Windows 替换目标被短暂占用时的最多尝试次数。
@@ -495,6 +512,30 @@ mod tests {
         // Only a leading BOM is stripped; other invalid input still fails.
         fs::write(&path, "{\"a\":1}\u{feff}").unwrap();
         assert!(read_json_file::<Value>(&path).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_write_supports_long_paths_for_creation_and_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir
+            .path()
+            .join("long-directory-".repeat(12))
+            .join("nested-directory-".repeat(5))
+            .join("settings.json");
+        assert!(target.as_os_str().encode_wide().count() > 260);
+        for content in [b"first".as_slice(), b"replacement".as_slice()] {
+            atomic_write(&target, content).unwrap();
+            assert_eq!(fs::read(&target).unwrap(), content);
+            assert_eq!(fs::read_dir(target.parent().unwrap()).unwrap().count(), 1);
+        }
+        let before = fs::read(&target).unwrap();
+        atomic_write_checked(&target, b"rejected", false, || {
+            Err(AppError::Config("injected pre-commit failure".into()))
+        })
+        .unwrap_err();
+        assert_eq!(fs::read(&target).unwrap(), before);
+        assert_eq!(fs::read_dir(target.parent().unwrap()).unwrap().count(), 1);
     }
 
     #[test]

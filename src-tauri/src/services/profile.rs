@@ -116,9 +116,9 @@ impl<T> PerApp<T> {
 
 /// Profile 的 JSON 快照结构（与前端 TS 类型严格对应）
 ///
-/// 所有槽位都是 Option：None = 该侧从未拍过快照（应用时不动），
-/// 与"拍到的就是空集/无激活项"（Some(空)，应用时清空启用）严格区分——
-/// 在 Codex 页选中一个只在 Claude 页建过的项目不能误清 Codex 的启用状态。
+/// 集合槽位的 None 表示该侧未捕获，Some(空) 表示恢复为空集。
+/// 提示词沿用 string/null 格式；显式 null 结合该应用的捕获证据表示无激活项。
+/// 未捕获应用的 null 和旧载荷缺失的槽位保持不动，避免跨分组清除启用状态。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProfilePayload {
@@ -128,7 +128,8 @@ pub struct ProfilePayload {
     pub mcp: PerApp<Option<Vec<String>>>,
     /// 每 app 启用的 Skill id 集合
     pub skills: PerApp<Option<Vec<String>>>,
-    /// 每 app 激活的 prompt id
+    /// 每 app 激活的 prompt id。已捕获应用的显式 null 表示关闭全部提示词；
+    /// 未捕获应用或旧载荷缺失的 prompt 槽位不改变当前状态。
     pub prompts: PerApp<Option<String>>,
 }
 
@@ -154,14 +155,16 @@ impl ProfilePayload {
         }
     }
 
+    fn app_captured(&self, app: &AppType) -> bool {
+        self.providers.get(app).is_some_and(|s| s.is_some())
+            || self.mcp.get(app).is_some_and(|s| s.is_some())
+            || self.skills.get(app).is_some_and(|s| s.is_some())
+            || self.prompts.get(app).is_some_and(|s| s.is_some())
+    }
+
     /// 某分组是否拍过快照（任一槽位非 None 即视为拍过）
     pub fn scope_captured(&self, scope: ProfileScope) -> bool {
-        scope.apps().iter().any(|app| {
-            self.providers.get(app).is_some_and(|s| s.is_some())
-                || self.mcp.get(app).is_some_and(|s| s.is_some())
-                || self.skills.get(app).is_some_and(|s| s.is_some())
-                || self.prompts.get(app).is_some_and(|s| s.is_some())
-        })
+        scope.apps().iter().any(|app| self.app_captured(app))
     }
 }
 
@@ -311,7 +314,8 @@ impl ProfileService {
         Ok(())
     }
 
-    /// 应用项目快照（best-effort，返回 warnings）
+    /// 应用项目快照（best-effort，返回 warnings）。部分应用失败时保留已成功
+    /// 生效的条目，但清除本分组 current，避免下次自动保存覆盖任一项目快照。
     ///
     /// 只作用于发起页所属分组内的应用，不碰其他分组的配置与 current 标记。
     /// 该分组从未拍过快照时不改动任何配置，仅标记 current 并返回提示
@@ -339,6 +343,16 @@ impl ProfileService {
         let _profile_guard = state.profile_apply_lock.lock().await;
         let mut warnings = Vec::new();
 
+        // Resolve the target before autosaving or changing the current binding.
+        let profile = state
+            .db
+            .get_profile(profile_id)?
+            .ok_or_else(|| AppError::InvalidInput(format!("Profile not found: {profile_id}")))?;
+        let serialized_payload: serde_json::Value = serde_json::from_str(&profile.payload)
+            .map_err(|e| AppError::Config(format!("解析 profile payload 失败: {e}")))?;
+        let payload: ProfilePayload = serde_json::from_value(serialized_payload.clone())
+            .map_err(|e| AppError::Config(format!("解析 profile payload 失败: {e}")))?;
+
         // 自动保存旧项目当前状态（仅当前分组），失败不阻塞切换
         if let Some(current_id) = state.db.get_current_profile_id(scope.as_str())? {
             if current_id != profile_id {
@@ -350,19 +364,18 @@ impl ProfileService {
             }
         }
 
-        let profile = state
-            .db
-            .get_profile(profile_id)?
-            .ok_or_else(|| AppError::InvalidInput(format!("Profile not found: {profile_id}")))?;
-        let payload: ProfilePayload = serde_json::from_str(&profile.payload)
-            .map_err(|e| AppError::Config(format!("解析 profile payload 失败: {e}")))?;
-
         if !payload.scope_captured(scope) {
             warnings.push(format!(
                 "no {} configuration captured in this project yet; marked as current without changes (it will be saved automatically when you switch away)",
                 scope.as_str()
             ));
         }
+
+        // A partially applied configuration belongs to neither snapshot. Clear
+        // the binding before live writes so errors (including early returns)
+        // cannot autosave mixed state into the old or target profile later.
+        state.db.set_current_profile_id(scope.as_str(), None)?;
+        let apply_warning_count = warnings.len();
 
         for app in scope.apps().iter() {
             let app_str = app.as_str();
@@ -433,37 +446,69 @@ impl ProfileService {
                 }
             }
 
-            // 4. Prompt（None = 不动；已激活则幂等跳过，避免无谓的文件写与备份）
-            if let Some(Some(target_prompt)) = payload.prompts.get(app) {
+            // Snapshot serialization includes null prompt slots for uncaptured
+            // apps too. Require this app's capture evidence, and preserve sparse
+            // legacy payloads that omit the prompt field or this app's slot.
+            let prompt_captured = payload.app_captured(app)
+                && serialized_payload
+                    .get("prompts")
+                    .and_then(|prompts| prompts.get(app_str))
+                    .is_some();
+            if let Some(target_prompt) = payload.prompts.get(app).filter(|_| prompt_captured) {
                 let prompts = state.db.get_prompts(app_str)?;
-                match prompts.get(target_prompt) {
-                    None => warnings.push(format!(
-                        "[{app_str}] prompt '{target_prompt}' no longer exists, skipped"
-                    )),
-                    Some(p) if p.enabled => {}
-                    Some(_) => {
-                        let prompt_state = state.clone();
-                        let prompt_app = app.clone();
-                        let prompt_id = target_prompt.clone();
-                        let result = tokio::task::spawn_blocking(move || {
-                            PromptService::enable_prompt(&prompt_state, prompt_app, &prompt_id)
-                        })
-                        .await
-                        .map_err(|_| AppError::Message("提示词后台任务执行失败。".into()))
-                        .and_then(|result| result);
-                        if let Err(e) = result {
+                let toggles: Vec<(String, bool)> = match target_prompt {
+                    Some(target) => match prompts.get(target) {
+                        None => {
                             warnings.push(format!(
-                                "[{app_str}] enable prompt '{target_prompt}' failed: {e}"
+                                "[{app_str}] prompt '{target}' no longer exists, skipped"
                             ));
+                            Vec::new()
                         }
+                        Some(p) if p.enabled => Vec::new(),
+                        Some(_) => vec![(target.clone(), true)],
+                    },
+                    None => prompts
+                        .values()
+                        .filter(|prompt| prompt.enabled)
+                        .map(|prompt| (prompt.id.clone(), false))
+                        .collect(),
+                };
+                for (id, enabled) in toggles {
+                    let prompt_state = state.clone();
+                    let prompt_app = app.clone();
+                    let prompt_id = id.clone();
+                    let result = tokio::task::spawn_blocking(move || {
+                        if enabled {
+                            PromptService::enable_prompt(&prompt_state, prompt_app, &prompt_id)
+                        } else {
+                            PromptService::set_prompt_enabled(
+                                &prompt_state,
+                                prompt_app,
+                                &prompt_id,
+                                false,
+                            )
+                        }
+                    })
+                    .await
+                    .map_err(|_| AppError::Message("提示词后台任务执行失败。".into()))
+                    .and_then(|result| result);
+                    if let Err(e) = result {
+                        warnings.push(format!(
+                            "[{app_str}] set prompt '{id}' -> {enabled} failed: {e}"
+                        ));
                     }
                 }
             }
         }
 
-        state
-            .db
-            .set_current_profile_id(scope.as_str(), Some(profile_id))?;
+        // The uncaptured-scope hint and a previous profile's autosave warning
+        // do not mean the target failed. Only warnings from applying it block
+        // binding, keeping its intended snapshot available for a later retry.
+        if warnings.len() == apply_warning_count {
+            state
+                .db
+                .set_current_profile_id(scope.as_str(), Some(profile_id))?;
+        }
 
         // 当前分组内所有接管已关闭；若其它应用也无接管，可停止代理服务。
         let should_stop_proxy = !state.db.is_live_takeover_active_sync();

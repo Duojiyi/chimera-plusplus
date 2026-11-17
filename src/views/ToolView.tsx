@@ -10,7 +10,15 @@ import {
   useRef,
   useState,
 } from "react";
-import { Loader2, Pencil, Plus, RefreshCw, Trash2, Users } from "lucide-react";
+import {
+  Copy,
+  Loader2,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Trash2,
+  Users,
+} from "lucide-react";
 import { toast } from "sonner";
 import { providerPresets } from "@/config/claudeProviderPresets";
 import { geminiProviderPresets } from "@/config/geminiProviderPresets";
@@ -34,6 +42,7 @@ import type { Provider } from "@/types";
 import type { AppId } from "@/lib/api/types";
 import { providersApi } from "@/lib/api/providers";
 import { vscodeApi } from "@/lib/api/vscode";
+import { copyText } from "@/lib/clipboard";
 import { ClaudeAccountsCard } from "@/components/claude-accounts/ClaudeAccountsCard";
 import { LocalLoginNotice } from "@/components/claude-accounts/LocalLoginNotice";
 import { ClaudeBindingsCard } from "@/components/claude-accounts/ClaudeBindingsCard";
@@ -217,6 +226,7 @@ function KnownToolView({
   const importRequest = useRef<symbol | null>(null);
   const mutationRequest = useRef<symbol | null>(null);
   const [confirmImport, setConfirmImport] = useState(false);
+  const [desktopSwitch, setDesktopSwitch] = useState<Provider | null>(null);
   const [discovery, setDiscovery] = useState<
     "scanning" | "found" | "empty" | "unavailable"
   >("scanning");
@@ -258,6 +268,7 @@ function KnownToolView({
 
   useEffect(() => {
     setEditing(null);
+    setDesktopSwitch(null);
     setRemoving(null);
     setDeleting(false);
     setDesktopSupported(false);
@@ -458,13 +469,32 @@ function KnownToolView({
     }
   };
 
-  const changeProvider = async (provider: Provider) => {
+  const changeProvider = async (provider: Provider, closeDesktop = false) => {
     if (busyId || importing || mutationRequest.current || !canMutate) return;
     const request = Symbol();
     mutationRequest.current = request;
     setBusyId(provider.id);
     try {
-      if (providers.some((item) => item.id === provider.id)) {
+      let desktopRestarted = false;
+      let desktopWasRunning = false;
+      if (tool.appId === "claude-desktop") {
+        const result = await providersApi.switchClaudeDesktop(
+          provider.id,
+          closeDesktop,
+          providers.some((item) => item.id === provider.id)
+            ? undefined
+            : provider,
+        );
+        if (mutationRequest.current !== request) return;
+        if (result.status === "desktop_running") {
+          setDesktopSwitch(provider);
+          return;
+        }
+        setDesktopSwitch(null);
+        desktopRestarted = result.restarted;
+        desktopWasRunning = result.wasRunning;
+        result.warnings.forEach((warning) => toast.warning(warning));
+      } else if (providers.some((item) => item.id === provider.id)) {
         const result = await providersApi.switch(provider.id, tool.appId);
         if (mutationRequest.current !== request) return;
         result.warnings?.forEach((warning) => toast.warning(warning));
@@ -473,13 +503,24 @@ function KnownToolView({
       }
       if (mutationRequest.current !== request) return;
       toast.success("已切换至「" + provider.name + "」", {
-        description: "已打开的 " + tool.name + " 需重新启动后使用新线路。",
+        description:
+          tool.appId === "claude-desktop"
+            ? desktopRestarted
+              ? "本地会话已保留，Claude Desktop 已重新打开。"
+              : desktopWasRunning
+                ? "本地会话已保留，请手动打开 Claude Desktop。"
+                : "本地会话已保留，下次打开 Claude Desktop 即可使用。"
+            : "已打开的 " + tool.name + " 需重新启动后使用新线路。",
       });
       await load();
-    } catch {
+    } catch (cause) {
       if (mutationRequest.current !== request) return;
+      setDesktopSwitch(null);
       toast.error(`${tool.name} 配置未更新`, {
-        description: "请检查本机配置和文件权限后重试。",
+        description:
+          tool.appId === "claude-desktop"
+            ? String(cause instanceof Error ? cause.message : cause)
+            : "请检查本机配置和文件权限后重试。",
       });
     } finally {
       if (mutationRequest.current === request) {
@@ -592,7 +633,7 @@ function KnownToolView({
   const onLines = currentSection === "lines" || currentSection === "routes";
   const show = (id: string) => currentSection === id;
   const subtitle: Record<string, string> = {
-    accounts: `${tool.name} 一次只能用一套凭据 · 切换账号不影响会话、设置与 MCP`,
+    accounts: `${tool.name} 账号保存在本机 · 切换保留本地会话`,
     lines: `${tool.name} · ${tool.categoryLabel} · ${tool.description}`,
     routes: `${tool.name} · ${tool.categoryLabel} · ${tool.description}`,
     settings: `${tool.name} 的默认模型与 MCP 全局配置`,
@@ -690,7 +731,11 @@ function KnownToolView({
               <ClaudeUsageCard native={native} />
             </>
           ) : (
-            <ClaudeAccountsCard mode="desktop" native={native} />
+            <ClaudeAccountsCard
+              mode="desktop"
+              native={native}
+              refreshVersion={refreshVersion + statusRefresh}
+            />
           )}
         </div>
       )}
@@ -797,9 +842,29 @@ function KnownToolView({
                   官方线路无需 API 密钥。切换到官方线路后，{loginCommand}
                   {hasAccounts
                     ? " 多个账号在「官方账号」里保存和一键切换。"
-                    : null}
+                    : " 更换 Google 账号请在 Gemini CLI 中重新登录；这里管理官方线路。"}
                 </p>
               </div>
+              {tool.appId === "gemini" && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="tool-discovery-button"
+                  onClick={async () => {
+                    try {
+                      await copyText("gemini");
+                      toast.success(
+                        "已复制 gemini，请在终端运行后完成 Google 授权",
+                      );
+                    } catch {
+                      toast.error("复制失败，请在终端输入 gemini");
+                    }
+                  }}
+                >
+                  <Copy size={14} aria-hidden="true" />
+                  复制启动命令
+                </Button>
+              )}
               {hasAccounts ? (
                 <Button
                   variant="ghost"
@@ -1095,6 +1160,25 @@ function KnownToolView({
           </section>
         </div>
       )}
+      <ConfirmDialog
+        isOpen={desktopSwitch !== null}
+        busy={busyId !== null}
+        title="切换线路并保留本地会话"
+        message={
+          "切换到「" +
+          (desktopSwitch?.name ?? "") +
+          "」需要先关闭 Claude Desktop（包括托盘），保留本地会话后会自动重新打开。请先等正在进行的回复或任务结束，并处理好未发送的输入。"
+        }
+        confirmText="关闭并切换"
+        cancelText="取消"
+        variant="info"
+        onCancel={() => {
+          if (!busyId) setDesktopSwitch(null);
+        }}
+        onConfirm={() => {
+          if (desktopSwitch) void changeProvider(desktopSwitch, true);
+        }}
+      />
       <ConfirmDialog
         isOpen={removing !== null}
         busy={deleting}

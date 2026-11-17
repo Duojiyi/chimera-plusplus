@@ -28,7 +28,7 @@ import type {
   ClaudeCodeAccount,
   ClaudeDesktopSnapshot,
 } from "@/lib/api/claudeAccounts";
-import { QuotaStrip, type QuotaState } from "./quota";
+import { DESKTOP_STATUS_TEXT, QuotaStrip, type QuotaState } from "./quota";
 import type { SortableRowProps } from "./useSortable";
 
 export const KIND_LABEL = {
@@ -63,6 +63,7 @@ export interface AccountRowProps {
   /** Claude Desktop page: this login's saved Desktop sign-in. */
   desktop?: {
     supported: boolean;
+    apiMode?: boolean;
     snapshot?: ClaudeDesktopSnapshot;
     /** Desktop is signed in as this login right now. */
     signedInHere: boolean;
@@ -84,6 +85,7 @@ export interface AccountRowProps {
   onSaveDesktop: () => void;
   onSwitchDesktop: () => void;
   onPrepareDesktop: () => void;
+  onOpenDesktop?: () => void;
 }
 
 /** What a token or key account says where an OAuth login shows its quota. */
@@ -131,12 +133,18 @@ export function AccountRow({
   onSaveDesktop,
   onSwitchDesktop,
   onPrepareDesktop,
+  onOpenDesktop,
 }: AccountRowProps) {
   const card = variant === "card";
-  const current = canSwitch && account.isCurrent;
+  const current = desktop
+    ? desktop.signedInHere && !desktop.apiMode
+    : canSwitch && account.isCurrent;
   const usable = !account.unreadable && !account.disabled;
   const showQuota =
-    !account.unreadable && account.kind === "oauth" && !account.disabled;
+    !account.unreadable &&
+    (account.kind === "oauth" ||
+      (desktop && account.kind === "desktop_only")) &&
+    !account.disabled;
   const snapshot = desktop?.snapshot;
   const shownName =
     hideEmail && account.name.includes("@")
@@ -178,11 +186,15 @@ export function AccountRow({
 
   const tags = (
     <>
-      {current ? <span className="claude-account-tag">使用中</span> : null}
+      {current ? (
+        <span className="claude-account-tag" data-tone="success">
+          {desktop ? "Desktop 当前使用" : "使用中"}
+        </span>
+      ) : null}
       {account.plan ? (
         <span className="claude-accounts-plan">{account.plan}</span>
       ) : null}
-      {account.kind !== "oauth" ? (
+      {!desktop && account.kind !== "oauth" ? (
         <span className="claude-account-tag" data-tone="kind">
           {KIND_LABEL[account.kind]}
         </span>
@@ -192,24 +204,29 @@ export function AccountRow({
           已停用
         </span>
       ) : null}
-      {account.sessionRunning ? (
+      {!desktop && account.sessionRunning ? (
         <span className="claude-account-tag" data-tone="live">
           会话中
         </span>
       ) : null}
-      {account.needsRelogin &&
+      {!desktop &&
+      account.needsRelogin &&
       !account.unreadable &&
       account.kind === "oauth" ? (
         <span className="claude-account-tag" data-tone="warning">
           需要重新登录
         </span>
       ) : null}
-      {desktop && snapshot ? (
+      {desktop && !account.unreadable ? (
         <span
           className="claude-account-tag"
-          data-tone={snapshot.isCurrent ? "success" : "kind"}
+          data-tone={snapshot ? "kind" : "warning"}
         >
-          {snapshot.isCurrent ? "默认 Desktop 在用" : "Desktop 登录已保存"}
+          {snapshot
+            ? "可一键切换"
+            : desktop.signedInHere
+              ? "登录待保存"
+              : "需要 Desktop 登录"}
         </span>
       ) : null}
     </>
@@ -221,7 +238,7 @@ export function AccountRow({
         ? "无法读取（可能因系统密码重置或迁移），只能删除"
         : (shownEmail ??
           (account.kind === "oauth" ? "未读到邮箱" : "没有邮箱"))}
-      {account.fingerprint ? (
+      {!desktop && account.fingerprint ? (
         <code title="令牌指纹（SHA-256 前 8 位）">#{account.fingerprint}</code>
       ) : null}
     </span>
@@ -232,6 +249,8 @@ export function AccountRow({
       state={quota}
       now={now}
       label={account.name}
+      remaining={Boolean(desktop)}
+      statusText={desktop ? DESKTOP_STATUS_TEXT : undefined}
       onRefresh={onRefresh}
     />
   ) : account.unreadable ? (
@@ -292,18 +311,33 @@ export function AccountRow({
     (account.kind === "oauth" || account.kind === "desktop_only") &&
     usable ? (
       snapshot ? (
-        !snapshot.isCurrent ? (
+        !desktop.signedInHere || desktop.apiMode ? (
+          <Button
+            size="sm"
+            variant="default"
+            disabled={disabled}
+            aria-label={`切换到此账号 ${account.name}`}
+            aria-busy={busy === `desktop:${account.id}`}
+            onClick={onSwitchDesktop}
+          >
+            {busy === `desktop:${account.id}` ? (
+              <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+            ) : (
+              <ArrowLeftRight size={14} aria-hidden="true" />
+            )}
+            {busy === `desktop:${account.id}` ? "正在切换…" : "切换到此账号"}
+          </Button>
+        ) : (
           <Button
             size="sm"
             variant="outline"
             disabled={disabled}
-            aria-label={`切换默认 Desktop 到 ${account.name}`}
-            onClick={onSwitchDesktop}
+            onClick={onOpenDesktop}
+            aria-label={"打开 Desktop " + account.name}
           >
-            {desktopIcon}
-            切换默认 Desktop
+            {desktopIcon}打开 Desktop
           </Button>
-        ) : null
+        )
       ) : desktop.signedInHere ? (
         <Button
           size="sm"
@@ -326,7 +360,7 @@ export function AccountRow({
           onClick={onPrepareDesktop}
         >
           {desktopIcon}
-          用此账号登录 Desktop
+          登录并启用
         </Button>
       )
     ) : null;
@@ -345,6 +379,12 @@ export function AccountRow({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="claude-account-menu">
+        {desktop?.signedInHere && usable ? (
+          <DropdownMenuItem onSelect={onSaveDesktop}>
+            <Monitor size={14} aria-hidden="true" />
+            更新保存的登录
+          </DropdownMenuItem>
+        ) : null}
         {!account.unreadable ? (
           <DropdownMenuItem onSelect={onRename}>
             <Pencil size={14} aria-hidden="true" />
@@ -443,11 +483,13 @@ export function AccountRow({
             <div className="claude-account-name">
               <strong title={account.name}>{shownName}</strong>
             </div>
-            {meta}
+            {!desktop || shownName !== shownEmail || account.unreadable
+              ? meta
+              : null}
           </div>
         </header>
         <div className="claude-account-card-tags">{tags}</div>
-        {onNote && !account.unreadable ? (
+        {onNote && !account.unreadable && (!desktop || account.note) ? (
           <button
             type="button"
             className="claude-account-note"
@@ -463,7 +505,11 @@ export function AccountRow({
         <div className="claude-account-card-quota">{quotaBlock}</div>
         <footer className="claude-account-card-foot">
           <span className="claude-account-card-date">
-            {dateText(account.createdAt)}
+            {desktop
+              ? snapshot
+                ? "登录已保存"
+                : "账号已添加"
+              : dateText(account.createdAt)}
           </span>
           <div className="claude-account-actions">
             {switchButton}
@@ -484,7 +530,9 @@ export function AccountRow({
           <strong>{shownName}</strong>
           {tags}
         </div>
-        {meta}
+        {!desktop || shownName !== shownEmail || account.unreadable
+          ? meta
+          : null}
         {account.note && !account.unreadable ? (
           <span className="claude-account-note-line">{account.note}</span>
         ) : null}

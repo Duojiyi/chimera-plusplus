@@ -2382,6 +2382,216 @@ requires_openai_auth = true
             );
         });
     }
+    #[test]
+    #[serial]
+    fn switch_omo_target_write_failure_preserves_active_variant() {
+        with_test_home(|state, home| {
+            for (category, opposite) in [("omo", "omo-slim"), ("omo-slim", "omo")] {
+                let target = opencode_omo_provider(&format!("{category}-next"), category);
+                let current = opencode_omo_provider(&format!("{opposite}-old"), opposite);
+                state.db.save_provider("opencode", &target).unwrap();
+                state.db.save_provider("opencode", &current).unwrap();
+                state
+                    .db
+                    .set_omo_provider_current("opencode", &current.id, opposite)
+                    .unwrap();
+                let target_path = omo_config_path(home, category);
+                let old_path = omo_config_path(home, opposite);
+                fs::create_dir_all(&target_path).unwrap();
+                fs::write(&old_path, "{\"old\": true}").unwrap();
+                let plugin_path = target_path.parent().unwrap().join("opencode.json");
+                let plugin_bytes = format!(
+                    r#"{{"plugin":["oh-my-opencode{}","keep-me"]}}"#,
+                    if opposite == "omo-slim" { "-slim" } else { "" }
+                );
+                fs::write(&plugin_path, &plugin_bytes).unwrap();
+                let providers = IndexMap::from([(target.id.clone(), target.clone())]);
+
+                ProviderService::switch_normal(state, AppType::OpenCode, &target.id, &providers)
+                    .expect_err("a blocked target must leave the current variant usable");
+
+                assert!(state
+                    .db
+                    .is_omo_provider_current("opencode", &current.id, opposite)
+                    .unwrap());
+                assert!(!state
+                    .db
+                    .is_omo_provider_current("opencode", &target.id, category)
+                    .unwrap());
+                assert_eq!(fs::read_to_string(&old_path).unwrap(), "{\"old\": true}");
+                assert_eq!(fs::read_to_string(&plugin_path).unwrap(), plugin_bytes);
+                assert!(target_path.is_dir());
+                fs::remove_dir(&target_path).unwrap();
+                fs::remove_file(&old_path).unwrap();
+            }
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn switch_omo_disable_failure_does_not_write_target_or_change_selection() {
+        with_test_home(|state, home| {
+            let target = opencode_omo_provider("omo-next", "omo");
+            let current = opencode_omo_provider("slim-current", "omo-slim");
+            state.db.save_provider("opencode", &target).unwrap();
+            state.db.save_provider("opencode", &current).unwrap();
+            state
+                .db
+                .set_omo_provider_current("opencode", &current.id, "omo-slim")
+                .unwrap();
+            let target_path = omo_config_path(home, "omo");
+            let blocked = omo_config_path(home, "omo-slim");
+            fs::create_dir_all(&blocked).unwrap();
+            fs::write(&target_path, "{\"savedBefore\": true}").unwrap();
+            let plugin_path = blocked.parent().unwrap().join("opencode.json");
+            let plugins = r#"{"plugin":["oh-my-opencode-slim","other-plugin"]}"#;
+            fs::write(&plugin_path, plugins).unwrap();
+            let providers = IndexMap::from([(target.id.clone(), target.clone())]);
+
+            ProviderService::switch_normal(state, AppType::OpenCode, &target.id, &providers)
+                .expect_err("failure to disable the old variant must be reported");
+
+            assert!(state
+                .db
+                .is_omo_provider_current("opencode", &current.id, "omo-slim")
+                .unwrap());
+            assert!(!state
+                .db
+                .is_omo_provider_current("opencode", &target.id, "omo")
+                .unwrap());
+            assert_eq!(
+                fs::read_to_string(target_path).unwrap(),
+                "{\"savedBefore\": true}"
+            );
+            assert_eq!(fs::read_to_string(plugin_path).unwrap(), plugins);
+            assert!(blocked.is_dir());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn switch_omo_invalid_plugin_config_leaves_all_variants_unchanged() {
+        with_test_home(|state, home| {
+            let target = opencode_omo_provider("slim-next", "omo-slim");
+            let current = opencode_omo_provider("omo-current", "omo");
+            state.db.save_provider("opencode", &target).unwrap();
+            state.db.save_provider("opencode", &current).unwrap();
+            state
+                .db
+                .set_omo_provider_current("opencode", &current.id, "omo")
+                .unwrap();
+            let target_path = omo_config_path(home, "omo-slim");
+            let current_path = omo_config_path(home, "omo");
+            fs::create_dir_all(current_path.parent().unwrap()).unwrap();
+            fs::write(&target_path, "{\"targetBefore\": 1}").unwrap();
+            fs::write(&current_path, "{\"currentBefore\": 2}").unwrap();
+            let plugin_path = current_path.parent().unwrap().join("opencode.json");
+            fs::write(&plugin_path, "{ broken").unwrap();
+            let providers = IndexMap::from([(target.id.clone(), target.clone())]);
+
+            ProviderService::switch_normal(state, AppType::OpenCode, &target.id, &providers)
+                .expect_err("invalid plugin JSON must fail before any file change");
+
+            assert!(state
+                .db
+                .is_omo_provider_current("opencode", &current.id, "omo")
+                .unwrap());
+            assert_eq!(
+                fs::read_to_string(target_path).unwrap(),
+                "{\"targetBefore\": 1}"
+            );
+            assert_eq!(
+                fs::read_to_string(current_path).unwrap(),
+                "{\"currentBefore\": 2}"
+            );
+            assert_eq!(fs::read_to_string(plugin_path).unwrap(), "{ broken");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn switch_omo_selection_failure_restores_unified_config_and_plugins() {
+        with_test_home(|state, home| {
+            let target = opencode_omo_provider("removed-slim", "omo-slim");
+            let current = opencode_omo_provider("omo-current", "omo");
+            state.db.save_provider("opencode", &current).unwrap();
+            state
+                .db
+                .set_omo_provider_current("opencode", &current.id, "omo")
+                .unwrap();
+            let target_path = omo_config_path(home, "omo-slim");
+            fs::create_dir_all(target_path.parent().unwrap()).unwrap();
+            let unified_path = home.join(".omo").join("omo.jsonc");
+            fs::create_dir_all(unified_path.parent().unwrap()).unwrap();
+            let unified = "{\n  // keep other tools\n  \"[opencode]\": {\"agents\": {\"writer\": {\"model\": \"old\"}}},\n  \"[claude]\": {\"enabled\": true}\n}\n";
+            fs::write(&unified_path, unified).unwrap();
+            let plugin_path = target_path.parent().unwrap().join("opencode.json");
+            let plugins = r#"{"plugin":["oh-my-opencode@latest","other-plugin"],"theme":"dark"}"#;
+            fs::write(&plugin_path, plugins).unwrap();
+            let providers = IndexMap::from([(target.id.clone(), target.clone())]);
+
+            // The stale UI still knows the target, but it was removed from the DB.
+            ProviderService::switch_normal(state, AppType::OpenCode, &target.id, &providers)
+                .expect_err("a failed database selection must restore every file");
+
+            assert!(state
+                .db
+                .is_omo_provider_current("opencode", &current.id, "omo")
+                .unwrap());
+            assert!(!target_path.exists());
+            assert_eq!(fs::read_to_string(unified_path).unwrap(), unified);
+            assert_eq!(fs::read_to_string(plugin_path).unwrap(), plugins);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn switch_omo_success_keeps_unrelated_plugins_and_excludes_opposite_variant() {
+        with_test_home(|state, home| {
+            for (category, opposite, plugin) in [
+                ("omo", "omo-slim", "oh-my-openagent@latest"),
+                ("omo-slim", "omo", "oh-my-opencode-slim@latest"),
+            ] {
+                let target = opencode_omo_provider(&format!("{category}-next"), category);
+                let current = opencode_omo_provider(&format!("{opposite}-old"), opposite);
+                state.db.save_provider("opencode", &target).unwrap();
+                state.db.save_provider("opencode", &current).unwrap();
+                state
+                    .db
+                    .set_omo_provider_current("opencode", &current.id, opposite)
+                    .unwrap();
+                let old_path = omo_config_path(home, opposite);
+                fs::create_dir_all(old_path.parent().unwrap()).unwrap();
+                fs::write(&old_path, "{}").unwrap();
+                let plugin_path = old_path.parent().unwrap().join("opencode.json");
+                fs::write(&plugin_path, r#"{"plugin":["oh-my-opencode@old","oh-my-opencode-slim@old","keep-me"],"theme":"dark"}"#).unwrap();
+                let providers = IndexMap::from([(target.id.clone(), target.clone())]);
+
+                ProviderService::switch_normal(state, AppType::OpenCode, &target.id, &providers)
+                    .expect("switch both variants successfully");
+
+                assert!(state
+                    .db
+                    .is_omo_provider_current("opencode", &target.id, category)
+                    .unwrap());
+                assert!(!state
+                    .db
+                    .is_omo_provider_current("opencode", &current.id, opposite)
+                    .unwrap());
+                assert!(!old_path.exists());
+                let written: Value = serde_json::from_str(
+                    &fs::read_to_string(omo_config_path(home, category)).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(written["agents"]["writer"]["model"], "gpt-4o-mini");
+                let config: Value =
+                    serde_json::from_str(&fs::read_to_string(&plugin_path).unwrap()).unwrap();
+                assert_eq!(config["plugin"], json!(["keep-me", plugin]));
+                assert_eq!(config["theme"], "dark");
+                fs::remove_file(omo_config_path(home, category)).unwrap();
+            }
+        });
+    }
 }
 
 impl ProviderService {
@@ -3222,11 +3432,7 @@ impl ProviderService {
                 _ => None,
             };
             if let Some((enable, disable)) = omo_pair {
-                state
-                    .db
-                    .set_omo_provider_current(app_type.as_str(), id, enable.category)?;
-                crate::services::OmoService::write_config_to_file(state, enable)?;
-                let _ = crate::services::OmoService::delete_config_file(disable);
+                crate::services::OmoService::switch_provider(state, provider, enable, disable)?;
                 return Ok(SwitchResult::default());
             }
         }

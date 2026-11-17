@@ -82,6 +82,8 @@ pub struct ExtraUsageView {
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub fetched_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_uuid: Option<String>,
     pub windows: Vec<StoredWindow>,
     #[serde(default)]
     pub extra_usage: Option<ExtraUsageView>,
@@ -570,6 +572,7 @@ pub(crate) async fn read_quota(
     };
 
     let snapshot = Snapshot {
+        account_uuid: None,
         fetched_at: now,
         windows: merge_windows(previous.as_ref(), fresh_windows(&quota), now),
         extra_usage: extra_usage_view(&quota),
@@ -606,6 +609,7 @@ pub async fn account_quota(id: String, force: bool) -> Result<QuotaView, AppErro
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopQuotaDto {
+    pub account_uuid: Option<String>,
     pub email: Option<String>,
     pub plan: Option<String>,
     pub quota: QuotaView,
@@ -660,7 +664,7 @@ pub(crate) fn forget_default_desktop(vault: &CodeVault) {
 }
 
 pub async fn desktop_quota(id: String, force: bool) -> Result<DesktopQuotaDto, AppError> {
-    use super::desktop_auth::{self, TokenRead};
+    use super::desktop_auth;
 
     let user_data = if id == DEFAULT_DESKTOP_ID {
         desktop_auth::default_user_data_dir()
@@ -668,13 +672,85 @@ pub async fn desktop_quota(id: String, force: bool) -> Result<DesktopQuotaDto, A
         super::validate_account_id(&id)?;
         Some(super::desktop::profile_user_data(&id)?)
     };
-    let key = format!("desktop-{id}");
+    desktop_quota_at(format!("desktop-{id}"), user_data, None, force).await
+}
+
+/// Saved Desktop sign-ins are read without refreshing or rotating their tokens.
+pub async fn desktop_account_quota(id: String, force: bool) -> Result<DesktopQuotaDto, AppError> {
+    super::validate_account_id(&id)?;
+    let vault = CodeVault::open_default()?;
+    let slot = vault.read_slot(&id)?;
+    if slot.disabled() {
+        return Err(AppError::Message("账号已停用".to_string()));
+    }
+    let expected = code::account_uuid_of(&vault, &id)?;
+    let main = super::desktop_swap::main_data_dir();
+    let current = main.as_deref().is_some_and(|dir| {
+        let login = super::desktop_swap::login_of(dir);
+        login.signed_in
+            && login
+                .account_uuid
+                .as_deref()
+                .zip(expected.as_deref())
+                .is_some_and(|(have, want)| have.eq_ignore_ascii_case(want))
+    });
+    let user_data = if current {
+        main
+    } else {
+        super::desktop_swap::quota_data_dir(&vault, &id)?
+    };
+    if user_data.is_none() && slot.kind() == code::SlotKind::Oauth {
+        return Ok(DesktopQuotaDto {
+            account_uuid: expected,
+            email: None,
+            plan: None,
+            quota: account_quota(id, force).await?,
+        });
+    }
+    desktop_quota_at(format!("desktop-saved-{id}"), user_data, expected, force).await
+}
+
+fn snapshot_for_identity(previous: Option<Snapshot>, uuid: Option<&str>) -> Option<Snapshot> {
+    previous.filter(|snapshot| {
+        snapshot
+            .account_uuid
+            .as_deref()
+            .zip(uuid)
+            .is_some_and(|(saved, current)| saved.eq_ignore_ascii_case(current))
+    })
+}
+
+async fn desktop_quota_at(
+    key: String,
+    user_data: Option<std::path::PathBuf>,
+    expected_uuid: Option<String>,
+    force: bool,
+) -> Result<DesktopQuotaDto, AppError> {
+    use super::desktop_auth::{self, TokenRead};
     let lock = code::account_lock(&key);
     let _guard = lock.lock().await;
     let vault = CodeVault::open_default()?;
     let now = now_ms();
-    let previous = read_snapshot(&vault, &key);
+    let identity = user_data
+        .as_deref()
+        .map(super::desktop_swap::login_of)
+        .unwrap_or_default();
+    let uuid = identity.account_uuid.filter(|_| identity.signed_in);
+    let unavailable = || DesktopQuotaDto {
+        account_uuid: None,
+        email: None,
+        plan: None,
+        quota: view_of(None, QuotaStatus::Unavailable, now),
+    };
+    if expected_uuid.as_deref().is_some_and(|expected| {
+        uuid.as_deref()
+            .is_none_or(|current| !current.eq_ignore_ascii_case(expected))
+    }) {
+        return Ok(unavailable());
+    }
+    let previous = snapshot_for_identity(read_snapshot(&vault, &key), uuid.as_deref());
     let answer = |status: QuotaStatus, plan: Option<String>| DesktopQuotaDto {
+        account_uuid: uuid.clone(),
         email: previous
             .as_ref()
             .and_then(|snapshot| snapshot.email.clone()),
@@ -688,10 +764,16 @@ pub async fn desktop_quota(id: String, force: bool) -> Result<DesktopQuotaDto, A
     if !desktop_auth::supported() {
         return Ok(answer(QuotaStatus::Unavailable, None));
     }
+    let token_data = user_data.clone();
     let read =
-        tauri::async_runtime::spawn_blocking(move || desktop_auth::read_token(&user_data, now))
+        tauri::async_runtime::spawn_blocking(move || desktop_auth::read_token(&token_data, now))
             .await
             .map_err(|_| AppError::Message("后台任务未完成，请重试".to_string()))?;
+    let current = super::desktop_swap::login_of(&user_data);
+    if current.signed_in != identity.signed_in || current.account_uuid.as_deref() != uuid.as_deref()
+    {
+        return Ok(unavailable());
+    }
     let entry = match read {
         TokenRead::Ok(entry) => entry,
         TokenRead::NotSignedIn => return Ok(answer(QuotaStatus::NotSignedIn, None)),
@@ -719,7 +801,18 @@ pub async fn desktop_quota(id: String, force: bool) -> Result<DesktopQuotaDto, A
     let (email, organization_type) = desktop_profile(&entry.token).await;
     let plan = token_plan
         .or_else(|| super::plan_label(organization_type.as_deref(), None).map(str::to_string));
+    let current = super::desktop_swap::login_of(&user_data);
+    if !current.signed_in
+        || current
+            .account_uuid
+            .as_deref()
+            .zip(uuid.as_deref())
+            .is_none_or(|(have, want)| !have.eq_ignore_ascii_case(want))
+    {
+        return Ok(unavailable());
+    }
     let snapshot = Snapshot {
+        account_uuid: uuid.clone(),
         fetched_at: now,
         windows: merge_windows(previous.as_ref(), fresh_windows(&quota), now),
         extra_usage: extra_usage_view(&quota),
@@ -734,6 +827,7 @@ pub async fn desktop_quota(id: String, force: bool) -> Result<DesktopQuotaDto, A
         log::warn!("保存 Claude Desktop 账号额度快照失败: {error}");
     }
     Ok(DesktopQuotaDto {
+        account_uuid: uuid,
         email: snapshot.email.clone(),
         plan,
         quota: view_of(Some(&snapshot), QuotaStatus::Fresh, now),
@@ -748,6 +842,26 @@ mod tests {
     use std::sync::Mutex;
 
     const NOW: i64 = 1_790_000_000_000;
+
+    #[test]
+    fn desktop_cached_quota_must_belong_to_the_detected_identity() {
+        let snapshot = Snapshot {
+            fetched_at: NOW,
+            account_uuid: Some("uuid-a".into()),
+            windows: vec![],
+            extra_usage: None,
+            email: Some("a@example.com".into()),
+            plan: Some("Pro".into()),
+        };
+        assert!(snapshot_for_identity(Some(snapshot.clone()), Some("UUID-A")).is_some());
+        assert!(snapshot_for_identity(Some(snapshot.clone()), Some("uuid-b")).is_none());
+        assert!(snapshot_for_identity(Some(snapshot.clone()), None).is_none());
+        let legacy = Snapshot {
+            account_uuid: None,
+            ..snapshot
+        };
+        assert!(snapshot_for_identity(Some(legacy), Some("uuid-a")).is_none());
+    }
 
     fn iso(ms: i64) -> String {
         chrono::DateTime::from_timestamp_millis(ms)
@@ -842,6 +956,7 @@ mod tests {
         ]);
         let view = view_of(
             Some(&Snapshot {
+                account_uuid: None,
                 fetched_at: NOW,
                 windows: fresh_windows(&reading),
                 extra_usage: None,
@@ -882,6 +997,7 @@ mod tests {
     #[test]
     fn a_passed_reset_time_shows_as_reset_until_the_next_reading() {
         let snapshot = Snapshot {
+            account_uuid: None,
             fetched_at: NOW - 3_600_000,
             windows: vec![StoredWindow {
                 name: TIER_FIVE_HOUR.to_string(),
@@ -903,6 +1019,7 @@ mod tests {
     #[test]
     fn a_later_reset_time_after_the_old_one_passed_marks_a_reset() {
         let old = Snapshot {
+            account_uuid: None,
             fetched_at: NOW - 6 * 3_600_000,
             windows: vec![StoredWindow {
                 name: TIER_FIVE_HOUR.to_string(),
@@ -924,6 +1041,7 @@ mod tests {
         assert_eq!(merged[0].reset_observed_at, Some(iso(NOW - 3_600_000)));
         // Same reset time on the next reading: the mark is kept.
         let next = Snapshot {
+            account_uuid: None,
             fetched_at: NOW,
             windows: merged,
             extra_usage: None,
@@ -935,6 +1053,7 @@ mod tests {
         // An unchanged window that never passed its reset is not reset.
         let unchanged = merge_windows(
             Some(&Snapshot {
+                account_uuid: None,
                 fetched_at: NOW,
                 windows: fresh.clone(),
                 extra_usage: None,
@@ -950,6 +1069,7 @@ mod tests {
     #[test]
     fn the_reset_mark_shows_for_an_hour_then_only_usage() {
         let snapshot = |observed: i64| Snapshot {
+            account_uuid: None,
             fetched_at: NOW,
             windows: vec![StoredWindow {
                 name: TIER_FIVE_HOUR.to_string(),

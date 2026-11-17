@@ -391,10 +391,10 @@
 
 :root {
   /* 页面与玻璃层 */
-  --v3-page-top: #e4e7e2;
-  --v3-page-mid: #d3d7d1;
-  --v3-page-bottom: #bfc4be;
-  --v3-grid-line: #0b1c2a10;
+  --v3-page-top: #f2f5f1;
+  --v3-page-mid: #e8ede7;
+  --v3-page-bottom: #dde4dd;
+  --v3-grid-line: #0b1c2a04;
   --v3-grid-size: 24px;
   --v3-glass-fill: #ffffffd0;
   --v3-glass-fill-soft: #ffffff9e;

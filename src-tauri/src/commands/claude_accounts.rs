@@ -318,6 +318,13 @@ pub async fn cancel_claude_browser_login(id: String) -> Result<(), AppError> {
     .map_err(unfinished)?
 }
 
+#[tauri::command]
+pub async fn submit_claude_browser_callback(id: String, input: String) -> Result<(), AppError> {
+    tauri::async_runtime::spawn_blocking(move || browser_login::submit_callback(&id, &input))
+        .await
+        .map_err(unfinished)?
+}
+
 // ===== Parallel sessions and bound folders =====
 
 /// The result of starting Claude in a terminal.
@@ -697,7 +704,11 @@ pub async fn launch_claude_desktop_profile(
             .ok()
             .and_then(|status| status.installation_path)
             .map(PathBuf::from);
-        desktop::launch(&id, installation)
+        if id == quota::DEFAULT_DESKTOP_ID {
+            desktop::launch_default(installation)
+        } else {
+            desktop::launch(&id, installation)
+        }
     })
     .await
     .map_err(unfinished)?
@@ -777,10 +788,21 @@ fn reopen_if_whole(db: &crate::database::Database, vault: &CodeVault) -> bool {
     reopen_desktop(db)
 }
 
+fn desktop_running(main: &Path) -> bool {
+    desktop_swap::data_locked(main)
+        || crate::claude_desktop_config::local_history_roots()
+            .is_ok_and(|(_, api)| desktop_swap::data_locked(&api))
+}
+
 /// Closes the running Desktop. When that fails, what was ended is not known
 /// to the caller, so the error says so.
 fn close_desktop_for_swap(main: &Path) -> Result<bool, AppError> {
-    desktop_swap::close_main_desktop(main).map_err(|error| {
+    let roots = crate::claude_desktop_config::local_history_roots().ok();
+    let locked = roots
+        .as_ref()
+        .map(|(_, api)| api.as_path())
+        .filter(|api| desktop_swap::data_locked(api));
+    desktop_swap::close_main_desktop(locked.unwrap_or(main)).map_err(|error| {
         AppError::Message(format!(
             "{error}（Chimera 已经尝试结束它；如果它的窗口不见了，请手动重新打开）"
         ))
@@ -800,6 +822,143 @@ fn after_close(error: AppError, was_running: bool, restarted: bool) -> AppError 
             "，请手动打开"
         }
     ))
+}
+
+/// Use the provider service's compensated file/selection transaction after the
+/// auth swap, while Desktop is closed. The outer swap restores auth on failure.
+fn activate_official_desktop(state: &AppState) -> Result<(), AppError> {
+    use crate::app_config::AppType;
+    use crate::services::ProviderService;
+    let providers = ProviderService::list(state, AppType::ClaudeDesktop)?;
+    let id = if let Some(provider) = providers
+        .values()
+        .find(|provider| crate::claude_desktop_config::is_official_provider(provider))
+    {
+        provider.id.clone()
+    } else {
+        let id = crate::database::CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID;
+        state
+            .db
+            .ensure_official_seed_by_id(id, AppType::ClaudeDesktop)?;
+        let provider = state
+            .db
+            .get_provider_by_id(id, AppType::ClaudeDesktop.as_str())?
+            .ok_or_else(|| AppError::Message("无法创建官方登录线路".into()))?;
+        if !crate::claude_desktop_config::is_official_provider(&provider) {
+            return Err(AppError::Message(
+                "官方线路标识已被其他配置占用，请先添加官方线路。".into(),
+            ));
+        }
+        id.to_string()
+    };
+    ProviderService::switch(state, AppType::ClaudeDesktop, &id)?;
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopProviderSwitchOutcome {
+    status: DesktopSwapState,
+    was_running: bool,
+    restarted: bool,
+    warnings: Vec<String>,
+}
+
+/// Keep provider transactions, history preparation and the close/reopen flow in
+/// one command. The first call only asks for consent when Desktop is running.
+#[tauri::command]
+pub async fn switch_claude_desktop_provider(
+    state: State<'_, AppState>,
+    id: String,
+    provider: Option<crate::provider::Provider>,
+    close_desktop: bool,
+) -> Result<DesktopProviderSwitchOutcome, String> {
+    let _swap = DESKTOP_SWAP.lock().await;
+    let selected = if let Some(ref provider) = provider {
+        if provider.id != id {
+            return Err("线路标识不一致".into());
+        }
+        provider.clone()
+    } else {
+        crate::services::ProviderService::list(
+            state.inner(),
+            crate::app_config::AppType::ClaudeDesktop,
+        )
+        .map_err(|error| error.to_string())?
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| "未找到要切换的线路".to_string())?
+    };
+    crate::claude_desktop_config::validate_provider(&selected)
+        .map_err(|error| error.to_string())?;
+    let roots =
+        crate::claude_desktop_config::local_history_roots().map_err(|error| error.to_string())?;
+    let was_running =
+        tauri::async_runtime::spawn_blocking(move || -> Result<Option<bool>, AppError> {
+            let running =
+                desktop_swap::data_locked(&roots.0) || desktop_swap::data_locked(&roots.1);
+            if running && !close_desktop {
+                return Ok(None);
+            }
+            if running {
+                close_desktop_for_swap(&roots.0)?;
+                if desktop_swap::data_locked(&roots.1) {
+                    return Err(AppError::Message(
+                        "Claude Desktop 尚未完全退出，已取消切换。".into(),
+                    ));
+                }
+            }
+            Ok(Some(running))
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+    let Some(was_running) = was_running else {
+        return Ok(DesktopProviderSwitchOutcome {
+            status: DesktopSwapState::DesktopRunning,
+            was_running: true,
+            restarted: false,
+            warnings: Vec::new(),
+        });
+    };
+    let db = state.db.clone();
+    let switched = if let Some(provider) = provider {
+        super::provider::add_and_activate_provider(
+            state,
+            "claude-desktop".into(),
+            provider,
+            Some(true),
+            None,
+        )
+        .await
+        .map(|_| Vec::new())
+    } else {
+        super::provider::switch_provider_with_automatic_routing_state(
+            state.inner().clone(),
+            crate::app_config::AppType::ClaudeDesktop,
+            id,
+        )
+        .await
+        .map(|result| result.warnings)
+    };
+    // Existing service transactions restore config/DB/proxy on failure. Reopen
+    // the restored route too, so an aborted switch leaves the app usable.
+    let restarted = if was_running {
+        tauri::async_runtime::spawn_blocking(move || reopen_desktop(&db))
+            .await
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    let warnings = switched.map_err(|error| {
+        after_close(AppError::Message(error), was_running, restarted).to_string()
+    })?;
+    Ok(DesktopProviderSwitchOutcome {
+        status: DesktopSwapState::Done,
+        was_running,
+        restarted,
+        warnings,
+    })
 }
 
 /// Which logins have a Claude Desktop sign-in saved, and who Desktop is
@@ -841,6 +1000,64 @@ pub async fn save_claude_desktop_only_login(
     .map_err(unfinished)?
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopImportOutcome {
+    #[serde(flatten)]
+    pub outcome: DesktopSwapOutcome,
+    pub account: Option<CodeAccountDto>,
+}
+
+/// Checks before creating an account; cancelling the close prompt leaves no partial import.
+#[tauri::command]
+pub async fn import_claude_desktop_login(
+    state: State<'_, AppState>,
+    expected_account_uuid: String,
+    email: Option<String>,
+    close_desktop: bool,
+) -> Result<DesktopImportOutcome, AppError> {
+    let _swap = DESKTOP_SWAP.lock().await;
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let vault = CodeVault::open_default()?;
+        let main = desktop_main_dir()?;
+        desktop_swap::check_import(&main, &expected_account_uuid)?;
+        let running = desktop_running(&main);
+        if running && !close_desktop {
+            return Ok(DesktopImportOutcome {
+                outcome: DesktopSwapOutcome::running(),
+                account: None,
+            });
+        }
+        let was_running = running && close_desktop_for_swap(&main)?;
+        let imported =
+            desktop_swap::import_in(&vault, &main, &expected_account_uuid, email.as_deref());
+        let restarted = was_running && reopen_if_whole(&db, &vault);
+        let account = imported.map_err(|error| after_close(error, was_running, restarted))?;
+        quota::forget_default_desktop(&vault);
+        Ok(DesktopImportOutcome {
+            outcome: DesktopSwapOutcome {
+                status: DesktopSwapState::Done,
+                was_running,
+                restarted,
+                saved_outgoing_for: None,
+                stashed_outgoing: false,
+            },
+            account: Some(account),
+        })
+    })
+    .await
+    .map_err(unfinished)?
+}
+
+#[tauri::command]
+pub async fn get_claude_desktop_account_quota(
+    id: String,
+    force: bool,
+) -> Result<quota::DesktopQuotaDto, AppError> {
+    quota::desktop_account_quota(id, force).await
+}
+
 /// Saves the default Desktop's current sign-in for a saved login. With
 /// `close_desktop`, a running Desktop is closed first and reopened after.
 #[tauri::command]
@@ -859,7 +1076,7 @@ pub async fn capture_claude_desktop_login(
         let main = desktop_main_dir()?;
         // The cheap checks come before Desktop is closed for them.
         desktop_swap::check_capture(&vault, &main, &id)?;
-        let running = desktop_swap::data_locked(&main);
+        let running = desktop_running(&main);
         if running && !close_desktop {
             return Ok(DesktopSwapOutcome::running());
         }
@@ -889,19 +1106,27 @@ pub async fn switch_claude_desktop_account(
 ) -> Result<DesktopSwapOutcome, AppError> {
     crate::claude_accounts::validate_account_id(&id)?;
     let _swap = DESKTOP_SWAP.lock().await;
+    let _profile = state.profile_apply_lock.lock().await;
     let lock = code::account_lock(&id);
     let _guard = lock.lock().await;
+    let switch_state = state.inner().clone();
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let vault = CodeVault::open_default()?;
         let main = desktop_main_dir()?;
         desktop_swap::check_switch(&vault, &main, &id)?;
-        let running = desktop_swap::data_locked(&main);
+        let running = desktop_running(&main);
         if running && !close_desktop {
             return Ok(DesktopSwapOutcome::running());
         }
         let was_running = running && close_desktop_for_swap(&main)?;
-        let switched = desktop_swap::switch_in(&vault, &main, &id);
+        let switched = (|| {
+            let incoming = desktop_swap::snapshot_dir(&vault, &id)?;
+            crate::claude_desktop_config::preserve_local_history(false, Some(&incoming))?;
+            desktop_swap::switch_in(&vault, &main, &id, || {
+                activate_official_desktop(&switch_state)
+            })
+        })();
         // Reopen even when the swap failed, as long as the old sign-in was put back.
         let restarted = was_running && reopen_if_whole(&db, &vault);
         let result = switched.map_err(|error| after_close(error, was_running, restarted))?;
@@ -929,19 +1154,26 @@ pub async fn prepare_claude_desktop_login(
 ) -> Result<DesktopSwapOutcome, AppError> {
     crate::claude_accounts::validate_account_id(&id)?;
     let _swap = DESKTOP_SWAP.lock().await;
+    let _profile = state.profile_apply_lock.lock().await;
     let lock = code::account_lock(&id);
     let _guard = lock.lock().await;
+    let switch_state = state.inner().clone();
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let vault = CodeVault::open_default()?;
         let main = desktop_main_dir()?;
         desktop_swap::check_prepare(&vault, &main, &id)?;
-        let running = desktop_swap::data_locked(&main);
+        let running = desktop_running(&main);
         if running && !close_desktop {
             return Ok(DesktopSwapOutcome::running());
         }
         let was_running = running && close_desktop_for_swap(&main)?;
-        let prepared = desktop_swap::prepare_login_in(&vault, &main, &id);
+        let prepared = (|| {
+            crate::claude_desktop_config::preserve_local_history(false, None)?;
+            desktop_swap::prepare_login_in(&vault, &main, &id, || {
+                activate_official_desktop(&switch_state)
+            })
+        })();
         // Desktop is opened either way: the sign-in page is what this is for.
         let restarted = reopen_if_whole(&db, &vault);
         let result = prepared.map_err(|error| after_close(error, was_running, restarted))?;

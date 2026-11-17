@@ -1,0 +1,73 @@
+.browser-auth-link,
+.browser-auth-manual {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 8px;
+}
+.browser-auth-link label,
+.browser-auth-manual label {
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 500;
+}
+.browser-auth-link input,
+.browser-auth-manual textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-subtle);
+  color: var(--text-1);
+  font-size: 12px;
+  line-height: 1.6;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.browser-auth-link input:focus-visible,
+.browser-auth-manual textarea:focus-visible {
+  outline: 2px solid var(--glass-focus, var(--focus-ring));
+  outline-offset: 2px;
+}
+.browser-auth-manual textarea {
+  resize: vertical;
+  max-height: 180px;
+  overflow-wrap: anywhere;
+}
+.browser-auth-manual textarea[aria-invalid="true"] {
+  border-color: var(--danger-border);
+}
+.browser-auth-link-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.browser-auth-manual {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 16px;
+}
+.browser-auth-manual strong {
+  color: var(--text-1);
+  font-size: 13px;
+  font-weight: 600;
+}
+.browser-auth-manual p,
+.browser-auth-error {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+}
+.browser-auth-manual .browser-auth-error,
+.browser-auth-error {
+  color: var(--danger-fg);
+}
+.browser-auth-manual > button {
+  align-self: flex-start;
+}
+.browser-auth-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}

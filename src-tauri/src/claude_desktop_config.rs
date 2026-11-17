@@ -184,7 +184,39 @@ struct InferenceModelSpec {
 
 pub fn apply_provider(db: &Database, provider: &Provider) -> Result<(), AppError> {
     let paths = current_platform_paths()?;
+    validate_provider(provider)?;
+    prepare_local_history(&paths, !is_official_provider(provider), None)?;
     apply_provider_to_paths(db, provider, &paths)
+}
+
+/// Resolve the same data roots used by the native client and account snapshots.
+pub(crate) fn local_history_roots() -> Result<(PathBuf, PathBuf), AppError> {
+    let paths = current_platform_paths()?;
+    Ok((
+        paths.normal_config_path.parent().unwrap().to_path_buf(),
+        paths.threep_config_path.parent().unwrap().to_path_buf(),
+    ))
+}
+
+pub(crate) fn preserve_local_history(
+    seed_api: bool,
+    incoming_login: Option<&Path>,
+) -> Result<(), AppError> {
+    prepare_local_history(&current_platform_paths()?, seed_api, incoming_login)
+}
+
+fn prepare_local_history(
+    paths: &ClaudeDesktopPaths,
+    seed_api: bool,
+    incoming_login: Option<&Path>,
+) -> Result<(), AppError> {
+    crate::claude_desktop_history::prepare_switch(
+        paths.normal_config_path.parent().unwrap(),
+        paths.threep_config_path.parent().unwrap(),
+        seed_api,
+        incoming_login,
+        &get_home_dir().join(".claude").join("projects"),
+    )
 }
 
 pub(crate) fn capture_live_snapshot() -> Result<Option<ClaudeDesktopLiveSnapshot>, AppError> {
@@ -1518,7 +1550,12 @@ fn current_platform_paths() -> Result<ClaudeDesktopPaths, AppError> {
     #[cfg(windows)]
     {
         let local_app_data = windows_local_app_data_dir();
-        return Ok(windows_paths_from_local_app_data(&local_app_data));
+        let fallback = windows_paths_from_local_app_data(&local_app_data);
+        return Ok(paths_from_dirs(
+            crate::claude_desktop_paths::default_user_data_dir()
+                .unwrap_or_else(|| fallback.normal_config_path.parent().unwrap().to_path_buf()),
+            local_app_data.join("Claude-3p"),
+        ));
     }
 
     #[cfg(not(any(target_os = "macos", windows)))]
@@ -1540,39 +1577,27 @@ fn windows_local_app_data_dir() -> PathBuf {
         .unwrap_or_else(|| get_home_dir().join("AppData").join("Local"))
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn windows_paths_from_local_app_data(local_app_data: &Path) -> ClaudeDesktopPaths {
-    let normal_dir = pick_windows_claude_dir(local_app_data, false)
-        .unwrap_or_else(|| local_app_data.join("Claude"));
-    let threep_dir = pick_windows_claude_dir(local_app_data, true)
-        .unwrap_or_else(|| local_app_data.join("Claude-3p"));
-    paths_from_dirs(normal_dir, threep_dir)
-}
-
-#[cfg(windows)]
-fn pick_windows_claude_dir(local_app_data: &Path, threep: bool) -> Option<PathBuf> {
-    let exact_name = if threep { "Claude-3p" } else { "Claude" };
-    let exact = local_app_data.join(exact_name);
-    if exact.exists() {
-        return Some(exact);
-    }
-
-    let mut candidates: Vec<PathBuf> = std::fs::read_dir(local_app_data)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
-        .filter(|path| {
-            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
-                return false;
-            };
-            let starts = name.starts_with("Claude");
-            let is_threep = name.contains("-3p");
-            starts && is_threep == threep
-        })
-        .collect();
-    candidates.sort();
-    candidates.into_iter().next()
+    let packaged =
+        crate::security_limits::read_dir_without_links(&local_app_data.join("Claude-Data"))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("claude_"))
+            .filter_map(|entry| {
+                let path = entry.path();
+                let modified = std::fs::metadata(path.join("config.json"))
+                    .ok()?
+                    .modified()
+                    .ok()?;
+                Some((modified, path))
+            })
+            .max_by_key(|(modified, _)| *modified)
+            .map(|(_, path)| path);
+    paths_from_dirs(
+        packaged.unwrap_or_else(|| local_app_data.join("Claude")),
+        local_app_data.join("Claude-3p"),
+    )
 }
 
 #[cfg(any(target_os = "macos", windows, test))]
@@ -1616,6 +1641,20 @@ fn unsupported_platform_error() -> AppError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn windows_paths_resolve_packaged_user_data_instead_of_its_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let native = dir.path().join("Claude-Data").join("claude_testpublisher");
+        std::fs::create_dir_all(&native).unwrap();
+        std::fs::write(native.join("config.json"), "{}").unwrap();
+        let paths = windows_paths_from_local_app_data(dir.path());
+        assert_eq!(paths.normal_config_path, native.join(CONFIG_FILE));
+        assert_eq!(
+            paths.threep_config_path,
+            dir.path().join("Claude-3p").join(CONFIG_FILE)
+        );
+    }
+
     #[test]
     fn msix_detection_takes_the_newest_signed_claude_package() {
         let packages = vec![

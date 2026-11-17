@@ -23,6 +23,8 @@ vi.mock("@/lib/api/providers", () => ({
     onSwitched: vi.fn(),
     addAndActivate: vi.fn(),
     switch: vi.fn(),
+    switchClaudeDesktop: vi.fn(),
+    getClaudeDesktopStatus: vi.fn(),
     removeFromLiveConfig: vi.fn(),
     openTerminal: vi.fn(),
     importDefault: vi.fn(),
@@ -54,6 +56,9 @@ vi.mock("@/views/ToolViewEditor", () => ({
     </section>
   ),
 }));
+vi.mock("@/components/proxy/ClaudeDesktopRouteToggle", () => ({
+  ClaudeDesktopRouteToggle: () => null,
+}));
 vi.mock("@/components/settings/AboutSection", () => ({
   AboutSection: () => null,
 }));
@@ -72,6 +77,20 @@ beforeEach(() => {
   vi.mocked(providersApi.importDefault).mockResolvedValue(true);
   vi.mocked(providersApi.importOpenCodeFromLive).mockResolvedValue(1);
 
+  vi.mocked(providersApi.switchClaudeDesktop).mockResolvedValue({
+    status: "done",
+    wasRunning: false,
+    restarted: false,
+    warnings: [],
+  });
+  vi.mocked(providersApi.getClaudeDesktopStatus).mockResolvedValue({
+    supported: true,
+    configured: false,
+    proxyRunning: false,
+    staleRawModels: false,
+    missingRouteMappings: false,
+    gatewayTokenConfigured: false,
+  });
   vi.mocked(providersApi.switch).mockResolvedValue({
     warnings: [],
     routingChanged: false,
@@ -877,5 +896,99 @@ describe("deleting from a Grok Build line editor", () => {
     expect(
       within(editor).queryByRole("button", { name: "编辑器删除线路" }),
     ).toBeNull();
+  });
+});
+
+describe("Claude Desktop local history switches", () => {
+  const line: Provider = { id: "api", name: "Desktop API", settingsConfig: {} };
+  beforeEach(() => {
+    vi.mocked(providersApi.getAll).mockResolvedValue({ api: line });
+    vi.mocked(providersApi.getCurrent).mockResolvedValue("");
+  });
+  const button = async () => {
+    await screen.findByText(line.name);
+    const row =
+      screen.getByText(line.name).closest(".tool-line-row") ??
+      screen.getByText(line.name).parentElement!.parentElement!;
+    const result = within(row as HTMLElement).getByRole("button", {
+      name: "切换",
+    });
+    await waitFor(() => expect(result).toBeEnabled());
+    return result;
+  };
+  it("waits for confirmation before closing Desktop and reports preserved local history", async () => {
+    vi.mocked(providersApi.switchClaudeDesktop)
+      .mockResolvedValueOnce({
+        status: "desktop_running",
+        wasRunning: true,
+        restarted: false,
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        status: "done",
+        wasRunning: true,
+        restarted: true,
+        warnings: [],
+      });
+    render(<ToolView toolId="claude-desktop" native />);
+    fireEvent.click(await button());
+    const dialog = await screen.findByRole("dialog", {
+      name: "切换线路并保留本地会话",
+    });
+    expect(dialog).toHaveTextContent("未发送的输入");
+    expect(providersApi.switchClaudeDesktop).toHaveBeenCalledTimes(1);
+    expect(providersApi.switchClaudeDesktop).toHaveBeenLastCalledWith(
+      "api",
+      false,
+      undefined,
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "关闭并切换" }));
+    await waitFor(() =>
+      expect(providersApi.switchClaudeDesktop).toHaveBeenLastCalledWith(
+        "api",
+        true,
+        undefined,
+      ),
+    );
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith("已切换至「Desktop API」", {
+        description: "本地会话已保留，Claude Desktop 已重新打开。",
+      }),
+    );
+    expect(providersApi.switch).not.toHaveBeenCalled();
+  });
+  it("cancelling keeps the active app and route unchanged", async () => {
+    vi.mocked(providersApi.switchClaudeDesktop).mockResolvedValue({
+      status: "desktop_running",
+      wasRunning: true,
+      restarted: false,
+      warnings: [],
+    });
+    render(<ToolView toolId="claude-desktop" native />);
+    fireEvent.click(await button());
+    const dialog = await screen.findByRole("dialog", {
+      name: "切换线路并保留本地会话",
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "切换线路并保留本地会话" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(providersApi.switchClaudeDesktop).toHaveBeenCalledTimes(1);
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+  it("shows the history failure and does not claim the route was switched", async () => {
+    vi.mocked(providersApi.switchClaudeDesktop).mockRejectedValue(
+      "本地会话正文缺失，已取消切换",
+    );
+    render(<ToolView toolId="claude-desktop" native />);
+    fireEvent.click(await button());
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("Claude Desktop 配置未更新", {
+        description: "本地会话正文缺失，已取消切换",
+      }),
+    );
+    expect(toast.success).not.toHaveBeenCalled();
   });
 });

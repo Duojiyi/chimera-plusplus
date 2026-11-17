@@ -58,34 +58,62 @@ fn split_scheme_host(endpoint: &str) -> (&str, &str) {
     }
 }
 
-/// Build the full URL for an S3 object.
-///
-/// - AWS endpoints use virtual-hosted style: `https://{bucket}.s3.{region}.amazonaws.com/{key}`
-/// - Custom endpoints use path style:       `https://{endpoint}/{bucket}/{key}`
-fn build_object_url(creds: &S3Credentials, key: &str) -> String {
-    let key = key.trim_start_matches('/');
-    if is_aws_endpoint(&creds.endpoint) {
-        format!(
-            "https://{}.s3.{}.amazonaws.com/{}",
-            creds.bucket, creds.region, key
-        )
-    } else {
-        let (scheme, host) = split_scheme_host(&creds.endpoint);
-        format!("{}://{}/{}/{}", scheme, host, creds.bucket, key)
+// Adapted from farion1231/cc-switch 98d2781c6962bf2e35029ad62bede5b548726d97 (MIT).
+// Copyright (c) 2025 Jason Young. Modified: match only parsed endpoint hostnames.
+const VIRTUAL_HOSTED_ONLY_DOMAINS: [&str; 3] =
+    [".aliyuncs.com", ".myqcloud.com", ".myhuaweicloud.com"];
+
+fn requires_virtual_hosted(host: &str) -> bool {
+    // Reject URL parts before parsing can normalize paths or empty userinfo.
+    if host
+        .chars()
+        .any(|c| matches!(c, '/' | '\\' | '?' | '#' | '@'))
+    {
+        return false;
     }
+    let Ok(endpoint) = Url::parse(&format!("https://{host}")) else {
+        return false;
+    };
+    // Only bare authorities opt in; custom endpoint paths and other URL parts
+    // retain their existing path-style behavior.
+    endpoint.username().is_empty()
+        && endpoint.password().is_none()
+        && endpoint.path() == "/"
+        && endpoint.query().is_none()
+        && endpoint.fragment().is_none()
+        && endpoint.host_str().is_some_and(|hostname| {
+            VIRTUAL_HOSTED_ONLY_DOMAINS
+                .iter()
+                .any(|domain| hostname.ends_with(domain))
+        })
+}
+
+/// Bucket URL without a trailing slash. OSS, COS and OBS require virtual-hosted
+/// addressing; other custom endpoints retain path style.
+fn bucket_base_url(creds: &S3Credentials) -> String {
+    if is_aws_endpoint(&creds.endpoint) {
+        return format!("https://{}.s3.{}.amazonaws.com", creds.bucket, creds.region);
+    }
+    let (scheme, host) = split_scheme_host(&creds.endpoint);
+    if !requires_virtual_hosted(host) {
+        return format!("{}://{}/{}", scheme, host, creds.bucket);
+    }
+    let bucket_prefix = format!("{}.", creds.bucket.to_ascii_lowercase());
+    if host.to_ascii_lowercase().starts_with(&bucket_prefix) {
+        format!("{scheme}://{host}")
+    } else {
+        format!("{}://{}.{}", scheme, creds.bucket, host)
+    }
+}
+
+/// Build the full URL for an S3 object.
+fn build_object_url(creds: &S3Credentials, key: &str) -> String {
+    format!("{}/{}", bucket_base_url(creds), key.trim_start_matches('/'))
 }
 
 /// Build the bucket-level URL (for HEAD bucket / test connection).
 fn build_bucket_url(creds: &S3Credentials) -> String {
-    if is_aws_endpoint(&creds.endpoint) {
-        format!(
-            "https://{}.s3.{}.amazonaws.com/",
-            creds.bucket, creds.region
-        )
-    } else {
-        let (scheme, host) = split_scheme_host(&creds.endpoint);
-        format!("{}://{}/{}/", scheme, host, creds.bucket)
-    }
+    format!("{}/", bucket_base_url(creds))
 }
 
 // ─── Cryptographic helpers ───────────────────────────────────
@@ -723,6 +751,163 @@ mod tests {
         assert!(!is_aws_endpoint("minio.example.com"));
         assert!(!is_aws_endpoint("storage.googleapis.com"));
         assert!(!is_aws_endpoint("r2.cloudflarestorage.com"));
+    }
+
+    #[test]
+    fn s3_cloud_addressing_uses_virtual_hosts_for_oss_cos_obs() {
+        for (endpoint, bucket, base) in [
+            (
+                "oss-cn-hangzhou.aliyuncs.com",
+                "mybucket",
+                "https://mybucket.oss-cn-hangzhou.aliyuncs.com",
+            ),
+            (
+                "https://s3.oss-cn-hangzhou.aliyuncs.com/",
+                "mybucket",
+                "https://mybucket.s3.oss-cn-hangzhou.aliyuncs.com",
+            ),
+            (
+                "https://cos.ap-beijing.myqcloud.com",
+                "ccs-1250000000",
+                "https://ccs-1250000000.cos.ap-beijing.myqcloud.com",
+            ),
+            (
+                "http://obs.cn-north-4.myhuaweicloud.com:9000/",
+                "mybucket",
+                "http://mybucket.obs.cn-north-4.myhuaweicloud.com:9000",
+            ),
+        ] {
+            let creds = test_creds(endpoint, "auto", bucket);
+            assert_eq!(build_bucket_url(&creds), format!("{base}/"));
+            assert_eq!(
+                build_object_url(&creds, "/folder/object.json"),
+                format!("{base}/folder/object.json")
+            );
+            assert_eq!(build_object_url(&creds, ""), format!("{base}/"));
+        }
+    }
+
+    #[test]
+    fn s3_cloud_addressing_handles_bucket_prefix_case_and_ports() {
+        for (endpoint, bucket, base) in [
+            (
+                "https://CCS-1250000000.COS.AP-BEIJING.MYQCLOUD.COM:9443/",
+                "ccs-1250000000",
+                "https://CCS-1250000000.COS.AP-BEIJING.MYQCLOUD.COM:9443",
+            ),
+            (
+                "http://OSS-CN-HANGZHOU.ALIYUNCS.COM:9000",
+                "mybucket",
+                "http://mybucket.OSS-CN-HANGZHOU.ALIYUNCS.COM:9000",
+            ),
+            (
+                "mybucket.obs.cn-north-4.myhuaweicloud.com",
+                "mybucket",
+                "https://mybucket.obs.cn-north-4.myhuaweicloud.com",
+            ),
+            (
+                "mybucket-old.oss-cn-hangzhou.aliyuncs.com",
+                "mybucket",
+                "https://mybucket.mybucket-old.oss-cn-hangzhou.aliyuncs.com",
+            ),
+        ] {
+            let creds = test_creds(endpoint, "auto", bucket);
+            assert_eq!(build_bucket_url(&creds), format!("{base}/"));
+            assert_eq!(build_object_url(&creds, "key"), format!("{base}/key"));
+        }
+    }
+
+    #[test]
+    fn s3_cloud_addressing_keeps_other_endpoints_path_style() {
+        for (endpoint, base) in [
+            (
+                "http://minio.local:9000",
+                "http://minio.local:9000/mybucket",
+            ),
+            (
+                "https://account.r2.cloudflarestorage.com",
+                "https://account.r2.cloudflarestorage.com/mybucket",
+            ),
+            ("http://[::1]:9000", "http://[::1]:9000/mybucket"),
+            (
+                "oss-cn-hangzhou.aliyuncs.com.evil.example",
+                "https://oss-cn-hangzhou.aliyuncs.com.evil.example/mybucket",
+            ),
+            ("notaliyuncs.com", "https://notaliyuncs.com/mybucket"),
+            ("aliyuncs.com", "https://aliyuncs.com/mybucket"),
+            (
+                "https://storage.example.com/oss.aliyuncs.com",
+                "https://storage.example.com/oss.aliyuncs.com/mybucket",
+            ),
+            (
+                "https://oss-cn-hangzhou.aliyuncs.com/prefix",
+                "https://oss-cn-hangzhou.aliyuncs.com/prefix/mybucket",
+            ),
+        ] {
+            let creds = test_creds(endpoint, "auto", "mybucket");
+            assert_eq!(build_bucket_url(&creds), format!("{base}/"));
+            assert_eq!(build_object_url(&creds, "key"), format!("{base}/key"));
+        }
+
+        // Parsing alone normalizes dot paths, backslashes and empty userinfo.
+        for authority in [
+            "@oss-cn-hangzhou.aliyuncs.com",
+            "user:password@oss-cn-hangzhou.aliyuncs.com",
+            "oss-cn-hangzhou.aliyuncs.com/prefix/..",
+            r"oss-cn-hangzhou.aliyuncs.com\",
+            "oss-cn-hangzhou.aliyuncs.com?query=1",
+            "oss-cn-hangzhou.aliyuncs.com#fragment",
+        ] {
+            assert!(!requires_virtual_hosted(authority), "{authority}");
+        }
+    }
+
+    #[test]
+    fn s3_cloud_addressing_signs_final_host_port_and_path() {
+        let mut creds = test_creds(
+            "http://oss-cn-hangzhou.aliyuncs.com:9000",
+            "cn-hangzhou",
+            "mybucket",
+        );
+        creds.access_key_id = "TESTKEY".to_string();
+        creds.secret_access_key = "TESTSECRET".to_string();
+        let now = chrono::Utc.with_ymd_and_hms(2026, 11, 17, 0, 0, 0).unwrap();
+        // Fixed SigV4 vectors calculated independently for these literal URLs,
+        // TESTSECRET, the timestamp above and the empty / {} payloads.
+        for (method, raw_url, body, signature) in [
+            (
+                "HEAD",
+                build_bucket_url(&creds),
+                "",
+                "f76e5635c78b6ae85b81588084cb546e5429339c22261689db552675e4dc11ba",
+            ),
+            (
+                "PUT",
+                build_object_url(&creds, "folder/object.json"),
+                "{}",
+                "7726e25df31168810a5189661f5d028b548f63b3450bc839c45dfb024aa31cda",
+            ),
+        ] {
+            let url = Url::parse(&raw_url).unwrap();
+            let mut headers = reqwest::header::HeaderMap::new();
+            sign_request(
+                method,
+                &url,
+                &mut headers,
+                &sha256_hex(body.as_bytes()),
+                &creds,
+                now,
+            );
+            assert_eq!(
+                headers.get("host").unwrap().to_str().unwrap(),
+                "mybucket.oss-cn-hangzhou.aliyuncs.com:9000"
+            );
+            let authorization = headers.get("authorization").unwrap().to_str().unwrap();
+            assert!(
+                authorization.ends_with(&format!("Signature={signature}")),
+                "{authorization}"
+            );
+        }
     }
 
     // ── URI encoding ──

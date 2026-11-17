@@ -136,6 +136,8 @@ struct ActiveLogin {
     child: Child,
     output: Arc<Mutex<CapturedOutput>>,
     expires_at: DateTime<Utc>,
+    browser_authorization: Option<String>,
+    callback_submitted: bool,
 }
 
 impl ActiveLogin {
@@ -331,6 +333,8 @@ fn start_with_mode(
         child,
         output,
         expires_at: started + chrono::Duration::seconds(DEVICE_CODE_LIFETIME_SECS),
+        browser_authorization: None,
+        callback_submitted: false,
     };
     let flow_id = login.flow_id.clone();
     let expires_at = login.expires_at;
@@ -371,6 +375,14 @@ fn start_with_mode(
         std::thread::sleep(Duration::from_millis(100));
     };
 
+    if browser {
+        let mut active = active_login()?;
+        let login = active
+            .as_mut()
+            .filter(|login| login.flow_id == flow_id)
+            .ok_or_else(|| AppError::Message("登录已取消".to_string()))?;
+        login.browser_authorization = Some(prompt.verification_url.clone());
+    }
     let started = StartedLogin {
         flow_id,
         prompt,
@@ -443,6 +455,65 @@ pub(crate) fn poll(flow_id: &str) -> Result<LoginPoll, AppError> {
         login.finish();
     }
     Ok(outcome)
+}
+
+/// Forward only the current browser flow's validated loopback callback.
+/// No proxy, redirects, or caller-supplied destination can receive its code.
+pub(crate) async fn submit_callback(flow_id: &str, input: &str) -> Result<(), AppError> {
+    let callback = {
+        let mut active = active_login()?;
+        let login = active
+            .as_mut()
+            .filter(|login| login.flow_id == flow_id)
+            .ok_or_else(|| AppError::Message("这次登录已结束，请重新开始。".to_string()))?;
+        if Utc::now() >= login.expires_at || !matches!(login.child.try_wait(), Ok(None)) {
+            return Err(AppError::Message(
+                "这次登录已结束，请重新开始。".to_string(),
+            ));
+        }
+        let authorization = login
+            .browser_authorization
+            .as_deref()
+            .ok_or_else(|| AppError::Message("请先启动浏览器登录，再提交回调地址。".to_string()))?;
+        let callback = crate::oauth_callback::local_callback(input, authorization)?;
+        if login.callback_submitted {
+            return Err(AppError::Message(
+                "回调地址已提交，正在等待确认。".to_string(),
+            ));
+        }
+        login.callback_submitted = true;
+        callback
+    };
+    let result = async {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(2))
+            .timeout(Duration::from_secs(10))
+            .build()
+            .map_err(|_| AppError::Message("无法准备本机回调，请重试。".to_string()))?;
+        let response = client.get(callback).send().await.map_err(|_| {
+            AppError::Message(
+                "无法连接本次登录的本机回调，请确认登录仍在等待，或重新开始。".to_string(),
+            )
+        })?;
+        if !response.status().is_success() && !response.status().is_redirection() {
+            return Err(AppError::Message(
+                "官方登录程序未接受此回调，请检查地址是否完整，或重新开始。".to_string(),
+            ));
+        }
+        Ok(())
+    }
+    .await;
+    if result.is_err() {
+        if let Some(login) = active_login()?
+            .as_mut()
+            .filter(|login| login.flow_id == flow_id)
+        {
+            login.callback_submitted = false;
+        }
+    }
+    result
 }
 
 pub(crate) fn cancel(flow_id: &str) -> Result<(), AppError> {
@@ -840,5 +911,91 @@ mod tests {
         assert!(next_home.exists());
         cancel(&next.flow_id).unwrap();
         assert!(!next_home.exists());
+    }
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    #[serial_test::serial(official_device_login)]
+    async fn manual_browser_callback_is_validated_forwarded_locally_and_retryable() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let dir = TempDir::new().unwrap();
+        let _cleanup = LoginCleanup;
+        let vault = Vault::open_at(dir.path().join("vault")).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let callback =
+            format!("http://{address}/auth/callback?code=manual&state=current&extra=discard");
+        let mut authorization = url::Url::parse("https://auth.openai.com/oauth/authorize").unwrap();
+        authorization
+            .query_pairs_mut()
+            .append_pair("state", "current")
+            .append_pair("redirect_uri", &format!("http://{address}/auth/callback"));
+        let program = fake_cli(dir.path());
+        let printed_url = authorization.as_str().to_string();
+        #[cfg(windows)]
+        let printed_url = printed_url.replace('%', "%%").replace('&', "^&");
+        let script = std::fs::read_to_string(&program)
+            .unwrap()
+            .replace("--device-auth", "")
+            .replace("https://auth.openai.com/codex/device", &printed_url);
+        std::fs::write(&program, script).unwrap();
+        let started = start_with_mode(&vault, &[program], true).unwrap();
+        assert_eq!(started.prompt.verification_url, authorization.as_str());
+        assert!(submit_callback("stale-flow", &callback).await.is_err());
+        assert!(
+            submit_callback(&started.flow_id, &callback.replace("current", "old"))
+                .await
+                .is_err()
+        );
+        let receiver = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let mut requests = Vec::new();
+            for status in ["400 Bad Request", "302 Found"] {
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "callback was not forwarded");
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("{error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0; 1024];
+                while !request.ends_with(b"\r\n\r\n") && request.len() < 8192 {
+                    let count = stream.read(&mut chunk).unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&chunk[..count]);
+                }
+                requests.push(String::from_utf8(request).unwrap());
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Length: 0\r\nLocation: https://example.invalid/never-follow\r\nConnection: close\r\n\r\n").unwrap();
+            }
+            requests
+        });
+        let error = submit_callback(&started.flow_id, &callback)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("code=manual"));
+        submit_callback(&started.flow_id, &callback).await.unwrap();
+        assert!(submit_callback(&started.flow_id, &callback).await.is_err());
+        let requests = receiver.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        for request in requests {
+            assert!(
+                request.starts_with("GET /auth/callback?code=manual&state=current HTTP/1.1\r\n")
+            );
+            assert!(!request.contains("extra=discard"));
+        }
+        cancel(&started.flow_id).unwrap();
+        assert!(submit_callback(&started.flow_id, &callback).await.is_err());
+        let device = start_with_programs(&vault, &[fake_cli(dir.path())]).unwrap();
+        assert!(submit_callback(&device.flow_id, &callback).await.is_err());
+        cancel(&device.flow_id).unwrap();
     }
 }

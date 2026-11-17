@@ -1896,6 +1896,19 @@ impl RequestForwarder {
             );
         }
 
+        if should_normalize_third_party_codex_responses(
+            app_type,
+            provider,
+            codex_protocol,
+            codex_responses_endpoint,
+        ) && super::providers::normalize_third_party_codex_responses(&mut request_body)
+        {
+            log::debug!(
+                "[Codex] Normalized third-party native Responses fields (provider={})",
+                provider.id
+            );
+        }
+
         // Plain native Responses upstream (Azure/Bedrock/OpenAI-compatible):
         // `"content": null` on a reasoning item is optional-but-strictly-typed,
         // so strict lines reject it with 400. The xAI sanitizer above already
@@ -3869,6 +3882,21 @@ fn apply_local_proxy_header_overrides(
     }
 }
 
+/// Only native Responses requests to external providers need this cleanup.
+/// Keep the official/managed backend and both protocol bridges untouched.
+fn should_normalize_third_party_codex_responses(
+    app_type: &AppType,
+    provider: &Provider,
+    protocol: Option<super::codex_url::CodexUpstreamProtocol>,
+    responses_endpoint: bool,
+) -> bool {
+    matches!(app_type, AppType::Codex | AppType::GrokBuild)
+        && responses_endpoint
+        && protocol == Some(super::codex_url::CodexUpstreamProtocol::Native)
+        && !super::providers::is_codex_official_provider(provider)
+        && !provider.is_codex_oauth()
+}
+
 fn prepare_upstream_request_body(request_body: Value) -> Value {
     canonicalize_value(filter_private_params_with_whitelist(request_body, &[]))
 }
@@ -4027,6 +4055,55 @@ mod tests {
             non_streaming_timeout,
             streaming_first_byte_timeout,
             max_attempts: 1,
+        }
+    }
+
+    #[test]
+    fn third_party_responses_gate_preserves_official_and_converted_requests() {
+        use super::super::codex_url::CodexUpstreamProtocol::{Anthropic, Chat, Native};
+
+        let third_party = test_provider_with_type(None);
+        for app in [AppType::Codex, AppType::GrokBuild] {
+            assert!(should_normalize_third_party_codex_responses(
+                &app,
+                &third_party,
+                Some(Native),
+                true
+            ));
+            assert!(!should_normalize_third_party_codex_responses(
+                &app,
+                &third_party,
+                Some(Native),
+                false
+            ));
+            for protocol in [None, Some(Chat), Some(Anthropic)] {
+                assert!(!should_normalize_third_party_codex_responses(
+                    &app,
+                    &third_party,
+                    protocol,
+                    true
+                ));
+            }
+        }
+        assert!(!should_normalize_third_party_codex_responses(
+            &AppType::Claude,
+            &third_party,
+            Some(Native),
+            true
+        ));
+        let mut official = third_party.clone();
+        official.id = crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string();
+        official.category = Some("official".to_string());
+        let managed = test_provider_with_type(Some("codex_oauth"));
+        for provider in [official, managed] {
+            for app in [AppType::Codex, AppType::GrokBuild] {
+                assert!(!should_normalize_third_party_codex_responses(
+                    &app,
+                    &provider,
+                    Some(Native),
+                    true
+                ));
+            }
         }
     }
 

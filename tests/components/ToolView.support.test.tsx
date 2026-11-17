@@ -10,6 +10,7 @@ vi.mock("@/lib/api/providers", () => ({
     add: vi.fn(),
     update: vi.fn(),
     switch: vi.fn(),
+    switchClaudeDesktop: vi.fn(),
     removeFromLiveConfig: vi.fn(),
     getClaudeDesktopStatus: vi.fn(),
     importClaudeDesktopFromClaude: vi.fn(),
@@ -101,6 +102,12 @@ beforeEach(() => {
     warnings: [],
     routingChanged: false,
   });
+  vi.mocked(providersApi.switchClaudeDesktop).mockResolvedValue({
+    status: "done",
+    wasRunning: false,
+    restarted: false,
+    warnings: [],
+  });
   vi.mocked(providersApi.getClaudeDesktopStatus).mockResolvedValue({
     supported: true,
     configured: true,
@@ -186,9 +193,20 @@ describe("additional native tools", () => {
       });
       await waitFor(() => expect(button).toBeEnabled());
       fireEvent.click(button);
-      await waitFor(() =>
-        expect(providersApi.switch).toHaveBeenCalledWith("p", appId),
-      );
+      if (appId === "claude-desktop") {
+        await waitFor(() =>
+          expect(providersApi.switchClaudeDesktop).toHaveBeenCalledWith(
+            "p",
+            false,
+            undefined,
+          ),
+        );
+        expect(providersApi.switch).not.toHaveBeenCalled();
+      } else {
+        await waitFor(() =>
+          expect(providersApi.switch).toHaveBeenCalledWith("p", appId),
+        );
+      }
     },
   );
   it("does not claim Desktop is installed or expose unsupported writes", async () => {

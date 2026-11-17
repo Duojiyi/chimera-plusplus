@@ -268,13 +268,13 @@
   margin-left: auto;
   font-family: var(--font-latin), var(--font-cjk), sans-serif;
 }
-/* Columns: status, line, address, model, actions. The minimums add up to
-   about 650px, so the list fits the 694px content width of the 960px minimum
-   window without a hidden horizontal scroll. Multi-line tools have no 切换
+/* Columns: status, line, address, model, actions. Including gaps and padding,
+   the switch table needs 634px and fits the 636px card interior at 960px.
+   Multi-line tools have no 切换
    button, so their action column only holds the busy spinner, edit and
    delete. */
 .tool-lines {
-  --tool-line-cols: 44px minmax(140px, 1.1fr) minmax(160px, 1.7fr)
+  --tool-line-cols: 44px minmax(120px, 1.1fr) minmax(160px, 1.7fr)
     minmax(100px, 1fr) 136px;
   display: flex;
   flex-direction: column;

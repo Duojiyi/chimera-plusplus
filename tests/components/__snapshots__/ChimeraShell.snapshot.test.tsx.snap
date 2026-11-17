@@ -132,7 +132,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </span>
       </button>
       <button
-        class="v3-nav-item is-sub"
+        class="v3-nav-item"
         data-pencil-name="能力 · 官方账号"
         type="button"
       >
@@ -645,7 +645,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </span>
       </button>
       <button
-        class="v3-nav-item is-sub"
+        class="v3-nav-item"
         data-pencil-name="能力 · 官方账号"
         type="button"
       >

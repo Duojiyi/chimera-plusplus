@@ -4,6 +4,8 @@ mod auto_launch;
 mod builtin_templates;
 mod claude_accounts;
 mod claude_desktop_config;
+mod claude_desktop_history;
+mod claude_desktop_paths;
 mod claude_mcp;
 mod claude_plugin;
 mod codex_accounts;
@@ -34,6 +36,7 @@ mod proxy_marker;
 
 mod mcp;
 mod model_capabilities;
+mod oauth_callback;
 mod official_account_meta;
 
 mod opencode_config;
@@ -1760,6 +1763,7 @@ pub fn run() {
             commands::save_current_official_login,
             commands::start_official_device_login,
             commands::start_official_browser_login,
+            commands::submit_official_browser_callback,
             commands::poll_official_device_login,
             commands::cancel_official_device_login,
             commands::remove_official_account,
@@ -1795,12 +1799,16 @@ pub fn run() {
             commands::get_claude_usage_overview,
             commands::get_claude_desktop_swap_status,
             commands::capture_claude_desktop_login,
+            commands::import_claude_desktop_login,
+            commands::get_claude_desktop_account_quota,
             commands::save_claude_desktop_only_login,
             commands::switch_claude_desktop_account,
+            commands::switch_claude_desktop_provider,
             commands::prepare_claude_desktop_login,
             commands::export_claude_logins,
             commands::import_claude_logins,
             commands::begin_claude_browser_login,
+            commands::submit_claude_browser_callback,
             commands::poll_claude_browser_login,
             commands::cancel_claude_browser_login,
             commands::list_claude_desktop_profiles,

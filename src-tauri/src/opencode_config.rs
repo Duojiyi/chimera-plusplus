@@ -181,6 +181,11 @@ pub fn get_mcp_servers() -> Result<Map<String, Value>, AppError> {
 
 pub fn add_plugin(plugin_name: &str) -> Result<(), AppError> {
     let mut config = read_opencode_config()?;
+    set_plugin_in_config(&mut config, plugin_name);
+    write_opencode_config(&config)
+}
+
+pub(crate) fn set_plugin_in_config(config: &mut Value, plugin_name: &str) {
     let normalized_plugin_name = canonicalize_plugin_name(plugin_name);
 
     let plugins = config.get_mut("plugin").and_then(|v| v.as_array_mut());
@@ -220,8 +225,6 @@ pub fn add_plugin(plugin_name: &str) -> Result<(), AppError> {
             config["plugin"] = json!([normalized_plugin_name]);
         }
     }
-
-    write_opencode_config(&config)
 }
 
 pub fn remove_plugins_by_prefixes(prefixes: &[&str]) -> Result<(), AppError> {

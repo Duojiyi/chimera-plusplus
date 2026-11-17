@@ -1093,13 +1093,3 @@
   font-size: 11px;
   font-weight: 500;
 }
-
-/* 侧栏子项：官方账号属于线路，缩进挂在「线路」下面。 */
-.chimera-shell .v3-nav-item.is-sub {
-  padding-left: 30px;
-  font-size: 12px;
-}
-.chimera-shell .v3-nav-item.is-sub .v3-nav-icon {
-  width: 13px;
-  height: 13px;
-}

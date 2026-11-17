@@ -1,3 +1,4 @@
+use crate::config::cas::{Changeset, FileSnapshot};
 use crate::config::{atomic_write, write_json_file};
 use crate::error::AppError;
 use crate::opencode_config::get_opencode_dir;
@@ -254,6 +255,12 @@ impl UnifiedConfigDocument {
             ));
         }
 
+        let next_contents = self.render_verified()?;
+        atomic_write(&self.path, &next_contents)?;
+        Ok(next_contents)
+    }
+
+    fn render_verified(&self) -> Result<Vec<u8>, AppError> {
         let next_source = self.text.to_string();
         rt_from_str(&next_source).map_err(|e| {
             AppError::Config(format!(
@@ -273,9 +280,7 @@ impl UnifiedConfigDocument {
             ));
         }
 
-        let next_contents = next_source.into_bytes();
-        atomic_write(&self.path, &next_contents)?;
-        Ok(next_contents)
+        Ok(next_source.into_bytes())
     }
 }
 
@@ -1078,6 +1083,107 @@ impl OmoService {
                 "{} config files updated or deleted: {changed_paths:?}",
                 v.label
             );
+        }
+        Ok(())
+    }
+
+    /// Plan both variants and the plugin list before touching disk. The database
+    /// selection is committed last; a failed selection restores only our writes.
+    pub(crate) fn switch_provider(
+        state: &AppState,
+        provider: &Provider,
+        enable: &OmoVariant,
+        disable: &OmoVariant,
+    ) -> Result<(), AppError> {
+        let _operation_guard = lock_omo_operation()?;
+        let _write_guard = lock_omo_write()?;
+        let base = get_opencode_dir();
+        let home = crate::config::get_home_dir();
+        let mut changes = Changeset::new();
+        let location = Self::config_location(enable, &home, &base)?;
+        let target = FileSnapshot::read(location.path())?;
+        let merged = Self::build_config(
+            enable,
+            Some(&Self::profile_data_from_provider(provider, enable)),
+        );
+        let next = match &location {
+            OmoConfigLocation::Unified(path) => {
+                let mut document = UnifiedConfigDocument::load(path)?;
+                if target.contents() != Some(document.original_source.as_bytes()) {
+                    return Err(AppError::Config(
+                        "OMO config changed on disk; please retry.".into(),
+                    ));
+                }
+                document.set_opencode_section(&merged)?;
+                document.render_verified()?
+            }
+            OmoConfigLocation::Legacy(_) => serde_json::to_vec_pretty(&merged)
+                .map_err(|source| AppError::JsonSerialize { source })?,
+        };
+        if target.contents() != Some(next.as_slice()) {
+            changes.write(target, next)?;
+        }
+
+        if let Some(path) = Self::find_unified_config_path(disable, &home)? {
+            let snapshot = FileSnapshot::read(&path)?;
+            let mut document = UnifiedConfigDocument::load(&path)?;
+            if snapshot.contents() != Some(document.original_source.as_bytes()) {
+                return Err(AppError::Config(
+                    "OMO config changed on disk; please retry.".into(),
+                ));
+            }
+            match document.remove_opencode_section() {
+                Ok(true) => {
+                    changes.write(snapshot, document.render_verified()?)?;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    // Keep the established disable behavior for uneditable comments.
+                    // The plugin is still removed atomically from OpenCode's list.
+                    log::warn!(
+                        "[OMO] 保留无法安全编辑的统一配置 {}: {error}",
+                        path.display()
+                    );
+                }
+            }
+        }
+        for path in Self::config_candidates(disable, &base) {
+            let snapshot = FileSnapshot::read(&path)?;
+            if snapshot.contents().is_some() {
+                changes.delete(snapshot)?;
+            }
+        }
+
+        let plugins = FileSnapshot::read(crate::opencode_config::get_opencode_config_path())?;
+        let mut config: Value = match plugins.contents() {
+            Some(bytes) => json5::from_str(
+                std::str::from_utf8(bytes)
+                    .map_err(|_| AppError::Config("OpenCode config is not UTF-8".into()))?,
+            )
+            .map_err(|e| AppError::Config(format!("Failed to parse OpenCode config: {e}")))?,
+            None => serde_json::json!({"$schema": "https://opencode.ai/config.json"}),
+        };
+        if !config.is_object() {
+            return Err(AppError::Config("OpenCode config must be an object".into()));
+        }
+        crate::opencode_config::set_plugin_in_config(&mut config, enable.plugin_name);
+        let next = serde_json::to_vec_pretty(&config)
+            .map_err(|source| AppError::JsonSerialize { source })?;
+        if plugins.contents() != Some(next.as_slice()) {
+            changes.write(plugins, next)?;
+        }
+        let applied = changes.commit()?;
+        if let Err(error) =
+            state
+                .db
+                .set_omo_provider_current("opencode", &provider.id, enable.category)
+        {
+            if let Err(rollback) = applied.rollback() {
+                return Err(AppError::Config(format!(
+                    "{error}；恢复配置失败：{rollback}"
+                )));
+            }
+            return Err(error);
         }
         Ok(())
     }

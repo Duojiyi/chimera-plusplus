@@ -9,7 +9,9 @@ import {
   KeyRound,
   Loader2,
   Plus,
+  RotateCw,
   Terminal,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -20,6 +22,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import {
+  AuthorizationLink,
+  ManualAuthorization,
+} from "@/components/accounts/BrowserAuthorization";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   claudeAccountsApi,
@@ -40,7 +46,7 @@ function endFlow(id: string) {
 type Browser =
   | { phase: "idle" }
   | { phase: "starting" }
-  | { phase: "waiting"; id: string }
+  | { phase: "waiting"; id: string; url?: string | null }
   | { phase: "failed"; message: string };
 
 /** What a pasted value looks like, by its prefix (the app checks it again). */
@@ -62,7 +68,7 @@ const SECRET_KIND_TEXT = {
   json: "凭证 JSON：claude-swap 的导出内容或 .credentials.json，按导入处理",
 } as const;
 
-type AddTab = "browser" | "token" | "import";
+type AddTab = "local" | "browser" | "token" | "import";
 
 export interface AddAccountMenuProps {
   /** Another change to the accounts is running. */
@@ -79,15 +85,18 @@ export interface AddAccountMenuProps {
   label?: string;
   /**
    * `desktop`: the page of the Claude Desktop accounts. A login saved there
-   * is a Claude Code one; tokens and keys have no use, and Desktop has to be
-   * signed in once before it can switch to the login.
+   * can be imported from Desktop directly. Browser-authorized Code logins
+   * need an initial Desktop sign-in before one-click switching is available.
    */
   mode?: "code" | "desktop";
   /**
-   * Sign-ins found on this computer that are not saved yet. Offered first
-   * under 导入, which then opens by default; each imports in one click.
+   * Sign-ins found on this computer, including managed ones that can be updated.
+   * Desktop opens 本机导入 by default; each identity imports in one click.
    */
   detected?: readonly DetectedLogin[];
+  onDetect?: () => Promise<void>;
+  onCreateProfile?: () => void;
+  onOpenDesktop?: () => void;
 }
 
 /** A sign-in on this computer that can be saved without picking a file. */
@@ -97,6 +106,9 @@ export interface DetectedLogin {
   source: string;
   /** Who is signed in. */
   email: string | null;
+  plan?: string | null;
+  managed?: boolean;
+  description?: string;
   onImport: () => void;
 }
 
@@ -114,6 +126,9 @@ export function AddAccountMenu({
   label = "添加账号",
   mode = "code",
   detected = [],
+  onDetect,
+  onCreateProfile,
+  onOpenDesktop,
 }: AddAccountMenuProps) {
   const tabsId = useId();
   const [browser, setBrowser] = useState<Browser>({ phase: "idle" });
@@ -121,18 +136,23 @@ export function AddAccountMenu({
   const [confirmExport, setConfirmExport] = useState(false);
   const [working, setWorking] = useState<"import" | "export" | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [detecting, setDetecting] = useState(false);
   const tabs: { id: AddTab; label: string }[] = [
+    ...(mode === "desktop"
+      ? [{ id: "local" as const, label: "本机导入" }]
+      : []),
     ...(browserSupported
       ? [{ id: "browser" as const, label: "浏览器授权" }]
       : []),
     ...(mode === "code"
       ? [{ id: "token" as const, label: "令牌 / JSON" }]
       : []),
-    { id: "import", label: "导入" },
+    { id: "import", label: mode === "desktop" ? "文件导入" : "导入" },
   ];
   const [tab, setTab] = useState<AddTab>(tabs[0].id);
   const mounted = useRef(true);
   const flowId = useRef<string | null>(null);
+  const flowGeneration = useRef(0);
   const onChangedRef = useRef(onChanged);
   onChangedRef.current = onChanged;
   const modeRef = useRef(mode);
@@ -142,15 +162,16 @@ export function AddAccountMenu({
   useReturnFocus(anyDialog);
 
   const waitingId = browser.phase === "waiting" ? browser.id : null;
-  flowId.current = waitingId;
 
-  // Leaving the page ends a flow that is still waiting: nothing polls it
-  // anymore, and its console window would stay open.
+  // Late startup results must be cancelled as well as an already waiting flow.
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
-      if (flowId.current) endFlow(flowId.current);
+      flowGeneration.current += 1;
+      const id = flowId.current;
+      flowId.current = null;
+      if (id) endFlow(id);
     };
   }, []);
 
@@ -161,11 +182,17 @@ export function AddAccountMenu({
     const tick = async () => {
       try {
         const result = await claudeAccountsApi.pollBrowserLogin(waitingId);
-        if (stopped) return;
+        if (stopped || flowId.current !== waitingId) return;
         if (result.state === "waiting") {
+          setBrowser((current) =>
+            current.phase === "waiting" && current.id === waitingId
+              ? { ...current, url: result.authorizationUrl ?? current.url }
+              : current,
+          );
           timer = window.setTimeout(() => void tick(), POLL_INTERVAL_MS);
           return;
         }
+        flowId.current = null;
         if (result.state === "done") {
           setBrowser({ phase: "idle" });
           toast.success(
@@ -175,13 +202,14 @@ export function AddAccountMenu({
             {
               description:
                 modeRef.current === "desktop"
-                  ? "已保存。要让默认 Claude Desktop 用它：点这一行的「用此账号登录 Desktop」，在回到登录页的 Desktop 里登录它，再点「保存 Desktop 登录」。"
+                  ? "已保存。要让默认 Claude Desktop 用它：点账号卡片上的「登录并启用」，在回到登录页的 Desktop 里登录它，再点「保存 Desktop 登录」。"
                   : "Claude Code 当前的登录没有改动；要使用它，请在账号列表里切换。",
             },
           );
           onChangedRef.current();
           return;
         }
+        endFlow(waitingId);
         setBrowser({
           phase: "failed",
           message:
@@ -190,8 +218,11 @@ export function AddAccountMenu({
               : "这次授权已经结束，或应用被重启过。请重新开始。",
         });
       } catch (cause) {
-        if (!stopped)
+        if (!stopped && flowId.current === waitingId) {
+          flowId.current = null;
+          endFlow(waitingId);
           setBrowser({ phase: "failed", message: errorText(cause) });
+        }
       }
     };
     timer = window.setTimeout(() => void tick(), POLL_INTERVAL_MS / 2);
@@ -203,19 +234,31 @@ export function AddAccountMenu({
 
   const startBrowser = async () => {
     if (browser.phase === "starting") return;
+    const generation = ++flowGeneration.current;
+    const previous = flowId.current;
+    flowId.current = null;
+    if (previous) endFlow(previous);
     setAddOpen(false);
     setBrowser({ phase: "starting" });
     try {
       const id = await claudeAccountsApi.beginBrowserLogin();
-      if (mounted.current) setBrowser({ phase: "waiting", id });
+      if (!mounted.current || generation !== flowGeneration.current) {
+        endFlow(id);
+        return;
+      }
+      flowId.current = id;
+      setBrowser({ phase: "waiting", id });
     } catch (cause) {
-      if (mounted.current)
+      if (mounted.current && generation === flowGeneration.current)
         setBrowser({ phase: "failed", message: errorText(cause) });
     }
   };
 
   const cancelBrowser = () => {
-    if (browser.phase === "waiting") endFlow(browser.id);
+    flowGeneration.current += 1;
+    const id = flowId.current;
+    flowId.current = null;
+    if (id) endFlow(id);
     setBrowser({ phase: "idle" });
   };
 
@@ -289,7 +332,13 @@ export function AddAccountMenu({
         size="sm"
         disabled={busy || browserOpen}
         onClick={() => {
-          setTab(detected.length > 0 ? "import" : tabs[0].id);
+          setTab(
+            mode === "desktop"
+              ? "local"
+              : detected.length > 0
+                ? "import"
+                : tabs[0].id,
+          );
           setAddOpen(true);
         }}
       >
@@ -299,9 +348,21 @@ export function AddAccountMenu({
 
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent className="claude-accounts-dialog claude-add-dialog">
-          <DialogTitle>{label}</DialogTitle>
+          <header className="claude-accounts-dialog-heading">
+            <DialogTitle>{label}</DialogTitle>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="关闭添加账号"
+              onClick={() => setAddOpen(false)}
+            >
+              <X size={16} aria-hidden="true" />
+            </Button>
+          </header>
           <DialogDescription>
-            登录只保存在本机，加密存放；添加不会改动 Claude Code 当前的登录。
+            {mode === "desktop"
+              ? "优先导入这台电脑已登录的账号，保存后会显示为账号卡片。"
+              : "登录只保存在本机，加密存放；添加不会改动 Claude Code 当前的登录。"}
           </DialogDescription>
           <div className="claude-add-tabs" role="tablist" aria-label="添加方式">
             {tabs.map((item) => (
@@ -314,7 +375,9 @@ export function AddAccountMenu({
                 aria-controls={`${tabsId}-${item.id}-panel`}
                 onClick={() => setTab(item.id)}
               >
-                {item.id === "browser" ? (
+                {item.id === "local" ? (
+                  <MonitorCheck size={14} aria-hidden="true" />
+                ) : item.id === "browser" ? (
                   <Globe size={14} aria-hidden="true" />
                 ) : item.id === "token" ? (
                   <KeyRound size={14} aria-hidden="true" />
@@ -331,18 +394,101 @@ export function AddAccountMenu({
             aria-labelledby={`${tabsId}-${activeTab}`}
             className="claude-add-panel"
           >
-            {activeTab === "browser" ? (
+            {activeTab === "local" ? (
+              <div className="claude-local-import">
+                <div className="claude-local-import-head">
+                  <span>检测本机登录</span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={detecting || disabled}
+                    onClick={async () => {
+                      setDetecting(true);
+                      try {
+                        await onDetect?.();
+                      } finally {
+                        setDetecting(false);
+                      }
+                    }}
+                  >
+                    <RotateCw
+                      size={14}
+                      className={detecting ? "animate-spin" : undefined}
+                      aria-hidden="true"
+                    />
+                    {detecting ? "正在检测…" : "重新检测"}
+                  </Button>
+                </div>
+                {detected.length > 0 ? (
+                  detected.map((login) => (
+                    <div key={login.id} className="claude-local-login">
+                      <MonitorCheck size={22} aria-hidden="true" />
+                      <div className="claude-local-login-identity">
+                        <strong>
+                          {login.email || "已登录的 Desktop 账号"}
+                        </strong>
+                        <span>
+                          {login.source}
+                          {login.plan ? " · " + login.plan : ""}
+                        </span>
+                        <small>
+                          {login.description ||
+                            (login.managed
+                              ? "已在账号列表中，更新登录不会重复添加。"
+                              : "保存本机登录后即可在账号之间切换。")}
+                        </small>
+                      </div>
+                      <Button
+                        disabled={disabled || detecting}
+                        onClick={() => {
+                          setAddOpen(false);
+                          login.onImport();
+                        }}
+                      >
+                        {login.managed ? "更新登录" : "导入账号"}
+                      </Button>
+                    </div>
+                  ))
+                ) : (
+                  <div className="claude-local-empty">
+                    <MonitorCheck size={28} aria-hidden="true" />
+                    <strong>还没有检测到本机登录</strong>
+                    <p>在 Claude Desktop 登录后，回到这里重新检测。</p>
+                    {onOpenDesktop ? (
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          setAddOpen(false);
+                          onOpenDesktop();
+                        }}
+                      >
+                        打开 Claude Desktop
+                      </Button>
+                    ) : null}
+                  </div>
+                )}
+                <p className="claude-local-import-note">
+                  登录信息仅保存在本机。导入前如需关闭 Desktop，会先提示你。
+                </p>
+              </div>
+            ) : activeTab === "browser" ? (
               <>
+                {mode === "desktop" ? (
+                  <p className="claude-local-import-note">
+                    授权后先添加账号；首次在 Desktop 使用时，还需在 Desktop
+                    登录并保存一次。
+                  </p>
+                ) : null}
                 <ol className="claude-accounts-steps">
                   <li>
                     浏览器会打开 claude.ai
                     的授权页，选择要添加的账号并点击「授权」。
                   </li>
-                  <li>
-                    如果页面最后给出一串授权码，把它粘贴到弹出的黑色窗口里并回车；多数情况下会自动完成。
-                  </li>
-                  <li>完成后这里会自动保存。</li>
+                  <li>完成授权后，账号会自动保存到本机。</li>
                 </ol>
+                <p className="claude-accounts-note">
+                  下一步也可以复制授权链接，或手动粘贴授权码、回调地址。
+                </p>
                 <footer className="claude-accounts-form-actions">
                   <Button onClick={() => void startBrowser()}>
                     <Globe size={14} aria-hidden="true" />
@@ -364,7 +510,7 @@ export function AddAccountMenu({
               />
             ) : (
               <div className="claude-add-options">
-                {detected.map((login) => (
+                {(mode === "code" ? detected : []).map((login) => (
                   <button
                     key={login.id}
                     type="button"
@@ -415,21 +561,47 @@ export function AddAccountMenu({
               </div>
             )}
           </div>
+          {mode === "desktop" && onCreateProfile ? (
+            <details className="claude-add-advanced">
+              <summary>高级选项</summary>
+              <p>需要多个账号同时打开时，可以创建独立窗口。</p>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setAddOpen(false);
+                  onCreateProfile();
+                }}
+              >
+                创建独立窗口
+              </Button>
+            </details>
+          ) : null}
         </DialogContent>
       </Dialog>
 
       <Dialog
         open={browserOpen}
         onOpenChange={(open) => {
-          if (!open && browser.phase !== "starting") cancelBrowser();
+          if (!open) cancelBrowser();
         }}
       >
-        <DialogContent className="claude-accounts-dialog">
-          <DialogTitle>
-            {browser.phase === "failed"
-              ? "浏览器授权没有完成"
-              : "在浏览器里授权 Claude 账号"}
-          </DialogTitle>
+        <DialogContent className="claude-accounts-dialog claude-auth-dialog">
+          <header className="claude-accounts-dialog-heading">
+            <DialogTitle>
+              {browser.phase === "failed"
+                ? "浏览器授权没有完成"
+                : "在浏览器里授权 Claude 账号"}
+            </DialogTitle>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="关闭授权"
+              onClick={cancelBrowser}
+            >
+              <X size={16} aria-hidden="true" />
+            </Button>
+          </header>
           {browser.phase === "failed" ? (
             <>
               <DialogDescription>{browser.message}</DialogDescription>
@@ -446,16 +618,22 @@ export function AddAccountMenu({
                 用 Claude Code 官方的授权流程添加账号，不会改动 Claude Code
                 当前的登录。
               </DialogDescription>
-              <ol className="claude-accounts-steps">
-                <li>
-                  浏览器会打开 claude.ai
-                  的授权页，选择要添加的账号并点击「授权」。
-                </li>
-                <li>
-                  如果页面最后给出一串授权码，把它粘贴到弹出的黑色窗口里并回车；多数情况下会自动完成，不需要这一步。
-                </li>
-                <li>完成后这里会自动保存，无需其他操作。</li>
-              </ol>
+              {browser.phase === "waiting" && browser.url ? (
+                <>
+                  <AuthorizationLink
+                    key={"link-" + browser.id}
+                    url={browser.url}
+                  />
+                  <ManualAuthorization
+                    key={"manual-" + browser.id}
+                    mode="claude"
+                    onSubmit={(input) =>
+                      claudeAccountsApi.submitBrowserCallback(browser.id, input)
+                    }
+                  />
+                </>
+              ) : null}
+
               <p className="claude-accounts-note" role="status">
                 <Loader2
                   size={14}
@@ -464,14 +642,12 @@ export function AddAccountMenu({
                 />
                 {browser.phase === "starting"
                   ? "正在启动…"
-                  : "等待授权完成…（最多 15 分钟）"}
+                  : browser.phase === "waiting" && browser.url
+                    ? "等待授权完成…（最多 15 分钟）"
+                    : "等待授权完成…（授权链接准备中）"}
               </p>
               <footer className="claude-accounts-form-actions">
-                <Button
-                  variant="outline"
-                  disabled={browser.phase === "starting"}
-                  onClick={cancelBrowser}
-                >
+                <Button variant="outline" onClick={cancelBrowser}>
                   取消授权
                 </Button>
               </footer>
@@ -487,7 +663,17 @@ export function AddAccountMenu({
         }}
       >
         <DialogContent className="claude-accounts-dialog">
-          <DialogTitle>导入完成</DialogTitle>
+          <header className="claude-accounts-dialog-heading">
+            <DialogTitle>导入完成</DialogTitle>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="关闭导入结果"
+              onClick={() => setReport(null)}
+            >
+              <X size={16} aria-hidden="true" />
+            </Button>
+          </header>
           <DialogDescription>
             {report
               ? `新增 ${report.imported.length} 个，更新 ${report.updated.length} 个，跳过 ${report.skipped.length} 个。`

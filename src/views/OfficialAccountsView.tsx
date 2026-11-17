@@ -1,3 +1,7 @@
+import {
+  AuthorizationLink,
+  ManualAuthorization,
+} from "@/components/accounts/BrowserAuthorization";
 import React, { useEffect, useRef, useState } from "react";
 import {
   Copy,
@@ -16,6 +20,11 @@ import {
   LayoutGrid,
   List as ListIcon,
   ArrowRight,
+  ArrowRightLeft,
+  ChevronDown,
+  Download,
+  Globe,
+  KeyRound,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -25,6 +34,12 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { settingsApi } from "@/lib/api/settings";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import { AccountDetailsDialog } from "@/components/official-accounts/AccountDetailsDialog";
@@ -281,7 +296,6 @@ function QuotaMeter({
   );
 }
 
-const designPreview = isAccountsDesignPreview();
 const PREVIEW_REFUSAL = "设计预览不会修改本机账号";
 
 type AccountFilter = "all" | "usable" | "relogin" | "disabled";
@@ -317,11 +331,85 @@ function compareWeekUsed(a: number, b: number): number {
   return a < b ? -1 : 1;
 }
 
+function AddAccountMenu({
+  children,
+  disabled,
+  onImport,
+  onLogin,
+}: {
+  children: React.ReactElement;
+  disabled: boolean;
+  onImport: () => void;
+  onLogin: (method: "browser" | "device", trigger: HTMLElement | null) => void;
+}) {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const openingLogin = useRef(false);
+  const login = (method: "browser" | "device") => {
+    openingLogin.current = true;
+    onLogin(method, triggerRef.current);
+  };
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild ref={triggerRef} disabled={disabled}>
+        {children}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        className="accounts-add-menu"
+        aria-label="选择添加账号方式"
+        align="end"
+        sideOffset={8}
+        onCloseAutoFocus={(event) => {
+          if (openingLogin.current) {
+            event.preventDefault();
+            openingLogin.current = false;
+          }
+        }}
+      >
+        <DropdownMenuItem
+          aria-label="导入本机账号"
+          disabled={disabled}
+          onSelect={onImport}
+        >
+          <Download size={16} aria-hidden="true" />
+          <span>
+            <strong>导入本机账号</strong>
+            <small>已在 Codex 登录？直接识别并保存</small>
+          </span>
+          <span className="accounts-add-recommended">推荐</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          aria-label="浏览器登录"
+          disabled={disabled}
+          onSelect={() => login("browser")}
+        >
+          <Globe size={16} aria-hidden="true" />
+          <span>
+            <strong>浏览器登录</strong>
+            <small>登录另一个 ChatGPT 账号并保存</small>
+          </span>
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          aria-label="设备码登录"
+          disabled={disabled}
+          onSelect={() => login("device")}
+        >
+          <KeyRound size={16} aria-hidden="true" />
+          <span>
+            <strong>设备码登录</strong>
+            <small>在浏览器中输入一次性代码完成授权</small>
+          </span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 let loginStartupPending = false;
 
 export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
   onAccountSwitched,
 }) => {
+  const designPreview = isAccountsDesignPreview();
   const [accounts, setAccounts] = useState<OfficialAccountDto[]>([]);
   const [listLoading, setListLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -358,6 +446,8 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
   const [loginError, setLoginError] = useState<string | null>(null);
   const [pollWarning, setPollWarning] = useState<string | null>(null);
   const [importingLogin, setImportingLogin] = useState(false);
+  const importingLoginRef = useRef(false);
+  const [importError, setImportError] = useState<string | null>(null);
   const [expiresInSeconds, setExpiresInSeconds] = useState(15 * 60);
 
   // Refs for poll cleanup and concurrency safety
@@ -659,8 +749,12 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
 
   // Each attempt owns its timers and requests. A cancelled attempt cannot close
   // a newer dialog or overwrite its status when a slow IPC response arrives.
-  const handleStartLogin = async (method: "browser" | "device" = "browser") => {
-    if (startingLoginRef.current) return;
+  const handleStartLogin = async (
+    method: "browser" | "device" = "browser",
+    trigger?: HTMLElement | null,
+  ) => {
+    if (designPreview || importingLoginRef.current || startingLoginRef.current)
+      return;
     if (loginStartupPending) {
       toast.error("上一登录仍在准备或取消中，请稍后重试");
       return;
@@ -668,7 +762,8 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
     loginStartupPending = true;
     setLoginMethod(method);
     if (!loginModalOpen)
-      dialogTriggerRef.current = document.activeElement as HTMLElement | null;
+      dialogTriggerRef.current =
+        trigger ?? (document.activeElement as HTMLElement | null);
     startingLoginRef.current = true;
     const generation = ++loginGeneration.current;
     const isCurrent = () => generation === loginGeneration.current;
@@ -798,16 +893,20 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
   };
 
   const handleImportLogin = async () => {
-    if (importingLogin) return;
+    if (designPreview || importingLoginRef.current || startingLoginRef.current)
+      return;
+    importingLoginRef.current = true;
     setImportingLogin(true);
+    setImportError(null);
     try {
       await officialAccountsApi.saveCurrentLogin();
-      toast.success("已导入本机 Codex 登录");
+      toast.success("已导入本机账号，已保存为账号卡片");
       await loadAccounts();
       onAccountSwitched?.();
     } catch (cause) {
-      toast.error("未能导入本机登录", { description: errorText(cause) });
+      setImportError(errorText(cause));
     } finally {
+      importingLoginRef.current = false;
       setImportingLogin(false);
     }
   };
@@ -835,7 +934,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
   };
 
   const handlePerformSwitch = async () => {
-    if (!confirmTarget) return;
+    if (designPreview || !confirmTarget || switching) return;
     try {
       setSwitching(true);
       await officialAccountsApi.switchAccount(confirmTarget.account.key);
@@ -853,7 +952,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
   };
 
   const handleRemoveAccount = async () => {
-    if (!removeTarget) return;
+    if (designPreview || !removeTarget || removing) return;
     try {
       setRemoving(true);
       await officialAccountsApi.removeAccount(removeTarget.account.key);
@@ -869,7 +968,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
   };
 
   const handleBatchRemove = async (keys: string[]) => {
-    if (!keys.length || batchRemoving) return;
+    if (designPreview || !keys.length || batchRemoving) return;
     const titles = new Map(rows.map((row) => [row.account.key, row.title]));
     const name = (key: string) => titles.get(key) ?? key;
     setBatchConfirm(false);
@@ -911,8 +1010,8 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
       return (
         <p className="account-quota-note">
           {account.isCurrent
-            ? "令牌已过期 · Codex 下次使用时续期"
-            : "令牌已过期 · 切换后由 Codex 续期"}
+            ? "登录待续期 · Codex 下次使用时自动续期"
+            : "登录待续期 · 切换后由 Codex 自动续期"}
         </p>
       );
     if (row.quota?.success)
@@ -958,16 +1057,16 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
       return (
         <div className="account-current-message">
           <p>
-            已保存的登录无法读取。Codex 正在使用这个账号，导入本机登录即可修复。
+            已保存的登录无法读取。Codex 正在使用这个账号，导入本机账号即可修复。
           </p>
           <Button
             size="sm"
             variant="outline"
             className="account-current-action"
-            disabled={busyLogin}
+            disabled={designPreview || busyLogin}
             onClick={() => void handleImportLogin()}
           >
-            导入本机登录
+            导入本机账号
           </Button>
         </div>
       );
@@ -976,7 +1075,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
     if (row.accessExpired)
       return (
         <p className="account-current-message">
-          令牌已过期，Codex 下次使用时会自动续期，之后即可查询额度
+          登录需要续期，Codex 下次使用时会自动完成，之后即可查询额度
         </p>
       );
     if (row.quota?.success)
@@ -1119,17 +1218,6 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
           </p>
         </div>
         <div className="accounts-header-actions">
-          <Button
-            variant="ghost"
-            className="accounts-text-action"
-            disabled={designPreview || busyLogin}
-            title={
-              designPreview ? PREVIEW_REFUSAL : "用一次性代码在浏览器中授权"
-            }
-            onClick={() => void handleStartLogin("device")}
-          >
-            设备码登录
-          </Button>
           {rows.length > 0 && (
             <Button
               variant="outline"
@@ -1147,29 +1235,50 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
             </Button>
           )}
           <Button
-            variant="outline"
-            aria-label="导入本机登录"
+            className="accounts-import-action"
+            aria-label="导入本机账号"
             title={
-              designPreview ? PREVIEW_REFUSAL : "保存 Codex 当前已登录的账号"
+              designPreview
+                ? PREVIEW_REFUSAL
+                : "识别并保存 Codex 在这台电脑上已登录的账号"
             }
             disabled={designPreview || busyLogin}
             onClick={() => void handleImportLogin()}
           >
-            {importingLogin ? "正在导入…" : "导入"}
+            {importingLogin ? (
+              <CircleNotch
+                size={15}
+                className="animate-spin"
+                aria-hidden="true"
+              />
+            ) : (
+              <Download size={15} aria-hidden="true" />
+            )}
+            {importingLogin ? "正在导入…" : "导入本机账号"}
           </Button>
-          {/* With no account yet, the empty card holds the only add action. */}
-          {(rows.length > 0 || loadError) && (
+          <AddAccountMenu
+            disabled={designPreview || busyLogin}
+            onImport={() => void handleImportLogin()}
+            onLogin={(method, trigger) =>
+              void handleStartLogin(method, trigger)
+            }
+          >
             <Button
               ref={addAccountRef}
+              variant="outline"
               aria-label="添加官方账号"
-              title={designPreview ? PREVIEW_REFUSAL : undefined}
-              onClick={() => void handleStartLogin()}
-              disabled={designPreview || startingLogin}
+              title={
+                designPreview
+                  ? PREVIEW_REFUSAL
+                  : "选择本机导入、浏览器登录或设备码登录"
+              }
+              disabled={designPreview || busyLogin}
             >
               <Plus size={14} aria-hidden="true" />
               {startingLogin ? "正在准备登录…" : "添加账号"}
+              <ChevronDown size={13} aria-hidden="true" />
             </Button>
-          )}
+          </AddAccountMenu>
         </div>
       </header>
       {listLoading && rows.length === 0 && !loadError && (
@@ -1194,6 +1303,24 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
           </Button>
         </div>
       )}
+      {importError && (
+        <div className="accounts-notice is-error" role="alert">
+          <Warning size={16} aria-hidden="true" />
+          <div>
+            <strong>未能导入本机账号</strong>
+            <p>{importError}</p>
+            <p>请先在这台电脑的 Codex 中登录，或选择浏览器登录添加账号。</p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={designPreview || busyLogin}
+            onClick={() => void handleImportLogin()}
+          >
+            重试导入
+          </Button>
+        </div>
+      )}
       {liveState === "unsaved" && (
         <div className="accounts-banner" role="status">
           <Info size={16} />
@@ -1203,10 +1330,10 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
           </div>
           <Button
             size="sm"
-            disabled={busyLogin}
+            disabled={designPreview || busyLogin}
             onClick={() => void handleImportLogin()}
           >
-            {importingLogin ? "正在导入…" : "导入本机登录"}
+            {importingLogin ? "正在导入…" : "导入本机账号"}
           </Button>
         </div>
       )}
@@ -1217,7 +1344,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
             <strong>Codex 当前没有使用所选账号</strong>
             <p>
               {selectedLine
-                ? `线路选的是「${selectedLine.title}」，但 Codex 中的登录不是它。重新应用后，Codex 改用这个账号。`
+                ? `已选择「${selectedLine.title}」，但 Codex 正在使用另一个登录。重新应用后将使用所选账号。`
                 : "Codex 中的登录与所选线路不一致。"}
             </p>
           </div>
@@ -1225,7 +1352,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
             (selectedLine.needsRelogin ? (
               <Button
                 size="sm"
-                disabled={startingLogin || switching}
+                disabled={designPreview || busyLogin || switching}
                 onClick={() => void handleStartLogin()}
               >
                 重新登录
@@ -1237,7 +1364,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
             ) : (
               <Button
                 size="sm"
-                disabled={startingLogin || switching}
+                disabled={designPreview || busyLogin || switching}
                 onClick={(event) =>
                   openSwitch(selectedLine, event.currentTarget)
                 }
@@ -1254,24 +1381,48 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
         </p>
       )}
       {!listLoading && !loadError && rows.length === 0 && (
-        <section className="accounts-empty">
+        <section
+          className="accounts-empty"
+          aria-labelledby="official-accounts-empty-title"
+        >
           <div className="accounts-empty-icon">
-            <UserRound size={28} strokeWidth={1.5} />
+            <UserRound size={28} strokeWidth={1.5} aria-hidden="true" />
           </div>
-          <h2>连接第一个官方账号</h2>
+          <h2 id="official-accounts-empty-title">连接第一个官方账号</h2>
           <p>
-            在浏览器中登录 ChatGPT，返回后即可添加账号。
+            已在这台电脑的 Codex
+            中登录？导入后即成为账号卡片，可查看额度并随时切换。
             <br />
-            已在 Codex 中登录？也可以用“导入本机登录”直接保存。
+            也可以通过浏览器登录，添加另一个 ChatGPT 账号。
           </p>
-          <Button
-            ref={addAccountRef}
-            onClick={() => void handleStartLogin()}
-            disabled={startingLogin}
-          >
-            <Plus size={16} />
-            {startingLogin ? "正在准备登录…" : "登录并添加账号"}
-          </Button>
+          <div className="accounts-empty-actions">
+            <Button
+              onClick={() => void handleImportLogin()}
+              disabled={designPreview || busyLogin}
+            >
+              {importingLogin ? (
+                <CircleNotch
+                  size={16}
+                  className="animate-spin"
+                  aria-hidden="true"
+                />
+              ) : (
+                <Download size={16} aria-hidden="true" />
+              )}
+              {importingLogin ? "正在导入…" : "导入本机账号"}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => void handleStartLogin()}
+              disabled={designPreview || busyLogin}
+            >
+              <Globe size={16} aria-hidden="true" />
+              浏览器登录
+            </Button>
+          </div>
+          <small className="accounts-empty-hint">
+            保留本地会话记录，登录凭据仅保存在本机。
+          </small>
         </section>
       )}
       {rows.length > 0 && (
@@ -1397,6 +1548,11 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
                 : "账号状态未更新，显示的可能不是最新信息。可手动刷新重试。"}
             </p>
           )}
+          <p className="accounts-switch-hint">
+            {rows.length > 1
+              ? "在下方账号卡片中选择“切换到此账号”，确认后即可使用。切换会保留本地会话记录。"
+              : "导入或登录更多账号后，可在卡片上切换。本地会话记录会保留。"}
+          </p>
           <section
             className={`accounts-list is-${view}`}
             aria-label="已保存的官方账号"
@@ -1404,6 +1560,8 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
             {shownRows.map((row) => {
               const { account } = row;
               const checked = selected.has(account.key);
+              const needsReapply =
+                liveState === "mismatch" && account.isSelected;
               return (
                 <article
                   className="account-row"
@@ -1471,24 +1629,31 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
                         >
                           启用
                         </Button>
-                      ) : (
+                      ) : row.needsRelogin ||
+                        !account.isCurrent ||
+                        needsReapply ? (
                         <Button
                           variant="ghost"
                           size="sm"
                           className="account-primary-action"
-                          disabled={startingLogin || switching}
+                          disabled={designPreview || busyLogin || switching}
                           onClick={(event) => {
                             if (row.needsRelogin) void handleStartLogin();
                             else openSwitch(row, event.currentTarget);
                           }}
                         >
-                          {row.needsRelogin
-                            ? "重新登录"
-                            : account.isCurrent
-                              ? "重新应用"
-                              : "切换"}
+                          {row.needsRelogin ? (
+                            "重新登录"
+                          ) : needsReapply ? (
+                            "重新应用"
+                          ) : (
+                            <>
+                              <ArrowRightLeft size={12} aria-hidden="true" />
+                              切换到此账号
+                            </>
+                          )}
                         </Button>
-                      )}
+                      ) : null}
                       <Button
                         variant="ghost"
                         size="icon"
@@ -1563,19 +1728,31 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
               </div>
             )}
             {view === "grid" && (
-              <button
-                type="button"
-                className="account-add-tile"
-                disabled={designPreview || startingLogin}
-                title={designPreview ? PREVIEW_REFUSAL : undefined}
-                onClick={() => void handleStartLogin()}
+              <AddAccountMenu
+                disabled={designPreview || busyLogin}
+                onImport={() => void handleImportLogin()}
+                onLogin={(method, trigger) =>
+                  void handleStartLogin(method, trigger)
+                }
               >
-                <span className="account-add-icon" aria-hidden="true">
-                  <Plus size={16} />
-                </span>
-                <strong>添加账号</strong>
-                <small>在浏览器中登录 ChatGPT</small>
-              </button>
+                <button
+                  type="button"
+                  className="account-add-tile"
+                  aria-label="添加另一个账号"
+                  disabled={designPreview || busyLogin}
+                  title={designPreview ? PREVIEW_REFUSAL : "选择添加方式"}
+                >
+                  <span className="account-add-icon" aria-hidden="true">
+                    <Plus size={16} />
+                  </span>
+                  <strong>添加账号</strong>
+                  <small>优先导入本机账号，也可浏览器登录</small>
+                  <span className="account-add-methods">
+                    选择添加方式
+                    <ChevronDown size={12} aria-hidden="true" />
+                  </span>
+                </button>
+              </AddAccountMenu>
             )}
           </section>
           {batchResult && (
@@ -1714,7 +1891,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
               </dl>
               <p className="accounts-privacy-note">
                 <ShieldCheck size={13} aria-hidden="true" />
-                登录凭据仅保存在本机，界面不会显示令牌。
+                登录凭据仅保存在本机，切换会保留本地会话记录。
               </p>
             </section>
           </div>
@@ -1723,7 +1900,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
       {rows.length === 0 && (
         <footer className="accounts-privacy">
           <ShieldCheck size={16} />
-          <p>登录凭据仅保存在本机，界面不会显示令牌。</p>
+          <p>登录凭据仅保存在本机，切换会保留本地会话记录。</p>
         </footer>
       )}
 
@@ -1751,7 +1928,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
           </header>
           <DialogDescription className="account-dialog-description">
             {loginMethod === "browser"
-              ? "在浏览器中登录 ChatGPT，授权后自动返回并添加账号，无需一次性代码。浏览器未自动打开时，可点击下方按钮。"
+              ? "在浏览器中登录 ChatGPT，授权后自动添加账号。也可以复制授权链接，或手动粘贴浏览器返回的回调地址。"
               : "在浏览器中登录 ChatGPT，输入下方一次性代码。授权完成后，账号会自动添加到本机。"}
           </DialogDescription>
           {startingLogin && (
@@ -1769,7 +1946,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
                 <p>
                   已在 PATH、常见安装位置和 Codex 桌面版自带的 CLI
                   中查找，都没有找到。可以先在 Codex 中登录
-                  ChatGPT，再用“导入本机登录”保存这个账号；安装 Codex CLI
+                  ChatGPT，再用“导入本机账号”保存这个账号；安装 Codex CLI
                   后也可以重新检测。
                 </p>
               </div>
@@ -1781,29 +1958,48 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
             ))}
           {activeLogin && !loginError && (
             <>
-              <div className="account-login-address">
-                <code>{activeLogin.verificationUrl}</code>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label="复制验证地址"
-                  onClick={() =>
-                    void handleCopy(activeLogin.verificationUrl, "验证地址")
-                  }
-                >
-                  <Copy size={15} />
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() =>
-                    void handleOpenBrowser(activeLogin.verificationUrl)
-                  }
-                >
-                  <ArrowUpRight size={15} />
-                  打开浏览器
-                </Button>
-              </div>
+              {loginMethod === "browser" ? (
+                <>
+                  <AuthorizationLink
+                    key={"link-" + activeLogin.flowId}
+                    url={activeLogin.verificationUrl}
+                  />
+                  <ManualAuthorization
+                    key={"manual-" + activeLogin.flowId}
+                    mode="codex"
+                    onSubmit={(input) =>
+                      officialAccountsApi.submitBrowserCallback(
+                        activeLogin.flowId,
+                        input,
+                      )
+                    }
+                  />
+                </>
+              ) : (
+                <div className="account-login-address">
+                  <code>{activeLogin.verificationUrl}</code>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="复制验证地址"
+                    onClick={() =>
+                      void handleCopy(activeLogin.verificationUrl, "验证地址")
+                    }
+                  >
+                    <Copy size={15} />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      void handleOpenBrowser(activeLogin.verificationUrl)
+                    }
+                  >
+                    <ArrowUpRight size={15} />
+                    打开浏览器
+                  </Button>
+                </div>
+              )}
               {loginMethod === "device" && (
                 <div className="account-login-code">
                   <span>一次性代码</span>
@@ -1838,7 +2034,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
               <p>
                 {loginMethod === "device"
                   ? "设备码登录需要在 ChatGPT 安全设置中开启；工作区可能需要管理员授权。未开启时可改用浏览器登录。"
-                  : "浏览器登录需要本机回调端口可用；若回调受阻，可改用设备码登录或导入本机登录。"}
+                  : "如果浏览器未自动返回，请粘贴完整回调地址；也可以改用设备码登录或导入本机账号。"}
               </p>
               <details
                 className="chimera-disclosure is-inline"
@@ -1853,7 +2049,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
                   </p>
                   <p>
                     若本机 Codex
-                    已成功登录，可关闭弹窗后选择“导入本机登录”。这只读取已有凭据，不会绕过服务限制；系统钥匙串中的凭据可能无法导入。
+                    已成功登录，可关闭弹窗后选择“导入本机账号”。若无法读取，请改用浏览器登录。
                   </p>
                 </div>
               </details>
@@ -1879,7 +2075,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
                     void handleImportLogin();
                   }}
                 >
-                  导入本机登录
+                  导入本机账号
                 </Button>
               </>
             ) : (
@@ -1982,7 +2178,8 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
             </Button>
             <Button
               onClick={() => void handlePerformSwitch()}
-              disabled={switching}
+              disabled={designPreview || switching}
+              title={designPreview ? PREVIEW_REFUSAL : undefined}
             >
               <ArrowsClockwise
                 size={15}

@@ -92,6 +92,9 @@ export function filterCount(
 
 export interface AccountsToolbarProps {
   accounts: ClaudeCodeAccount[];
+  mode?: "code" | "desktop";
+  /** A current local login appears in the list before it is saved. */
+  detectedCurrent?: boolean;
   query: string;
   onQuery: (query: string) => void;
   filter: AccountFilter;
@@ -109,6 +112,8 @@ export interface AccountsToolbarProps {
 /** Search, filter, order and view of a list of saved logins. */
 export function AccountsToolbar({
   accounts,
+  mode = "code",
+  detectedCurrent = false,
   query,
   onQuery,
   filter,
@@ -144,9 +149,17 @@ export function AccountsToolbar({
         value={filter}
         onChange={(event) => onFilter(event.target.value as AccountFilter)}
       >
-        {FILTERS.map((item) => (
+        {FILTERS.filter(
+          (item) =>
+            mode === "code" || ["all", "current", "disabled"].includes(item.id),
+        ).map((item) => (
           <option key={item.id} value={item.id}>
-            {item.label}（{filterCount(accounts, item.id)}）
+            {item.label}（
+            {filterCount(accounts, item.id) +
+              (detectedCurrent && (item.id === "all" || item.id === "current")
+                ? 1
+                : 0)}
+            ）
           </option>
         ))}
       </select>

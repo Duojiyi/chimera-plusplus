@@ -181,6 +181,8 @@ struct ParsedTokenEvent {
 #[derive(Debug)]
 struct UsageRecordEvent {
     line_offset: i64,
+    /// Both native per-request counters were present (not defaulted to zero).
+    exact_request_counters: bool,
     /// `usage:<response_id>` (or `usage:line<N>` without one).
     request_suffix: String,
     delta: DeltaTokens,
@@ -238,6 +240,8 @@ struct ParsedCodexFile {
     /// `session_meta.payload.history_base`: a fork that references its parent's
     /// records by byte range and ordinal instead of copying them.
     bounded_history: Option<serde_json::Value>,
+    /// The child starts at the parent cutoff without copying the parent records.
+    starts_at_fork_ordinal: bool,
     root_timestamp: Option<DateTime<Utc>>,
     parent: ParentResolution,
     token_events: Vec<ParsedTokenEvent>,
@@ -1054,6 +1058,7 @@ fn parse_codex_file(
     let mut source_session_id = root_thread_id.clone();
     let mut root_meta_seen = false;
     let mut bounded_history = None;
+    let mut starts_at_fork_ordinal = false;
     let mut root_timestamp = None;
     let mut parent = ParentResolution::None;
     let mut current_model = "unknown".to_string();
@@ -1170,6 +1175,14 @@ fn parse_codex_file(
                 let payload = value.get("payload").unwrap_or(&serde_json::Value::Null);
                 parent = explicit_parent_from_meta(payload);
                 bounded_history = payload.get("history_base").cloned();
+                starts_at_fork_ordinal = payload
+                    .get("forked_from_ordinal_exclusive")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some_and(|cutoff| {
+                        cutoff > 0
+                            && value.get("ordinal").and_then(serde_json::Value::as_u64)
+                                == Some(cutoff)
+                    });
 
                 let meta_thread_id = non_empty_string(
                     payload
@@ -1355,6 +1368,16 @@ fn parse_codex_file(
                 pending_usage = Some(PendingUsageRecord {
                     event: UsageRecordEvent {
                         line_offset,
+                        exact_request_counters: payload.get("usage").is_some_and(|usage| {
+                            usage
+                                .get("input_tokens")
+                                .and_then(serde_json::Value::as_u64)
+                                .is_some()
+                                && usage
+                                    .get("output_tokens")
+                                    .and_then(serde_json::Value::as_u64)
+                                    .is_some()
+                        }),
                         request_suffix: format!("usage:{key}"),
                         delta,
                         model: current_model.clone(),
@@ -1390,6 +1413,7 @@ fn parse_codex_file(
         source_session_id,
         root_meta_seen,
         bounded_history,
+        starts_at_fork_ordinal,
         root_timestamp,
         parent,
         token_events,
@@ -1616,6 +1640,37 @@ fn mark_deferred(
         deferred: true,
         ..CodexFileSyncResult::default()
     }
+}
+
+/// Adapted from CC Switch (MIT), commit 457f898c771cc142cd2219037b8107e225deda6b.
+/// Codex 0.167+ can start a fork at the parent's cutoff ordinal without copying
+/// history. Accept only explicit fork edges and exact, dated child requests;
+/// spawn ownership, copied history and incomplete counters keep the old path.
+fn verified_ordinal_fork(parsed: &ParsedCodexFile) -> Option<()> {
+    if !matches!(parsed.parent, ParentResolution::Parent { forked: true, .. })
+        || !parsed.starts_at_fork_ordinal
+        || parsed.token_events.is_empty()
+    {
+        return None;
+    }
+    let cutoff = parsed.root_timestamp?;
+    let after_fork = |timestamp: &Option<String>, undated: bool| -> Option<()> {
+        let at = DateTime::parse_from_rfc3339(timestamp.as_deref()?).ok()?;
+        (!undated && at.with_timezone(&Utc) > cutoff).then_some(())
+    };
+    for event in &parsed.token_events {
+        let last = event.signature.last.as_ref()?;
+        last.input?;
+        last.output?;
+        after_fork(&event.timestamp, event.undated)?;
+    }
+    for event in &parsed.usage_record_events {
+        if !event.exact_request_counters {
+            return None;
+        }
+        after_fork(&event.timestamp, event.undated)?;
+    }
+    Some(())
 }
 
 /// Largest parent prefix a bounded reference may ask to be verified.
@@ -1858,7 +1913,8 @@ fn sync_single_codex_file(
         // A bounded-reference fork has no replayed prefix to skip once its
         // parent baseline is verified.
         ParentResolution::Parent { .. }
-            if verified_bounded_fork(&parsed, rollout_index).is_some() =>
+            if verified_ordinal_fork(&parsed).is_some()
+                || verified_bounded_fork(&parsed, rollout_index).is_some() =>
         {
             0
         }
@@ -4157,6 +4213,225 @@ mod tests {
             let mut stale = parse_codex_file(&child, Some(CHILD_A_ID.into()), false)?;
             stale.token_events[0].signature.last.as_mut().unwrap().input = Some(999);
             assert!(verified_bounded_fork(&stale, &index).is_none());
+        }
+        Ok(())
+    }
+
+    fn ordinal_fork_meta() -> serde_json::Value {
+        let mut meta = session_meta_at(CHILD_A_ID, Some(PARENT_ID), None, "2026-07-10T03:00:20Z");
+        meta["ordinal"] = serde_json::json!(5);
+        meta["payload"]["forked_from_ordinal_exclusive"] = serde_json::json!(5);
+        meta
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn ordinal_fork_after_finished_parent_imports_once_and_rebuilds() -> Result<(), AppError> {
+        clear_codex_replay_caches();
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        fs::create_dir(&sessions).unwrap();
+        let parent = rollout_path(&sessions, PARENT_ID);
+        let child = rollout_path(&sessions, CHILD_A_ID);
+        write_jsonl(
+            &parent,
+            &[
+                session_meta(PARENT_ID),
+                token_count_with_last_at(
+                    [1_000, 800, 100],
+                    [1_000, 800, 100],
+                    "2026-07-10T03:00:01Z",
+                ),
+            ],
+        );
+        write_jsonl(
+            &child,
+            &[
+                ordinal_fork_meta(),
+                token_count_with_last_at([1_200, 900, 120], [200, 100, 20], "2026-07-10T03:00:25Z"),
+            ],
+        );
+        let files = [&parent as &Path, &child as &Path];
+        let first = sync_test_file(&db, &child, &files)?;
+        assert!(!first.deferred);
+        assert_eq!(first.imported, 1);
+        assert_eq!(
+            imported_usage(&db)?,
+            vec![(request_id(CHILD_A_ID, 1), 200, 100, 20)]
+        );
+        assert_eq!(sync_test_file(&db, &child, &files)?.imported, 0);
+        clear_codex_replay_caches();
+        lock_conn!(db.conn).execute("DELETE FROM session_log_sync", [])?;
+        assert_eq!(sync_test_file(&db, &child, &[&child])?.imported, 0);
+
+        append_jsonl(
+            &child,
+            token_usage_record_at("ordinal_compact", [90, 0, 9], "2026-07-10T03:00:26Z"),
+        );
+        append_jsonl(
+            &child,
+            token_count_with_last_at([1_200, 900, 120], [0, 0, 0], "2026-07-10T03:00:26Z"),
+        );
+        append_jsonl(
+            &child,
+            token_count_with_last_at([1_400, 1_000, 140], [200, 100, 20], "2026-07-10T03:00:30Z"),
+        );
+        assert_eq!(sync_test_file(&db, &child, &files)?.imported, 2);
+        assert_eq!(sync_test_file(&db, &child, &files)?.imported, 0);
+        rebuild_codex_usage_from_dir(&db, temp.path())?;
+        let rows = imported_usage(&db)?;
+        assert_eq!(rows.len(), 4);
+        assert!(rows.contains(&(request_id(PARENT_ID, 1), 1_000, 800, 100)));
+        assert!(rows.contains(&(request_id(CHILD_A_ID, 1), 200, 100, 20)));
+        assert!(rows.contains(&(request_id(CHILD_A_ID, 2), 200, 100, 20)));
+        assert!(rows.contains(&(usage_request_id(CHILD_A_ID, "ordinal_compact"), 90, 0, 9)));
+        rebuild_codex_usage_from_dir(&db, temp.path())?;
+        assert_eq!(imported_usage(&db)?, rows);
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn ordinal_fork_invalid_boundaries_counters_and_copied_events_stay_deferred(
+    ) -> Result<(), AppError> {
+        let temp = tempdir().unwrap();
+        let parent = rollout_path(temp.path(), PARENT_ID);
+        let child = rollout_path(temp.path(), CHILD_A_ID);
+        write_jsonl(
+            &parent,
+            &[
+                session_meta(PARENT_ID),
+                token_count_at(1_000, 800, 100, "2026-07-10T03:00:01Z"),
+            ],
+        );
+        for case in [
+            "missing_cutoff",
+            "zero",
+            "negative",
+            "mismatch",
+            "spawn",
+            "copied",
+            "undated",
+            "invalid_time",
+            "missing_last",
+            "missing_input",
+            "missing_output",
+        ] {
+            clear_codex_replay_caches();
+            let db = Database::memory()?;
+            let mut meta = ordinal_fork_meta();
+            let mut event =
+                token_count_with_last_at([1_200, 900, 120], [200, 100, 20], "2026-07-10T03:00:25Z");
+            match case {
+                "missing_cutoff" => {
+                    meta["payload"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("forked_from_ordinal_exclusive");
+                }
+                "zero" => {
+                    meta["ordinal"] = serde_json::json!(0);
+                    meta["payload"]["forked_from_ordinal_exclusive"] = serde_json::json!(0);
+                }
+                "negative" => {
+                    meta["ordinal"] = serde_json::json!(-1);
+                    meta["payload"]["forked_from_ordinal_exclusive"] = serde_json::json!(-1);
+                }
+                "mismatch" => meta["ordinal"] = serde_json::json!(4),
+                "spawn" => {
+                    meta["payload"]["forked_from_id"] = serde_json::Value::Null;
+                    meta["payload"]["source"] = serde_json::json!({"subagent": {"thread_spawn": {"parent_thread_id": PARENT_ID}}});
+                }
+                "copied" => event["timestamp"] = serde_json::json!("2026-07-10T03:00:01Z"),
+                "undated" => {
+                    event.as_object_mut().unwrap().remove("timestamp");
+                }
+                "invalid_time" => event["timestamp"] = serde_json::json!("invalid"),
+                "missing_last" => {
+                    event["payload"]["info"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("last_token_usage");
+                }
+                "missing_input" => {
+                    event["payload"]["info"]["last_token_usage"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("input_tokens");
+                }
+                "missing_output" => {
+                    event["payload"]["info"]["last_token_usage"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("output_tokens");
+                }
+                _ => unreachable!(),
+            }
+            write_jsonl(&child, &[meta, event]);
+            let result = sync_test_file(&db, &child, &[&parent, &child])?;
+            assert!(result.deferred, "{case}");
+            assert!(imported_usage(&db)?.is_empty(), "{case}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn ordinal_fork_compaction_requires_exact_dated_native_usage() -> Result<(), AppError> {
+        let temp = tempdir().unwrap();
+        let child = rollout_path(temp.path(), CHILD_A_ID);
+        for case in [
+            "valid",
+            "copied",
+            "undated",
+            "missing_input",
+            "missing_output",
+        ] {
+            clear_codex_replay_caches();
+            let db = Database::memory()?;
+            let mut usage =
+                token_usage_record_at("ordinal_compact", [90, 0, 9], "2026-07-10T03:00:26Z");
+            match case {
+                "copied" => usage["timestamp"] = serde_json::json!("2026-07-10T03:00:01Z"),
+                "undated" => {
+                    usage.as_object_mut().unwrap().remove("timestamp");
+                }
+                "missing_input" => {
+                    usage["payload"]["usage"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("input_tokens");
+                }
+                "missing_output" => {
+                    usage["payload"]["usage"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("output_tokens");
+                }
+                _ => {}
+            }
+            write_jsonl(
+                &child,
+                &[
+                    ordinal_fork_meta(),
+                    token_count_with_last_at(
+                        [1_200, 900, 120],
+                        [200, 100, 20],
+                        "2026-07-10T03:00:25Z",
+                    ),
+                    usage,
+                    token_count_with_last_at([1_200, 900, 120], [0, 0, 0], "2026-07-10T03:00:27Z"),
+                ],
+            );
+            let result = sync_test_file(&db, &child, &[&child])?;
+            if case == "valid" {
+                assert!(!result.deferred);
+                assert_eq!(result.imported, 2);
+            } else {
+                assert!(result.deferred, "{case}");
+                assert!(imported_usage(&db)?.is_empty(), "{case}");
+            }
         }
         Ok(())
     }

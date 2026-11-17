@@ -65,6 +65,7 @@ export interface ClaudeAccountsCardProps {
   mode: ClaudeAccountsMode;
   /** Running inside the desktop shell (native commands available). */
   native?: boolean;
+  refreshVersion?: number;
 }
 
 type NameDialog =
@@ -123,6 +124,7 @@ function swapMessage(
 export function ClaudeAccountsCard({
   mode,
   native = true,
+  refreshVersion = 0,
 }: ClaudeAccountsCardProps) {
   const headingId = useId();
   const nameInputId = useId();
@@ -146,6 +148,10 @@ export function ClaudeAccountsCard({
   );
   const [desktopConfirm, setDesktopConfirm] =
     useState<DesktopSwapTarget | null>(null);
+  const [localImport, setLocalImport] = useState<{
+    uuid: string;
+    email: string | null;
+  } | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<AccountFilter>("all");
@@ -178,19 +184,22 @@ export function ClaudeAccountsCard({
       setQuota((all) => ({ ...all, [key]: { ...all[key], loading: true } }));
       try {
         const next: QuotaState =
-          mode === "code" || vault
+          mode === "code"
             ? {
                 view: await claudeAccountsApi.codeQuota(id, force),
                 loading: false,
               }
-            : await claudeAccountsApi
-                .desktopQuota(id, force)
-                .then(({ quota: view, email, plan }) => ({
+            : await claudeAccountsApi[
+                vault ? "desktopAccountQuota" : "desktopQuota"
+              ](id, force).then(
+                ({ quota: view, email, plan, accountUuid }) => ({
+                  accountUuid,
                   view,
                   email,
                   plan,
                   loading: false,
-                }));
+                }),
+              );
         if (mounted.current) setQuota((all) => ({ ...all, [key]: next }));
       } catch {
         if (mounted.current)
@@ -243,7 +252,8 @@ export function ClaudeAccountsCard({
     const readQuotas = (accounts: ClaudeCodeAccount[], vault: boolean) => {
       for (const account of accounts)
         if (
-          account.kind === "oauth" &&
+          (account.kind === "oauth" ||
+            (vault && account.kind === "desktop_only")) &&
           !account.disabled &&
           !account.unreadable
         )
@@ -262,9 +272,8 @@ export function ClaudeAccountsCard({
         void readQuota(DEFAULT_DESKTOP_ID, false);
         for (const profile of result)
           if (profile.signedIn) void readQuota(profile.id, false);
-        // The saved logins are shared with Claude Code; a failure here only
-        // hides that section.
-        const vault = await claudeAccountsApi.listCode().catch(() => null);
+        // Saved subscription identities are shared with Claude Code.
+        const vault = await claudeAccountsApi.listCode();
         if (stale()) return;
         setCode(vault);
         if (vault?.supported) readQuotas(vault.accounts, true);
@@ -280,7 +289,7 @@ export function ClaudeAccountsCard({
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, refreshVersion]);
 
   // Signing in from a terminal happens elsewhere; read again when the window
   // is brought back.
@@ -507,33 +516,52 @@ export function ClaudeAccountsCard({
         return;
       }
       setDesktopConfirm(null);
+      if (target.kind !== "capture")
+        window.dispatchEvent(
+          new CustomEvent("chimera-provider-mutated", {
+            detail: { appId: "claude-desktop" },
+          }),
+        );
       swapMessage(target, outcome, nameOf);
     });
 
-  /** Desktop is signed in to an account Claude Code on this computer is
-   *  also signed in to, but it is not saved yet: save Claude Code's login,
-   *  then keep Desktop's sign-in for it, in one step. The backend checks the
-   *  account numbers match before keeping anything. */
-  const importDesktopLogin = () =>
+  /** The backend saves the account and its Desktop sign-in as one operation. */
+  const importDesktopLogin = (
+    close = false,
+    selected?: { uuid: string; email: string | null },
+  ) =>
     run("desktop:import", async () => {
-      // With Claude Code signed in to the same account, save that login so
-      // the account works in both; otherwise save Desktop's sign-in alone.
-      const saved = importable
-        ? await claudeAccountsApi.saveCurrentCode()
-        : await claudeAccountsApi.saveDesktopOnly(desktopEmail);
-      const target: DesktopSwapTarget = { kind: "capture", account: saved };
-      const outcome = await claudeAccountsApi.captureDesktopLogin(
-        saved.id,
-        false,
-      );
-      if (outcome.status === "desktop_running") {
-        toast.success(`已保存登录「${saved.name}」`);
-        setDesktopConfirm(target);
-        return;
+      const detected =
+        selected ??
+        (swap?.accountUuid
+          ? {
+              uuid: swap.accountUuid,
+              email: desktopEmail,
+            }
+          : null);
+      if (!detected) throw new Error("没有读到本机登录，请重新检测后再试。");
+      try {
+        const outcome = await claudeAccountsApi.importDesktopLogin(
+          detected.uuid,
+          detected.email,
+          close,
+        );
+        if (outcome.status === "desktop_running") {
+          setLocalImport(detected);
+          return;
+        }
+        setLocalImport(null);
+        if (outcome.account) {
+          swapMessage(
+            { kind: "capture", account: outcome.account },
+            outcome,
+            nameOf,
+          );
+        }
+      } catch (cause) {
+        if (close) setLocalImport(null);
+        throw cause;
       }
-      swapMessage(target, outcome, (id) =>
-        id === saved.id ? saved.name : nameOf(id),
-      );
     });
 
   // ----- the saved logins: order -----
@@ -593,19 +621,37 @@ export function ClaudeAccountsCard({
       ? code?.sessionsSupported
         ? "切换账号不影响会话、设置与 MCP；也可以让多个账号在各自的终端里同时用。"
         : "切换账号不影响会话、设置与 MCP。"
-      : "每个账号一个独立的 Claude Desktop 数据目录，登录互不影响，可以同时打开。";
+      : "导入本机登录，查看剩余额度；点击其他账号卡片上的「切换到此账号」即可切换。";
   useReturnFocus(
     nameDialog !== null ||
       loginGuide ||
       removing !== null ||
       runningSwitch !== null ||
-      desktopConfirm !== null,
+      desktopConfirm !== null ||
+      localImport !== null,
   );
 
   // Desktop-only logins have no Claude Code tokens: not shown for Code.
-  const codeRows = (code?.accounts ?? []).filter(
-    (account) => mode === "desktop" || account.kind !== "desktop_only",
-  );
+  const codeRows = (code?.accounts ?? [])
+    .filter((account) =>
+      mode === "desktop"
+        ? account.kind === "oauth" ||
+          account.kind === "desktop_only" ||
+          account.unreadable
+        : account.kind !== "desktop_only",
+    )
+    .map((account) =>
+      mode === "desktop"
+        ? {
+            ...account,
+            isCurrent:
+              swap?.signedIn === true &&
+              !swap.apiMode &&
+              swap.currentAccountId === account.id,
+            plan: quota[`vault:${account.id}`]?.plan ?? account.plan,
+          }
+        : account,
+    );
   // Dragging and moving only make sense on the whole list in its own order.
   const ordering = !query.trim() && filter === "all" && sortBy === "custom";
   const shownRows = visibleAccounts(codeRows, {
@@ -621,7 +667,13 @@ export function ClaudeAccountsCard({
     try {
       await Promise.allSettled(
         codeRows
-          .filter((a) => a.kind === "oauth" && !a.disabled && !a.unreadable)
+          .filter(
+            (a) =>
+              (a.kind === "oauth" ||
+                (mode === "desktop" && a.kind === "desktop_only")) &&
+              !a.disabled &&
+              !a.unreadable,
+          )
           .map((a) => readQuota(a.id, true, mode === "desktop")),
       );
     } finally {
@@ -632,6 +684,14 @@ export function ClaudeAccountsCard({
     codeRows.length > 0 ? (
       <AccountsToolbar
         accounts={codeRows}
+        mode={mode}
+        detectedCurrent={
+          mode === "desktop" &&
+          swap?.supported === true &&
+          swap.signedIn &&
+          !swap.apiMode &&
+          !codeRows.some((account) => account.isCurrent)
+        }
         query={query}
         onQuery={setQuery}
         filter={filter}
@@ -647,10 +707,6 @@ export function ClaudeAccountsCard({
       />
     ) : null;
   const listClass = grid ? "claude-accounts-grid" : "claude-accounts-list";
-  const noMatch =
-    shownRows.length === 0 && codeRows.length > 0 ? (
-      <p className="claude-accounts-empty">没有符合条件的账号。</p>
-    ) : null;
   const exportable = codeRows.filter(
     (a) =>
       !a.unreadable &&
@@ -659,57 +715,79 @@ export function ClaudeAccountsCard({
   ).length;
   const desktopRows = desktop ?? [];
   const defaultQuota = quota[DEFAULT_DESKTOP_ID];
-  const defaultSignedIn =
-    defaultQuota?.view !== undefined &&
-    defaultQuota.view.status !== "not_signed_in";
-  const currentSaved = swap?.currentAccountId
-    ? codeRows.find((a) => a.id === swap.currentAccountId)
-    : undefined;
-  const currentHasSnapshot = Boolean(
-    swap?.snapshots.some((s) => s.accountId === swap.currentAccountId),
-  );
-  const desktopEmail = defaultQuota?.email ?? null;
-  // Claude Code here is signed in to the same, not yet saved, account.
-  const importable = Boolean(
+  const currentSaved =
+    swap?.signedIn && swap.currentAccountId
+      ? codeRows.find((a) => a.id === swap.currentAccountId)
+      : undefined;
+  const defaultIdentityMatches = Boolean(
     swap?.signedIn &&
-    !currentSaved &&
-    desktopEmail &&
-    code?.live.signedIn &&
-    !code.live.savedId &&
-    code.live.email?.toLowerCase() === desktopEmail.toLowerCase(),
+    defaultQuota?.accountUuid &&
+    swap.accountUuid?.toLowerCase() === defaultQuota.accountUuid.toLowerCase(),
   );
+  const desktopEmail = defaultIdentityMatches
+    ? (defaultQuota?.email ?? null)
+    : (currentSaved?.email ?? null);
+  const showDetectedDesktop = Boolean(
+    mode === "desktop" &&
+    swap?.supported &&
+    swap.signedIn &&
+    !currentSaved &&
+    (filter === "all" || (filter === "current" && !swap.apiMode)) &&
+    (!query.trim() ||
+      [desktopEmail, "本机已登录的账号", "Claude Desktop"].some((text) =>
+        text?.toLowerCase().includes(query.trim().toLowerCase()),
+      )),
+  );
+  const noMatch =
+    shownRows.length === 0 &&
+    !showDetectedDesktop &&
+    (codeRows.length > 0 || (mode === "desktop" && swap?.signedIn)) ? (
+      <p className="claude-accounts-empty">没有符合条件的账号。</p>
+    ) : null;
 
-  // Sign-ins on this computer that are not saved yet, offered under 导入.
   const saveLiveCode = () =>
     run("save-code", async () => {
       const saved = await claudeAccountsApi.saveCurrentCode();
       toast.success(`已导入本机 Claude Code 登录「${saved.name}」`);
     });
   const detectedLogins: DetectedLogin[] = [
-    ...(mode === "desktop" && swap?.supported && swap.signedIn && !currentSaved
+    ...(mode === "desktop" &&
+    swap?.supported &&
+    swap.signedIn &&
+    swap.accountUuid
       ? [
           {
             id: "desktop",
-            source: "本机 Claude Desktop ",
+            source: "Claude Desktop · 本机登录",
             email: desktopEmail,
+            plan: defaultIdentityMatches
+              ? defaultQuota?.plan
+              : currentSaved?.plan,
+            managed: Boolean(currentSaved),
             onImport: () => void importDesktopLogin(),
           },
         ]
       : []),
     ...(code?.supported &&
     code.live?.signedIn &&
-    !code.live.savedId &&
-    !importable
+    (mode === "desktop" || !code.live.savedId)
       ? [
           {
             id: "code",
-            source: "本机 Claude Code ",
-            email: code.live?.email ?? null,
+            source: "Claude Code · 本机登录",
+            email: code.live.email ?? null,
+            plan: code.live.plan,
+            managed: Boolean(code.live.savedId),
+            description: "导入订阅账号；首次在 Desktop 使用时仍需登录一次。",
             onImport: () => void saveLiveCode(),
           },
         ]
       : []),
   ];
+  const openDefaultDesktop = () =>
+    void run("launch:default", () =>
+      claudeAccountsApi.launchDesktop(DEFAULT_DESKTOP_ID),
+    );
 
   const headerAction =
     mode === "code" ? (
@@ -727,15 +805,20 @@ export function ClaudeAccountsCard({
         />
       ) : null
     ) : (
-      <Button
-        size="sm"
-        variant="outline"
+      <AddAccountMenu
         disabled={disabled || !native}
-        onClick={() => openNameDialog({ kind: "add-desktop" })}
-      >
-        <Plus size={14} aria-hidden="true" />
-        添加 Desktop 账号
-      </Button>
+        browserSupported={code?.browserLoginSupported === true}
+        exportable={exportable}
+        onChanged={() => {
+          void load();
+          window.dispatchEvent(new CustomEvent(BINDINGS_CHANGED_EVENT));
+        }}
+        mode="desktop"
+        detected={detectedLogins}
+        onDetect={load}
+        onOpenDesktop={openDefaultDesktop}
+        onCreateProfile={() => openNameDialog({ kind: "add-desktop" })}
+      />
     );
 
   const rowFor = (account: ClaudeCodeAccount, forDesktop: boolean) => (
@@ -770,8 +853,10 @@ export function ClaudeAccountsCard({
         forDesktop
           ? {
               supported: swap?.supported === true,
+              apiMode: swap?.apiMode,
               snapshot: swap?.snapshots.find((s) => s.accountId === account.id),
-              signedInHere: swap?.currentAccountId === account.id,
+              signedInHere:
+                swap?.signedIn === true && swap.currentAccountId === account.id,
             }
           : undefined
       }
@@ -790,6 +875,7 @@ export function ClaudeAccountsCard({
       onSwitchDesktop={() =>
         void runDesktopSwap({ kind: "switch", account }, false)
       }
+      onOpenDesktop={openDefaultDesktop}
       onPrepareDesktop={() =>
         void runDesktopSwap({ kind: "prepare", account }, false)
       }
@@ -797,7 +883,11 @@ export function ClaudeAccountsCard({
   );
 
   return (
-    <section className="claude-accounts-card" aria-labelledby={headingId}>
+    <section
+      className="claude-accounts-card"
+      data-mode={mode}
+      aria-labelledby={headingId}
+    >
       <header className="claude-accounts-heading">
         <span className="claude-accounts-icon" aria-hidden="true">
           <UserRound size={18} />
@@ -902,232 +992,215 @@ export function ClaudeAccountsCard({
         </p>
       ) : (
         <>
-          <ul className="claude-accounts-list" aria-label="Claude Desktop 账号">
-            <li
-              className={
-                defaultSignedIn
-                  ? "claude-account-row is-default has-quota"
-                  : "claude-account-row is-default"
-              }
-            >
-              <span className="claude-account-lead">
-                <span className="claude-account-avatar" aria-hidden="true">
-                  默
-                </span>
-              </span>
-              <div className="claude-account-identity">
-                <div className="claude-account-name">
-                  <strong>默认账号</strong>
-                  <span className="claude-account-tag is-muted">系统默认</span>
-                  {defaultQuota?.plan ? (
-                    <span className="claude-accounts-plan">
-                      {defaultQuota.plan}
+          <div className="claude-desktop-summary" aria-label="账号概况">
+            <span>
+              <strong>{codeRows.length}</strong> 个已保存账号
+            </span>
+            <span>
+              <span
+                className="claude-desktop-status-dot"
+                data-active={swap?.apiMode || swap?.signedIn || undefined}
+              />
+              {swap === null
+                ? "暂未读到 Desktop 状态"
+                : swap.apiMode
+                  ? "当前使用 API 线路"
+                  : swap.signedIn
+                    ? "Desktop 已登录"
+                    : "Desktop 未登录"}
+            </span>
+            {swap?.signedIn && !currentSaved ? (
+              <span>检测到可导入的本机登录</span>
+            ) : null}
+          </div>
+          {toolbar}
+          {noMatch}
+          <ul className={listClass} aria-label="Claude Desktop 账号">
+            {showDetectedDesktop ? (
+              <li className="claude-account-card claude-detected-card">
+                <header className="claude-account-card-head">
+                  <span className="claude-account-avatar" aria-hidden="true">
+                    <UserRound size={20} />
+                  </span>
+                  <div className="claude-account-identity">
+                    <strong>
+                      {desktopEmail
+                        ? hideEmail
+                          ? maskEmail(desktopEmail)
+                          : desktopEmail
+                        : "本机已登录的账号"}
+                    </strong>
+                    <span className="claude-account-meta">
+                      从 Claude Desktop 检测到
                     </span>
-                  ) : null}
+                  </div>
+                </header>
+                <div className="claude-account-card-tags">
+                  <span className="claude-account-tag" data-tone="success">
+                    {swap?.apiMode ? "本机登录已保留" : "Desktop 当前使用"}
+                  </span>
+                  <span className="claude-account-tag" data-tone="warning">
+                    待导入
+                  </span>
                 </div>
-                <span className="claude-account-meta">
-                  {defaultQuota?.email ??
-                    "从开始菜单打开的 Claude Desktop；窗口里登录的是哪个账号，这里就显示哪个。"}
-                </span>
-                {swap?.supported && swap.signedIn ? (
-                  <span className="claude-swap-line">
-                    <span>
-                      {currentSaved
-                        ? currentHasSnapshot
-                          ? `这个登录已保存为「${currentSaved.name}」的 Desktop 登录，可以切换回来。要换别的账号，用它们那一行的按钮；不要在 Desktop 里退出登录，退出会让保存的登录失效。`
-                          : `登录的是已保存的账号「${currentSaved.name}」，还没有保存它的 Desktop 登录。`
-                        : importable
-                          ? `检测到本机 Desktop 已登录 ${desktopEmail}，Claude Code 也登录着同一个账号。一键导入会保存这个登录，并保存它的 Desktop 登录，之后就能一键切换。`
-                          : `检测到本机 Desktop 已登录${desktopEmail ? ` ${desktopEmail}` : ""}，还没有导入。一键导入会保存它的 Desktop 登录，之后换了别的账号也能一键切换回来。`}
-                    </span>
-                    {!currentSaved ? (
-                      <Button
-                        size="sm"
-                        disabled={disabled || defaultQuota?.loading === true}
-                        onClick={() => void importDesktopLogin()}
+                <p className="claude-detected-description">
+                  保存这个登录，之后可以从账号卡片一键切换回来。
+                </p>
+                <footer className="claude-account-card-foot">
+                  <span className="claude-account-card-date">仅保存在本机</span>
+                  <Button
+                    size="sm"
+                    disabled={disabled}
+                    onClick={() => void importDesktopLogin()}
+                  >
+                    {busy === "desktop:import" ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Plus size={14} />
+                    )}
+                    一键导入
+                  </Button>
+                </footer>
+              </li>
+            ) : null}
+            {shownRows.map((account) => rowFor(account, true))}
+          </ul>
+          {codeRows.length === 0 && !swap?.signedIn ? (
+            <div className="claude-desktop-empty">
+              <UserRound size={32} aria-hidden="true" />
+              <h3>添加你的第一个账号</h3>
+              <p>已在这台电脑登录 Claude？点击「添加账号」即可识别导入。</p>
+              <Button
+                variant="outline"
+                disabled={disabled}
+                onClick={openDefaultDesktop}
+              >
+                打开 Claude Desktop
+              </Button>
+            </div>
+          ) : null}
+          {desktopRows.length > 0 ? (
+            <details className="claude-desktop-profiles">
+              <summary>
+                独立窗口 <span>{desktopRows.length}</span>
+              </summary>
+              <p className="claude-accounts-note">
+                独立窗口有各自的登录和设置，可同时使用。
+              </p>
+              <ul
+                className="claude-accounts-list"
+                aria-label="独立 Desktop 窗口"
+              >
+                {desktopRows.map((profile) => (
+                  <li key={profile.id} className="claude-account-row">
+                    <span className="claude-account-lead">
+                      <span
+                        className="claude-account-avatar"
+                        aria-hidden="true"
                       >
-                        一键导入
-                      </Button>
-                    ) : null}
-                    {currentSaved ? (
+                        {Array.from(profile.name || "?")[0]?.toUpperCase()}
+                      </span>
+                    </span>
+                    <div className="claude-account-identity">
+                      <div className="claude-account-name">
+                        <strong>{profile.name}</strong>
+                        <span
+                          className="claude-account-tag"
+                          data-tone={profile.signedIn ? "success" : "muted"}
+                        >
+                          {profile.signedIn
+                            ? "已登录"
+                            : profile.initialized
+                              ? "未登录"
+                              : "尚未打开"}
+                        </span>
+                        {quota[profile.id]?.plan ? (
+                          <span className="claude-accounts-plan">
+                            {quota[profile.id]?.plan}
+                          </span>
+                        ) : null}
+                      </div>
+                      <span className="claude-account-meta">
+                        {profile.signedIn
+                          ? (quota[profile.id]?.email ?? "可与其他账号同时打开")
+                          : "首次登录前请先完全退出 Claude Desktop（包括托盘图标）"}
+                      </span>
+                    </div>
+                    {profile.signedIn ? (
+                      <QuotaStrip
+                        state={quota[profile.id]}
+                        now={now}
+                        label={profile.name}
+                        statusText={DESKTOP_STATUS_TEXT}
+                        onRefresh={() => void readQuota(profile.id, true)}
+                      />
+                    ) : (
+                      <span aria-hidden="true" />
+                    )}
+                    <div className="claude-account-actions">
                       <Button
                         size="sm"
                         variant="outline"
                         disabled={disabled}
                         onClick={() =>
-                          void runDesktopSwap(
-                            { kind: "capture", account: currentSaved },
-                            false,
+                          void run(`launch:${profile.id}`, () =>
+                            claudeAccountsApi.launchDesktop(profile.id),
                           )
                         }
                       >
-                        {currentHasSnapshot
-                          ? "更新保存的登录"
-                          : "保存 Desktop 登录"}
+                        {busy === `launch:${profile.id}` ? (
+                          <Loader2
+                            size={14}
+                            className="animate-spin"
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <AppWindow size={14} aria-hidden="true" />
+                        )}
+                        打开 Claude Desktop
                       </Button>
-                    ) : null}
-                  </span>
-                ) : null}
-              </div>
-              {defaultSignedIn ? (
-                <QuotaStrip
-                  state={defaultQuota}
-                  now={now}
-                  label="默认账号"
-                  statusText={DESKTOP_STATUS_TEXT}
-                  onRefresh={() => void readQuota(DEFAULT_DESKTOP_ID, true)}
-                />
-              ) : null}
-            </li>
-            {desktopRows.length === 0 ? (
-              <li className="claude-accounts-empty">
-                添加账号后，每个账号会有自己的独立目录，登录互不影响，可同时使用。首次登录前请先完全退出
-                Claude Desktop。
-              </li>
-            ) : null}
-            {desktopRows.map((profile) => (
-              <li key={profile.id} className="claude-account-row">
-                <span className="claude-account-lead">
-                  <span className="claude-account-avatar" aria-hidden="true">
-                    {Array.from(profile.name || "?")[0]?.toUpperCase()}
-                  </span>
-                </span>
-                <div className="claude-account-identity">
-                  <div className="claude-account-name">
-                    <strong>{profile.name}</strong>
-                    <span
-                      className="claude-account-tag"
-                      data-tone={profile.signedIn ? "success" : "muted"}
-                    >
-                      {profile.signedIn
-                        ? "已登录"
-                        : profile.initialized
-                          ? "未登录"
-                          : "尚未打开"}
-                    </span>
-                    {quota[profile.id]?.plan ? (
-                      <span className="claude-accounts-plan">
-                        {quota[profile.id]?.plan}
-                      </span>
-                    ) : null}
-                  </div>
-                  <span className="claude-account-meta">
-                    {profile.signedIn
-                      ? (quota[profile.id]?.email ?? "可与其他账号同时打开")
-                      : "首次登录前请先完全退出 Claude Desktop（包括托盘图标）"}
-                  </span>
-                </div>
-                {profile.signedIn ? (
-                  <QuotaStrip
-                    state={quota[profile.id]}
-                    now={now}
-                    label={profile.name}
-                    statusText={DESKTOP_STATUS_TEXT}
-                    onRefresh={() => void readQuota(profile.id, true)}
-                  />
-                ) : (
-                  <span aria-hidden="true" />
-                )}
-                <div className="claude-account-actions">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={disabled}
-                    onClick={() =>
-                      void run(`launch:${profile.id}`, () =>
-                        claudeAccountsApi.launchDesktop(profile.id),
-                      )
-                    }
-                  >
-                    {busy === `launch:${profile.id}` ? (
-                      <Loader2
-                        size={14}
-                        className="animate-spin"
-                        aria-hidden="true"
-                      />
-                    ) : (
-                      <AppWindow size={14} aria-hidden="true" />
-                    )}
-                    打开 Claude Desktop
-                  </Button>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    disabled={disabled}
-                    aria-label={`重命名 ${profile.name}`}
-                    title="重命名"
-                    onClick={() =>
-                      openNameDialog({
-                        kind: "rename",
-                        id: profile.id,
-                        name: profile.name,
-                      })
-                    }
-                  >
-                    <Pencil size={14} aria-hidden="true" />
-                  </Button>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    disabled={disabled}
-                    aria-label={`删除 ${profile.name}`}
-                    title="删除"
-                    onClick={() =>
-                      setRemoving({ id: profile.id, name: profile.name })
-                    }
-                  >
-                    <Trash2 size={14} aria-hidden="true" />
-                  </Button>
-                </div>
-              </li>
-            ))}
-          </ul>
-          {code?.supported ? (
-            <section
-              className="claude-login-section"
-              aria-label="已保存的 Claude 登录"
-            >
-              <div className="claude-login-section-head">
-                <div>
-                  <h3>已保存的 Claude 登录</h3>
-                  <p>
-                    与 Claude Code
-                    账号共用。可以添加登录、导入导出凭证文件。要让默认 Claude
-                    Desktop 切换到某个账号，先点这一行的「用此账号登录
-                    Desktop」，在回到登录页的 Desktop 里登录它，再点「保存
-                    Desktop 登录」，之后就能一键切换。
-                  </p>
-                </div>
-                <AddAccountMenu
-                  disabled={disabled}
-                  browserSupported={code.browserLoginSupported}
-                  exportable={exportable}
-                  onChanged={() => {
-                    void load();
-                    window.dispatchEvent(
-                      new CustomEvent(BINDINGS_CHANGED_EVENT),
-                    );
-                  }}
-                  label="添加登录"
-                  mode="desktop"
-                  detected={detectedLogins}
-                />
-              </div>
-              {codeRows.length === 0 ? (
-                <p className="claude-accounts-empty">还没有保存的登录。</p>
-              ) : (
-                <>
-                  {toolbar}
-                  {noMatch}
-                  <ul
-                    className={listClass}
-                    aria-label="已保存的 Claude 登录列表"
-                  >
-                    {shownRows.map((account) => rowFor(account, true))}
-                  </ul>
-                </>
-              )}
-            </section>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        disabled={disabled}
+                        aria-label={`重命名 ${profile.name}`}
+                        title="重命名"
+                        onClick={() =>
+                          openNameDialog({
+                            kind: "rename",
+                            id: profile.id,
+                            name: profile.name,
+                          })
+                        }
+                      >
+                        <Pencil size={14} aria-hidden="true" />
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        disabled={disabled}
+                        aria-label={`删除 ${profile.name}`}
+                        title="删除"
+                        onClick={() =>
+                          setRemoving({ id: profile.id, name: profile.name })
+                        }
+                      >
+                        <Trash2 size={14} aria-hidden="true" />
+                      </Button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={disabled}
+                onClick={() => openNameDialog({ kind: "add-desktop" })}
+              >
+                <Plus size={14} />
+                创建独立窗口
+              </Button>
+            </details>
           ) : null}
         </>
       )}
@@ -1279,12 +1352,12 @@ export function ClaudeAccountsCard({
       />
 
       <ConfirmDialog
-        isOpen={desktopConfirm !== null}
+        isOpen={desktopConfirm !== null || localImport !== null}
         busy={busy?.startsWith("desktop:") ?? false}
         title="需要先关闭 Claude Desktop"
         message={
           desktopConfirm?.kind === "switch"
-            ? `切换默认 Claude Desktop 到「${desktopConfirm.account.name}」要先把它关掉（包括托盘里的），换好登录后会自动重新打开。关闭会一并结束 Desktop 里正在运行的 Claude Code 会话、定时任务和 MCP 服务，未保存的输入也会丢失，请先处理好。现在的登录会先保存起来。换好后如果 Desktop 回到登录页，重新登录一次即可。`
+            ? `切换默认 Claude Desktop 到「${desktopConfirm.account.name}」要先把它关掉（包括托盘里的），换好登录后会自动重新打开。关闭会一并结束 Desktop 里正在运行的 Claude Code 会话、定时任务和 MCP 服务，未保存的输入也会丢失，请先处理好。现在的登录和本地会话会先保存起来，切换后可继续查看。换好后如果 Desktop 回到登录页，重新登录一次即可。`
             : desktopConfirm?.kind === "prepare"
               ? `要让默认 Claude Desktop 回到登录页，先要把它关掉（包括托盘里的）。现在的登录会先保存起来，不会被退出，之后还能切换回来；然后打开 Desktop，你在里面登录「${desktopConfirm.account.name}」，再回来点「保存 Desktop 登录」。关闭会一并结束 Desktop 里正在运行的 Claude Code 会话、定时任务和 MCP 服务，未保存的输入也会丢失，请先处理好。`
               : "保存默认 Claude Desktop 的登录要先把它关掉（包括托盘里的），保存好后会自动重新打开。关闭会一并结束 Desktop 里正在运行的 Claude Code 会话、定时任务和 MCP 服务，未保存的输入也会丢失，请先处理好。"
@@ -1293,10 +1366,14 @@ export function ClaudeAccountsCard({
         cancelText="取消"
         variant="info"
         onCancel={() => {
-          if (!busy) setDesktopConfirm(null);
+          if (!busy) {
+            setDesktopConfirm(null);
+            setLocalImport(null);
+          }
         }}
         onConfirm={() => {
-          if (desktopConfirm) void runDesktopSwap(desktopConfirm, true);
+          if (localImport) void importDesktopLogin(true, localImport);
+          else if (desktopConfirm) void runDesktopSwap(desktopConfirm, true);
         }}
       />
     </section>

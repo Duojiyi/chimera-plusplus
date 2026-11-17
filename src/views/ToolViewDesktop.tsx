@@ -446,7 +446,10 @@ export default function ToolViewDesktop({
       )}
       <div className="tool-desktop-note">
         <Info size={15} aria-hidden="true" />
-        <span>切换线路后需重启 Claude Desktop。</span>
+        <span>
+          切换线路会自动保留本地会话；Claude Desktop
+          正在运行时，会在确认后关闭并重新打开。
+        </span>
       </div>
       <details className="chimera-disclosure tool-desktop-details">
         <summary>诊断与兼容性</summary>
