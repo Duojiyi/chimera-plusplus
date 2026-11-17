@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - 手动授权返回值绑定当前登录的 state；Codex 回调只发送到本次登录指定的本机地址，禁用代理与重定向。
-- 加强 SQL 备份导入的嵌套语句校验；更新内置 SQLite 和 OpenSSL 相关依赖以修复已披露的安全问题。
+- 加强 SQL 备份导入的嵌套语句校验，覆盖嵌套执行与失败回滚情形。
 
 ## [2.9.0] - 2026-11-12
 
