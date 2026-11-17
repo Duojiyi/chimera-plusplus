@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::config::cas::{Changeset, FileSnapshot as CasSnapshot};
-#[cfg(any(target_os = "macos", windows))]
 use crate::config::get_home_dir;
 #[cfg(test)]
 use crate::config::write_json_file;

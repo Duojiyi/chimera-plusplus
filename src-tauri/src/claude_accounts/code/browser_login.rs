@@ -11,7 +11,9 @@
 //! staging folder is scrubbed. Nothing here handles an OAuth client or code.
 
 use std::io::{Read, Write};
-use std::process::{Child, Command, Stdio};
+#[cfg(windows)]
+use std::process::Stdio;
+use std::process::{Child, Command};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
