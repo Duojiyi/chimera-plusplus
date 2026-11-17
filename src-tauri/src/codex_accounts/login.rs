@@ -645,7 +645,7 @@ mod tests {
             "#!/bin/sh\n\
              [ \"$1 $2 $3 $4\" = \"-c cli_auth_credentials_store=file login --device-auth\" ] || exit 3\n\
              grep -q 'cli_auth_credentials_store = \"file\"' \"$CODEX_HOME/config.toml\" || exit 4\n\
-             printf 'https://auth.openai.com/codex/device\\nK7QD-9XMP\\n'\n\
+             printf '%s\\n' 'https://auth.openai.com/codex/device' 'K7QD-9XMP'\n\
              while [ ! -f \"$CODEX_HOME/finish\" ]; do sleep 0.01; done\n\
              [ ! -f \"$CODEX_HOME/fail\" ] || exit 1\n\
              cat \"$(dirname \"$0\")/auth.json\" > \"$CODEX_HOME/auth.json\"\n",
