@@ -28,7 +28,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       <span
         class="v3-sidebar-version"
       >
-        2.9.0
+        2.9.1
       </span>
     </span>
   </div>
@@ -540,7 +540,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       <span
         class="v3-sidebar-version"
       >
-        2.9.0
+        2.9.1
       </span>
     </span>
   </div>
