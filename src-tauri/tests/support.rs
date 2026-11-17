@@ -7,7 +7,13 @@ use chimera_plus_plus_lib::{update_settings, AppSettings, AppState, Database, Mu
 pub fn ensure_test_home() -> &'static Path {
     static HOME: OnceLock<PathBuf> = OnceLock::new();
     HOME.get_or_init(|| {
-        let base = std::env::temp_dir().join("cc-switch-test-home");
+        let temp_root = std::env::temp_dir();
+        // Resolve the macOS /var system symlink before testing protected history paths.
+        #[cfg(target_os = "macos")]
+        let temp_root = temp_root
+            .canonicalize()
+            .expect("resolve integration test home parent");
+        let base = temp_root.join("cc-switch-test-home");
         if base.exists() {
             let _ = std::fs::remove_dir_all(&base);
         }
