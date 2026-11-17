@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 手动授权返回值绑定当前登录的 state；Codex 回调只发送到本次登录指定的本机地址，禁用代理与重定向。
 - 加强 SQL 备份导入的嵌套语句校验，覆盖嵌套执行与失败回滚情形。
+- 更新 QUIC 间接依赖 quinn-proto 和 quinn-udp，修复流数量限制、Retry 令牌处理与截断数据报相关的已知安全问题。
 
 ## [2.9.0] - 2026-11-12
 
