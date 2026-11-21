@@ -150,6 +150,7 @@ export function NewRuntimeView({
   onOperationFinished,
   onRetryRuntime,
   onRefreshStatus,
+  onPortableRootChanged,
   onReceipt,
   onOpenProxySettings,
 }: {
@@ -172,6 +173,7 @@ export function NewRuntimeView({
   onRetryRuntime?: () => void;
   /** Re-reads the installation; called when the window regains focus. */
   onRefreshStatus?: () => unknown;
+  onPortableRootChanged?: () => Promise<void>;
   onReceipt?: (receipt: RuntimeReceipt | null) => void;
   onOpenProxySettings?: () => void;
 }) {
@@ -184,6 +186,7 @@ export function NewRuntimeView({
     ? RUNTIME_DESIGN_SAMPLE.release
     : releaseProp;
   const [maintenanceOpen, setMaintenanceOpen] = useState(false);
+  const [selectingPortableRoot, setSelectingPortableRoot] = useState(false);
   const [preferences, setPreferences] = useState<Pick<
     Settings,
     "codexInstallMode" | "codexUpdateSource" | "checkCodexUpdatesOnStart"
@@ -255,6 +258,7 @@ export function NewRuntimeView({
   const [checking, setChecking] = useState(false);
   useLightweightCloseBlocker(
     preferencesBusy ||
+      selectingPortableRoot ||
       installingHistory ||
       installingOffline ||
       inspectingOffline ||
@@ -366,6 +370,7 @@ export function NewRuntimeView({
   );
 
   const openHistory = () => {
+    if (packageActionsLocked) return;
     setMaintenanceOpen(false);
     setHistoryOpen(true);
     setPendingPlan(null);
@@ -373,7 +378,7 @@ export function NewRuntimeView({
   };
 
   const planHistoryRelease = async (tag: string) => {
-    if (designSample) return;
+    if (designSample || packageActionsLocked) return;
     setPlanningTag(tag);
     setHistoryError(null);
     try {
@@ -397,7 +402,7 @@ export function NewRuntimeView({
     "更新状态没有刷新成功，可以稍后重新检查；已安装的版本不受影响。";
 
   const installHistoryRelease = async () => {
-    if (!pendingPlan || preferencesBusy) return;
+    if (!pendingPlan || packageActionsLocked || installingHistory) return;
     const plan = pendingPlan;
     const choice: RuntimeUpdatePreferences = {
       source: updateSource,
@@ -433,7 +438,7 @@ export function NewRuntimeView({
   };
 
   const pickOfflinePackage = async () => {
-    if (designSample) return;
+    if (designSample || packageActionsLocked) return;
     setMaintenanceOpen(false);
     let filePath: string | null = null;
     try {
@@ -464,7 +469,7 @@ export function NewRuntimeView({
   };
 
   const installOfflinePackage = async () => {
-    if (!offlineInspection) return;
+    if (!offlineInspection || packageActionsLocked) return;
     const inspection = offlineInspection;
     setInstallingOffline(true);
     onReceipt?.(null);
@@ -503,6 +508,8 @@ export function NewRuntimeView({
   // Live data on screen: the desktop app, or the design-preview sample.
   const live = runningInTauri || designSample;
   const installed = live && runtime?.installed === true;
+  const externalPortableRoot = runtime?.externalPortableRoot;
+  const portablePathError = runtime?.portablePathError;
   const previousVersion =
     runtime?.history?.find((item) => item.state === "previous")?.version ??
     null;
@@ -519,12 +526,23 @@ export function NewRuntimeView({
     !runningInTauri ||
     !runtimeSupported ||
     preferencesBusy ||
+    selectingPortableRoot ||
     Boolean(operation);
+  const packageActionsLocked = actionsLocked || Boolean(externalPortableRoot);
+  const portableSelectionLocked =
+    !runningInTauri ||
+    !runtimeSupported ||
+    Boolean(operation) ||
+    diagnosing ||
+    selectingPortableRoot ||
+    installingHistory ||
+    installingOffline ||
+    inspectingOffline;
   const startAction = (
     action: RuntimeAction,
     preferences?: RuntimeUpdatePreferences,
   ) => {
-    if (actionsLocked) return;
+    if (packageActionsLocked) return;
     setMaintenanceOpen(false);
     onAction(action, preferences);
   };
@@ -539,6 +557,29 @@ export function NewRuntimeView({
       await onCheck(selectedPreferences);
     } finally {
       if (preferencesMounted.current) setChecking(false);
+    }
+  };
+  const changePortableRoot = async (clear = false) => {
+    if (portableSelectionLocked) return;
+    setSelectingPortableRoot(true);
+    try {
+      const path = clear
+        ? null
+        : await openNativeFileDialog({
+            directory: true,
+            multiple: false,
+            title: "选择现有 Codex 便携版目录",
+          });
+      if (!clear && typeof path !== "string") return;
+      await invoke("set_codex_external_portable_root", { path });
+      await onPortableRootChanged?.();
+      toast.success(clear ? "已恢复自动识别" : "已选择 Codex 便携版目录");
+    } catch (reason) {
+      toast.error(clear ? "无法清除所选目录" : "无法使用所选目录", {
+        description: errorText(reason),
+      });
+    } finally {
+      setSelectingPortableRoot(false);
     }
   };
   const runDiagnostics = () => {
@@ -598,7 +639,7 @@ export function NewRuntimeView({
         actions.push({
           label: "离线导入安装包",
           onClick: () => void pickOfflinePackage(),
-          disabled: actionsLocked || inspectingOffline,
+          disabled: packageActionsLocked || inspectingOffline,
         });
       } else if (step === "repair" && runtime?.canRepair) {
         actions.push({
@@ -653,18 +694,23 @@ export function NewRuntimeView({
       ? renderReceipt(receipt, true)
       : null;
   // Why an installation-bound action is unavailable right now.
-  const unavailableReason = !runningInTauri
-    ? "浏览器预览不执行本机操作。"
-    : !runtime
-      ? runtimeUnreadable
-        ? "读取到安装状态后可用。"
-        : "正在读取安装状态。"
-      : "尚未安装 Codex，安装后可用。";
-  const noRollbackReason = !installed
-    ? unavailableReason
-    : runtime?.installMode === "standard"
-      ? "标准安装由 Windows 管理，没有本地回滚副本。"
-      : "只有通过 Chimera++ 更新过的免安装版才会保留上一版本。";
+  const externalMaintenanceReason =
+    "自备便携版由你维护。清除目录选择后可使用 Chimera++ 安装维护。";
+  const unavailableReason = externalPortableRoot
+    ? externalMaintenanceReason
+    : !runningInTauri
+      ? "浏览器预览不执行本机操作。"
+      : !runtime
+        ? runtimeUnreadable
+          ? "读取到安装状态后可用。"
+          : "正在读取安装状态。"
+        : "尚未安装 Codex，安装后可用。";
+  const noRollbackReason =
+    externalPortableRoot || !installed
+      ? unavailableReason
+      : runtime?.installMode === "standard"
+        ? "标准安装由 Windows 管理，没有本地回滚副本。"
+        : "只有通过 Chimera++ 更新过的免安装版才会保留上一版本。";
   const recoveryEntry = recovery[0];
   // Portable layout and a second, unmanaged standard install: one callout
   // under the status board. An interrupted migration keeps the Codex files in
@@ -841,7 +887,7 @@ export function NewRuntimeView({
           : unavailableReason,
         action: "修复",
         onClick: () => startAction("repair"),
-        disabled: actionsLocked || !runtime?.canRepair,
+        disabled: packageActionsLocked || !runtime?.canRepair,
       },
       {
         key: "rollback",
@@ -858,7 +904,7 @@ export function NewRuntimeView({
             ? `回滚到 ${previousVersion}`
             : "回滚",
         onClick: () => startAction("rollback"),
-        disabled: actionsLocked || !runtime?.canRollback,
+        disabled: packageActionsLocked || !runtime?.canRollback,
       },
       {
         key: "history",
@@ -868,7 +914,7 @@ export function NewRuntimeView({
           "从镜像发布目录选择指定版本；选定后版本、安装包与 SHA-256 即被锁定。",
         action: "选择版本",
         onClick: openHistory,
-        disabled: Boolean(operation) || preferencesBusy,
+        disabled: packageActionsLocked,
       },
       {
         key: "uninstall",
@@ -879,7 +925,7 @@ export function NewRuntimeView({
           : unavailableReason,
         action: "卸载",
         onClick: () => startAction("uninstall"),
-        disabled: actionsLocked || !runtime?.canUninstall,
+        disabled: packageActionsLocked || !runtime?.canUninstall,
         danger: true,
       },
     ];
@@ -898,7 +944,7 @@ export function NewRuntimeView({
       title: "修复",
       detail: "修复损坏的 Codex 安装文件",
       onClick: () => startAction("repair"),
-      disabled: !runtime?.canRepair || preferencesBusy || actionsLocked,
+      disabled: !runtime?.canRepair || packageActionsLocked,
     },
     {
       key: "rollback",
@@ -906,7 +952,7 @@ export function NewRuntimeView({
       title: "回滚",
       detail: "恢复上一个可用版本",
       onClick: () => startAction("rollback"),
-      disabled: !runtime?.canRollback || preferencesBusy || actionsLocked,
+      disabled: !runtime?.canRollback || packageActionsLocked,
     },
     {
       key: "history",
@@ -914,7 +960,7 @@ export function NewRuntimeView({
       title: "安装历史版本",
       detail: "从镜像发布目录选择并锁定指定版本",
       onClick: openHistory,
-      disabled: Boolean(operation) || preferencesBusy,
+      disabled: packageActionsLocked,
     },
     {
       key: "offline",
@@ -922,11 +968,7 @@ export function NewRuntimeView({
       title: inspectingOffline ? "正在检查安装包…" : "离线导入安装包",
       detail: "校验本地 .Msix 的哈希与 OpenAI 签名后安装（免安装版）",
       onClick: () => void pickOfflinePackage(),
-      disabled:
-        designSample ||
-        Boolean(operation) ||
-        preferencesBusy ||
-        inspectingOffline,
+      disabled: designSample || packageActionsLocked || inspectingOffline,
     },
     {
       key: "uninstall",
@@ -934,7 +976,7 @@ export function NewRuntimeView({
       title: "卸载 Codex",
       detail: "保留 Chimera++ 与线路配置",
       onClick: () => startAction("uninstall"),
-      disabled: !runtime?.canUninstall || preferencesBusy || actionsLocked,
+      disabled: !runtime?.canUninstall || packageActionsLocked,
       danger: true,
     },
   ];
@@ -951,6 +993,17 @@ export function NewRuntimeView({
             <p>本机 Codex 的安装、更新与维护 · 只改动本机</p>
           </div>
           <div className="runtime-heading-actions">
+            {runningInTauri && runtimeSupported && (
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void changePortableRoot()}
+                disabled={portableSelectionLocked}
+              >
+                <FolderOpen size={14} aria-hidden="true" />
+                {externalPortableRoot ? "更换便携版目录" : "选择便携版目录"}
+              </button>
+            )}
             <button
               type="button"
               className="secondary"
@@ -1066,6 +1119,8 @@ export function NewRuntimeView({
               <p className="runtime-hero-line">
                 浏览器预览不读取本机安装，也不执行下载、修复或卸载。
               </p>
+            ) : externalPortableRoot ? (
+              <p className="runtime-hero-line">已设置自备 Codex 便携版目录</p>
             ) : updateAvailable && release ? (
               <p className="runtime-hero-line" role="status">
                 {`Codex ${release.latestVersion} 可用 · `}
@@ -1149,7 +1204,7 @@ export function NewRuntimeView({
             </div>
           </dl>
           <div className="runtime-hero-actions">
-            {updateAvailable && live && (
+            {updateAvailable && live && !externalPortableRoot && (
               <button
                 type="button"
                 className="secondary runtime-update-action"
@@ -1204,6 +1259,45 @@ export function NewRuntimeView({
             </small>
           </div>
         </section>
+        {(externalPortableRoot || portablePathError) && (
+          <div
+            className={`runtime-notice${portablePathError ? " is-warning" : ""}`}
+            aria-labelledby="runtime-portable-path-title"
+          >
+            <span className="runtime-notice-icon" aria-hidden="true">
+              {portablePathError ? (
+                <TriangleAlert size={18} />
+              ) : (
+                <FolderOpen size={18} />
+              )}
+            </span>
+            <div>
+              <h3 id="runtime-portable-path-title">便携版目录</h3>
+              {externalPortableRoot && <p>{externalPortableRoot}</p>}
+              {portablePathError && (
+                <p role="status">
+                  {portablePathError}
+                  {externalPortableRoot &&
+                    installed &&
+                    " 当前使用自动识别到的安装。"}
+                </p>
+              )}
+              {externalPortableRoot && (
+                <>
+                  <p>{externalMaintenanceReason}</p>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => void changePortableRoot(true)}
+                    disabled={portableSelectionLocked}
+                  >
+                    清除目录选择
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
         {!operationLabel && receipt && renderReceipt(receipt)}
         {runtimeNotice && (
           <div
@@ -1797,7 +1891,7 @@ export function NewRuntimeView({
                         type="button"
                         className="primary"
                         onClick={() => void installHistoryRelease()}
-                        disabled={installingHistory}
+                        disabled={installingHistory || packageActionsLocked}
                       >
                         {installingHistory ? "正在安装…" : "确认安装此版本"}
                       </button>
@@ -1878,6 +1972,7 @@ export function NewRuntimeView({
                 onClick={() => void installOfflinePackage()}
                 disabled={
                   installingOffline ||
+                  packageActionsLocked ||
                   !offlineInspection.signatureValid ||
                   !offlineInspection.identityValid ||
                   !offlineInspection.architectureMatches

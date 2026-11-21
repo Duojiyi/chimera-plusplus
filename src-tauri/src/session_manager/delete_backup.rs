@@ -9,6 +9,7 @@
 
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -20,8 +21,21 @@ use crate::security_limits::{
 };
 
 pub(crate) const BACKUP_MANIFEST: &str = "manifest.json";
+pub(super) const RESTORE_STAGING_PREFIX: &str = ".chimera-restore-";
 /// Where the non-Codex tools keep the copied files inside a generation.
 const BACKUP_FILES_DIR: &str = "files";
+/// A generation moves here in the namespace before any of its files are removed.
+const PENDING_CLEAR_PREFIX: &str = ".pending-clear-";
+
+static BACKUP_OPERATIONS: Mutex<()> = Mutex::new(());
+
+/// Serializes backup creation and pruning with restore and clear. Callers
+/// that also need the Codex runtime lock acquire it first.
+pub(crate) fn lock_backup_operations() -> Result<MutexGuard<'static, ()>, String> {
+    BACKUP_OPERATIONS
+        .lock()
+        .map_err(|_| "会话备份操作锁不可用，请重启 Chimera++ 后重试".into())
+}
 
 /// Tools whose deletes are backed up, in the order the restore list groups
 /// ties. Codex first: its root predates the others.
@@ -152,6 +166,7 @@ pub(crate) fn prune_session_delete_backups(root: &Path, current: &Path) {
         current,
         KEPT_SESSION_DELETE_BACKUPS,
         SESSION_DELETE_BACKUP_MIN_AGE,
+        |path| std::fs::remove_dir_all(path),
     );
 }
 
@@ -160,15 +175,16 @@ fn prune_session_delete_backups_older_than(
     current: &Path,
     keep: usize,
     min_age: Duration,
+    remove: impl Fn(&Path) -> io::Result<()>,
 ) {
-    let Ok(entries) = std::fs::read_dir(root) else {
+    let Ok(entries) = crate::security_limits::read_dir_without_links(root) else {
         return;
     };
     let mut generations: Vec<PathBuf> = entries
-        .flatten()
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .into_iter()
+        .filter(|entry| entry.file_name().to_str().is_some_and(is_generation_name))
         .map(|entry| entry.path())
-        .filter(|path| path != current)
+        .filter(|path| path != current && ordinary_directory(path).unwrap_or(false))
         .collect();
     generations.sort();
     let excess = generations.len().saturating_sub(keep);
@@ -181,7 +197,9 @@ fn prune_session_delete_backups_older_than(
         if !old_enough {
             continue;
         }
-        if let Err(error) = std::fs::remove_dir_all(&old) {
+        let result = mark_pending_clear(&old)
+            .and_then(|pending| remove(&pending).map_err(|error| error.to_string()));
+        if let Err(error) = result {
             log::warn!(
                 "Failed to remove old session delete backup {}: {error}",
                 old.display()
@@ -290,8 +308,7 @@ fn verify_copy(source: &Path, copy: &Path, size: u64, sha256: &str) -> Result<()
     Ok(())
 }
 
-/// Copy `source` to a new file `target` (never replacing one), returning the
-/// size and SHA-256 of what was written.
+/// Copy a backup into a new file and hash the bytes as they are written.
 fn copy_file_hashed(source: &Path, target: &Path) -> io::Result<(u64, String)> {
     let mut input = open_regular_file_no_symlink(source)?;
     let mut output = std::fs::OpenOptions::new()
@@ -307,16 +324,14 @@ fn copy_file_hashed(source: &Path, target: &Path) -> io::Result<(u64, String)> {
             if read == 0 {
                 break;
             }
-            hasher.update(&buffer[..read]);
             output.write_all(&buffer[..read])?;
+            hasher.update(&buffer[..read]);
             size += read as u64;
         }
         output.sync_all()?;
         Ok((size, format!("{:x}", hasher.finalize())))
     })();
     if copied.is_err() {
-        // The target was created here: a partial copy must not stay behind,
-        // or a later restore would skip it as already present.
         drop(output);
         let _ = std::fs::remove_file(target);
     }
@@ -422,6 +437,8 @@ pub struct SessionDeleteBackupSummary {
     pub total_bytes: u64,
     /// Files whose original location is free, so a restore would write them.
     pub restorable_files: usize,
+    /// Removal began, but files in this generation still need clearing.
+    pub pending_clear: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -506,8 +523,39 @@ fn list_in_roots(roots: &[(&str, PathBuf)]) -> Vec<SessionDeleteBackupSummary> {
                 total_bytes: files.iter().map(|file| file.size).sum(),
                 restorable_files: files
                     .iter()
-                    .filter(|file| !path_is_taken(&file.original))
+                    .filter(|file| matches!(path_is_taken(&file.original), Ok(false)))
                     .count(),
+                pending_clear: false,
+            });
+        }
+        if !ordinary_directory(root).unwrap_or(false) {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name
+                .to_str()
+                .filter(|name| pending_generation_name(name).is_some())
+            else {
+                continue;
+            };
+            let path = entry.path();
+            if !ordinary_directory(&path).unwrap_or(false) {
+                continue;
+            }
+            summaries.push(SessionDeleteBackupSummary {
+                id: format!("{tool}/{name}"),
+                provider_id: tool.to_string(),
+                created_at: None,
+                session_ids: Vec::new(),
+                title: None,
+                file_count: 0,
+                total_bytes: directory_size(&path),
+                restorable_files: 0,
+                pending_clear: true,
             });
         }
     }
@@ -517,7 +565,8 @@ fn list_in_roots(roots: &[(&str, PathBuf)]) -> Vec<SessionDeleteBackupSummary> {
 }
 
 fn generation_name(id: &str) -> &str {
-    id.split_once('/').map_or(id, |(_, name)| name)
+    let name = id.split_once('/').map_or(id, |(_, name)| name);
+    pending_generation_name(name).unwrap_or(name)
 }
 
 /// Restore the files of one delete backup to where they were. A file whose
@@ -527,7 +576,18 @@ fn generation_name(id: &str) -> &str {
 pub fn restore_session_delete_backup(id: &str) -> Result<SessionDeleteRestoreOutcome, String> {
     let (tool, name) = parse_backup_id(id)?;
     let allowed_roots = super::provider_roots(tool)?;
-    restore_in(&backup_root(tool), tool, name, &allowed_roots)
+    restore_in(
+        &backup_root(tool),
+        tool,
+        name,
+        &allowed_roots,
+        copy_restore_contents,
+    )
+}
+
+fn copy_restore_contents(file: &ManifestFile, staged: &mut std::fs::File) -> io::Result<()> {
+    io::copy(&mut open_regular_file_no_symlink(&file.backup)?, staged)?;
+    Ok(())
 }
 
 fn restore_in(
@@ -535,6 +595,7 @@ fn restore_in(
     tool: &str,
     name: &str,
     allowed_roots: &[PathBuf],
+    mut write_staged: impl FnMut(&ManifestFile, &mut std::fs::File) -> io::Result<()>,
 ) -> Result<SessionDeleteRestoreOutcome, String> {
     let generation = open_generation(root, name)?;
     let files = manifest_files(&generation)?;
@@ -542,13 +603,16 @@ fn restore_in(
         return Err("这份备份里没有可恢复的会话文件".to_string());
     }
     // Check everything before writing anything.
+    let mut restore_files = Vec::new();
+    let mut skipped_existing = 0;
+    let mut codex_home = None;
     for file in &files {
-        if !is_within_any_root(&file.original, allowed_roots) {
+        let Some(root) = matching_restore_root(&file.original, allowed_roots) else {
             return Err(format!(
                 "备份记录的原位置不在会话目录内，已拒绝恢复：{}",
                 file.original.display()
             ));
-        }
+        };
         let (size, sha256) = hash_file(&file.backup)
             .map_err(|error| format!("无法读取备份文件 {}：{error}", file.backup.display()))?;
         if !file.matches(size, &sha256) {
@@ -557,35 +621,123 @@ fn restore_in(
                 file.backup.display()
             ));
         }
-    }
-
-    let mut restored_files = 0;
-    let mut skipped_existing = 0;
-    for file in &files {
-        if path_is_taken(&file.original) {
+        if path_is_taken(&file.original)? {
             skipped_existing += 1;
             continue;
         }
-        if let Some(parent) = file.original.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("无法创建目录 {}：{error}", parent.display()))?;
+        if tool == "codex" {
+            let root = resolve_restore_path(root)?;
+            let home = root.parent().ok_or("Codex 会话目录缺少主目录")?;
+            if codex_home
+                .as_deref()
+                .is_some_and(|previous| previous != home)
+            {
+                return Err("一份 Codex 备份的会话必须位于同一个配置目录".into());
+            }
+            codex_home = Some(home.to_path_buf());
         }
-        // Re-check after creating the parents: a link must not redirect the write.
-        if !is_within_any_root(&file.original, allowed_roots) {
-            return Err(format!(
-                "恢复路径包含链接，已拒绝：{}",
-                file.original.display()
-            ));
+        restore_files.push(file);
+    }
+
+    let mut restored_files = 0;
+    for file in restore_files {
+        if path_is_taken(&file.original)? {
+            skipped_existing += 1;
+            continue;
         }
-        match copy_file_hashed(&file.backup, &file.original) {
-            Ok((size, sha256)) if file.matches(size, &sha256) => restored_files += 1,
-            Ok(_) => {
-                let _ = std::fs::remove_file(&file.original);
+        let parent = file.original.parent().ok_or("恢复路径缺少父目录")?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("无法创建目录 {}：{error}", parent.display()))?;
+        let checked_parent = || {
+            let Some(root) = matching_restore_root(&file.original, allowed_roots) else {
+                return Err(format!(
+                    "恢复路径包含链接，已拒绝：{}",
+                    file.original.display()
+                ));
+            };
+            if let Some(home) = codex_home.as_deref() {
+                if resolve_restore_path(root)?.parent() != Some(home) {
+                    return Err("Codex 配置目录在恢复期间发生变化".into());
+                }
+            }
+            resolve_restore_path(parent)
+        };
+        let resolved_parent = checked_parent()?;
+        let restore_error = |error| format!("无法恢复 {}：{error}", file.original.display());
+        // Keep an interrupted copy out of the session list. Publish only a
+        // verified, flushed sibling, without replacing an existing session.
+        let mut staged = tempfile::Builder::new()
+            .prefix(RESTORE_STAGING_PREFIX)
+            .suffix(".tmp")
+            .tempfile_in(&resolved_parent)
+            .map_err(restore_error)?;
+        let target = resolved_parent.join(file.original.file_name().ok_or("恢复路径缺少文件名")?);
+        let mut guard = codex_home
+            .as_deref()
+            .map(|home| {
+                super::providers::codex::track_rollout_restore_stage(home, &target, staged.path())
+            })
+            .transpose()?;
+        let prepare = (|| {
+            write_staged(file, staged.as_file_mut()).map_err(restore_error)?;
+            let (size, sha256) = hash_file(staged.path()).map_err(restore_error)?;
+            if !file.matches(size, &sha256) {
                 return Err(format!("恢复后的文件校验失败：{}", file.original.display()));
             }
-            // Created by someone else between the check and the copy.
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => skipped_existing += 1,
-            Err(error) => return Err(format!("无法恢复 {}：{error}", file.original.display())),
+            staged.as_file().sync_all().map_err(restore_error)?;
+            if checked_parent()? != resolved_parent {
+                return Err("会话目录在恢复期间发生变化".into());
+            }
+            if let Some(guard) = guard.as_mut().filter(|_| restored_files == 0) {
+                let thread_ids = generation.manifest["threadIds"]
+                    .as_array()
+                    .ok_or("Codex 备份清单中缺少会话编号")?
+                    .iter()
+                    .map(|id| {
+                        id.as_str()
+                            .filter(|id| !id.is_empty())
+                            .ok_or("Codex 备份清单中的会话编号无效")
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if thread_ids.is_empty() {
+                    return Err("Codex 备份清单中缺少会话编号".into());
+                }
+                guard.prepare_publication(&thread_ids)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = prepare {
+            drop(staged);
+            if let Some(guard) = guard {
+                if let Err(cleanup_error) = guard.finish(false) {
+                    log::warn!("{cleanup_error}");
+                }
+            }
+            return Err(error);
+        }
+        if guard.is_some() {
+            // Reconcile through the ledger if the no-clobber operation fails.
+            staged.disable_cleanup(true);
+        }
+        match staged.persist_noclobber(&target) {
+            Ok(_) => {
+                if let Some(guard) = guard {
+                    guard.finish(true)?;
+                }
+                restored_files += 1;
+            }
+            Err(tempfile::PersistError { error, file: stage }) => {
+                drop(stage);
+                if error.kind() != io::ErrorKind::AlreadyExists {
+                    // An I/O failure does not prove whether publication happened.
+                    // Reconcile the saved intent when its filesystem is readable.
+                    return Err(restore_error(error));
+                }
+                if let Some(guard) = guard {
+                    guard.finish(false)?;
+                }
+                skipped_existing += 1;
+            }
         }
     }
     Ok(SessionDeleteRestoreOutcome {
@@ -595,36 +747,53 @@ fn restore_in(
     })
 }
 
-/// Remove every tool's delete backups.
-pub fn clear_session_delete_backups() -> Result<SessionDeleteBackupsCleared, String> {
-    let roots: Vec<PathBuf> = BACKED_UP_TOOLS.iter().copied().map(backup_root).collect();
-    clear_in_roots(&roots)
+/// Remove only the generations captured when the user opened the confirmation.
+pub fn clear_session_delete_backups(ids: &[String]) -> Result<SessionDeleteBackupsCleared, String> {
+    clear_confirmed_backups(ids, backup_root, |path| std::fs::remove_dir_all(path))
 }
 
-fn clear_in_roots(roots: &[PathBuf]) -> Result<SessionDeleteBackupsCleared, String> {
+fn clear_confirmed_backups(
+    ids: &[String],
+    root_for: impl Fn(&str) -> PathBuf,
+    remove: impl Fn(&Path) -> io::Result<()>,
+) -> Result<SessionDeleteBackupsCleared, String> {
+    // Reject malformed IDs before deleting any generation.
+    let mut seen = std::collections::HashSet::new();
+    let confirmed = ids
+        .iter()
+        .filter(|id| seen.insert(*id))
+        .map(|id| parse_backup_id(id))
+        .collect::<Result<Vec<_>, _>>()?;
     let mut cleared = SessionDeleteBackupsCleared {
         removed_backups: 0,
         freed_bytes: 0,
     };
     let mut errors = Vec::new();
-    for root in roots {
-        let Ok(entries) = std::fs::read_dir(root) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            // Only generation directories; links and stray files stay.
-            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                continue;
+    for (tool, name) in confirmed {
+        let root = root_for(tool);
+        let path = root.join(name);
+        let result = (|| -> Result<Option<u64>, String> {
+            if !ordinary_directory(&root)? || !ordinary_directory(&path)? {
+                return Ok(None);
             }
-            let path = entry.path();
+            let path = if pending_generation_name(name).is_some() {
+                path.clone()
+            } else {
+                let generation = open_generation(&root, name)?;
+                manifest_files(&generation)?;
+                mark_pending_clear(&path)?
+            };
             let bytes = directory_size(&path);
-            match std::fs::remove_dir_all(&path) {
-                Ok(()) => {
-                    cleared.removed_backups += 1;
-                    cleared.freed_bytes = cleared.freed_bytes.saturating_add(bytes);
-                }
-                Err(error) => errors.push(format!("{}: {error}", path.display())),
+            remove(&path).map_err(|error| error.to_string())?;
+            Ok(Some(bytes))
+        })();
+        match result {
+            Ok(Some(bytes)) => {
+                cleared.removed_backups += 1;
+                cleared.freed_bytes = cleared.freed_bytes.saturating_add(bytes);
             }
+            Ok(None) => {} // Already pruned or cleared since the confirmation opened.
+            Err(error) => errors.push(format!("{}: {error}", path.display())),
         }
     }
     if !errors.is_empty() {
@@ -637,6 +806,21 @@ fn clear_in_roots(roots: &[PathBuf]) -> Result<SessionDeleteBackupsCleared, Stri
     Ok(cleared)
 }
 
+fn mark_pending_clear(path: &Path) -> Result<PathBuf, String> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("无效的备份编号")?;
+    let pending = path.with_file_name(format!("{PENDING_CLEAR_PREFIX}{name}"));
+    if path_is_taken(&pending)? {
+        return Err("已有同名备份待清理，请先完成上次清理".into());
+    }
+    // A retained or explicitly cleared generation remains discoverable even
+    // if recursive removal deletes its manifest before hitting a locked file.
+    std::fs::rename(path, &pending).map_err(|error| error.to_string())?;
+    Ok(pending)
+}
+
 fn directory_size(dir: &Path) -> u64 {
     let mut total: u64 = 0;
     let mut pending = vec![dir.to_path_buf()];
@@ -645,13 +829,16 @@ fn directory_size(dir: &Path) -> u64 {
             continue;
         };
         for entry in entries.flatten() {
-            let Ok(kind) = entry.file_type() else {
+            let Ok(metadata) = entry.metadata() else {
                 continue;
             };
-            if kind.is_dir() {
+            if is_link_or_reparse_point(&metadata) {
+                continue;
+            }
+            if metadata.is_dir() {
                 pending.push(entry.path());
-            } else if kind.is_file() {
-                total = total.saturating_add(entry.metadata().map_or(0, |meta| meta.len()));
+            } else if metadata.is_file() {
+                total = total.saturating_add(metadata.len());
             }
         }
     }
@@ -666,10 +853,32 @@ fn parse_backup_id(id: &str) -> Result<(&'static str, &str), String> {
         .copied()
         .find(|known| *known == tool)
         .ok_or_else(invalid)?;
-    if !is_single_component(name) {
+    if !is_generation_name(name) && pending_generation_name(name).is_none() {
         return Err(invalid());
     }
     Ok((tool, name))
+}
+
+fn ordinary_directory(path: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() && !is_link_or_reparse_point(&metadata) => Ok(true),
+        Ok(_) => Err("备份路径不是普通目录".into()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn is_generation_name(name: &str) -> bool {
+    // Generated names use a timestamp and UUID, with no Windows path aliases.
+    is_single_component(name)
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn pending_generation_name(name: &str) -> Option<&str> {
+    name.strip_prefix(PENDING_CLEAR_PREFIX)
+        .filter(|name| is_generation_name(name))
 }
 
 fn is_single_component(name: &str) -> bool {
@@ -697,7 +906,7 @@ fn generations(root: &Path) -> Vec<Generation> {
 }
 
 fn open_generation(root: &Path, name: &str) -> Result<Generation, String> {
-    if !is_single_component(name) {
+    if !is_generation_name(name) {
         return Err(format!("无效的备份编号：{name}"));
     }
     let dir = root.join(name);
@@ -763,21 +972,42 @@ fn manifest_files(generation: &Generation) -> Result<Vec<ManifestFile>, String> 
 }
 
 /// Something (a file, a directory or a dangling link) already sits at `path`.
-fn path_is_taken(path: &Path) -> bool {
-    !matches!(std::fs::symlink_metadata(path), Err(error) if error.kind() == io::ErrorKind::NotFound)
+fn path_is_taken(path: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("无法检查恢复位置 {}：{error}", path.display())),
+    }
 }
 
 /// `path` is a strict descendant of one of `roots` (as given or
 /// canonicalized), without `..`, and none of its existing ancestors below the
 /// root is a link.
-fn is_within_any_root(path: &Path, roots: &[PathBuf]) -> bool {
-    roots.iter().any(|root| {
-        let canonical = root.canonicalize().ok();
-        [Some(root.clone()), canonical]
-            .into_iter()
-            .flatten()
-            .any(|base| is_within_root(path, &base))
-    })
+fn matching_restore_root<'a>(path: &Path, roots: &'a [PathBuf]) -> Option<&'a Path> {
+    roots
+        .iter()
+        .find(|root| {
+            is_within_root(path, root)
+                || root
+                    .canonicalize()
+                    .is_ok_and(|base| is_within_root(path, &base))
+        })
+        .map(PathBuf::as_path)
+}
+
+/// A backup can recreate a missing sessions directory. Resolve its existing
+/// ancestors so the protection still has the same key as a later delete.
+fn resolve_restore_path(path: &Path) -> Result<PathBuf, String> {
+    match path.canonicalize() {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+                return Ok(resolve_restore_path(parent)?.join(name));
+            }
+            Err(format!("无法定位 Codex 恢复目录：{error}"))
+        }
+        Err(error) => Err(format!("无法定位 Codex 恢复目录：{error}")),
+    }
 }
 
 /// `path` relative to `root`; on Windows the comparison ignores case, as the
@@ -849,16 +1079,58 @@ mod tests {
         std::fs::create_dir_all(&current).unwrap();
 
         // Recent backups survive even beyond the count (a large batch delete).
-        prune_session_delete_backups_older_than(root, &current, 1, SESSION_DELETE_BACKUP_MIN_AGE);
+        let remove = |path: &Path| std::fs::remove_dir_all(path);
+        prune_session_delete_backups_older_than(
+            root,
+            &current,
+            1,
+            SESSION_DELETE_BACKUP_MIN_AGE,
+            remove,
+        );
         assert!(root.join("20261001_000000_a").exists());
 
-        prune_session_delete_backups_older_than(root, &current, 1, Duration::ZERO);
+        prune_session_delete_backups_older_than(root, &current, 1, Duration::ZERO, remove);
 
         assert!(!root.join("20261001_000000_a").exists());
         assert!(!root.join("20261002_000000_b").exists());
         assert!(root.join("20261003_000000_c").exists());
         assert!(current.exists());
         assert!(root.join("notes.txt").exists());
+    }
+
+    #[test]
+    fn interrupted_retention_remains_listed_and_can_be_retried_without_a_manifest() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        let old = root.join("20261001_000000_a");
+        let current = root.join("20261002_000000_b");
+        for generation in [&old, &current] {
+            write_manifest(generation, &json!({"files": []})).unwrap();
+            std::fs::write(generation.join("payload"), b"12345").unwrap();
+        }
+        prune_session_delete_backups_older_than(root, &current, 0, Duration::ZERO, |pending| {
+            std::fs::remove_file(pending.join(BACKUP_MANIFEST))?;
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "locked payload",
+            ))
+        });
+        assert!(!old.exists());
+        let roots = [("claude", root.to_path_buf())];
+        let pending = list_in_roots(&roots)
+            .into_iter()
+            .find(|entry| entry.pending_clear)
+            .unwrap();
+        assert_eq!(pending.total_bytes, 5);
+        let cleared = clear_confirmed_backups(
+            &[pending.id],
+            |_| root.to_path_buf(),
+            |path| std::fs::remove_dir_all(path),
+        )
+        .unwrap();
+        assert_eq!(cleared.removed_backups, 1);
+        assert_eq!(list_in_roots(&roots).len(), 1);
+        assert!(current.is_dir());
     }
 
     #[test]
@@ -996,11 +1268,499 @@ mod tests {
         assert_eq!(listed[0].restorable_files, 1);
         assert_eq!(listed[0].total_bytes, 4 + 7);
 
-        let outcome = restore_in(&root, "claude", &name, &[sessions]).unwrap();
+        let outcome =
+            restore_in(&root, "claude", &name, &[sessions], copy_restore_contents).unwrap();
         assert_eq!(outcome.restored_files, 1);
         assert_eq!(outcome.skipped_existing, 1);
         assert_eq!(std::fs::read(&main).unwrap(), b"newer", "never overwritten");
         assert_eq!(std::fs::read(&sidecar).unwrap(), b"sidecar");
+    }
+
+    #[test]
+    fn staged_restore_preserves_a_destination_created_during_copy() {
+        let temp = tempdir().unwrap();
+        let (sessions, original, _) = session_tree(temp.path());
+        let root = temp.path().join("backups");
+        let dir =
+            backup_session_files(&root, "claude", "s1", None, std::slice::from_ref(&original))
+                .unwrap()
+                .unwrap();
+        let name = dir.file_name().unwrap().to_str().unwrap();
+        std::fs::remove_file(&original).unwrap();
+
+        let restored = restore_in(&root, "claude", name, &[sessions], |file, staged| {
+            copy_restore_contents(file, staged)?;
+            std::fs::write(&file.original, b"concurrent session")
+        })
+        .unwrap();
+        assert_eq!((restored.restored_files, restored.skipped_existing), (0, 1));
+        assert_eq!(std::fs::read(&original).unwrap(), b"concurrent session");
+    }
+
+    fn pending_codex_backup(home: &Path, session_id: &str) -> (PathBuf, PathBuf, PathBuf, String) {
+        use crate::session_manager::providers::codex;
+
+        let root = home.join("sessions");
+        std::fs::create_dir_all(&root).unwrap();
+        // An unreadable TOML config leaves a retry without a live Codex process.
+        std::fs::write(home.join("config.toml"), b"[").unwrap();
+        let source = root.join(format!("rollout-2026-01-01T00-00-00-{session_id}.jsonl"));
+        std::fs::write(
+            &source,
+            format!(
+                "{}\n",
+                json!({"type": "session_meta", "payload": {"id": session_id}})
+            ),
+        )
+        .unwrap();
+        let result = codex::delete_session(&root, &source, session_id).unwrap();
+        assert!(result.source_deleted && result.cleanup_pending);
+        assert!(!source.exists());
+        let backups = home.join("session-delete-backups");
+        let name = generations(&backups).pop().unwrap().name;
+        (root, source, backups, name)
+    }
+
+    #[test]
+    fn interrupted_restore_reconciles_before_listing_or_retrying_cleanup() {
+        use crate::session_manager::providers::codex;
+
+        for (publish, moves_away, retry_first) in [
+            (false, false, false),
+            (false, false, true),
+            (true, false, false),
+            (true, true, true),
+        ] {
+            let temp = tempdir().unwrap();
+            let home = temp.path().canonicalize().unwrap();
+            let session_id = "11111111-1111-4111-8111-111111111111";
+            let (sessions, source, _, _) = pending_codex_backup(&home, session_id);
+            let roots = std::slice::from_ref(&sessions);
+            let dated = sessions.join("2026").join("01").join("01");
+            std::fs::create_dir_all(&dated).unwrap();
+            let child = dated
+                .join("rollout-2026-01-01T00-00-00-22222222-2222-4222-8222-222222222222.jsonl");
+            let staged = dated.join(format!("{RESTORE_STAGING_PREFIX}interrupted.tmp"));
+            let moved = home.join("moved-date");
+            std::fs::write(&staged, b"synced rollout").unwrap();
+            let mut guard = codex::track_rollout_restore_stage(&home, &child, &staged).unwrap();
+            guard.prepare_publication(&[session_id]).unwrap();
+            if publish {
+                std::fs::rename(&staged, &child).unwrap();
+            }
+            if moves_away {
+                std::fs::rename(&dated, &moved).unwrap();
+            }
+            // Simulate restart without finishing the in-memory operation, on
+            // either side of the no-clobber publication.
+            drop(guard);
+            if !retry_first {
+                assert_eq!(
+                    codex::list_pending_deletes(roots).sessions.len(),
+                    usize::from(!publish)
+                );
+            }
+            std::fs::remove_file(home.join("config.toml")).unwrap();
+            let result = codex::cleanup_deleted_session(&sessions, &source, session_id).unwrap();
+            assert_eq!(result.cleanup_cancelled, publish);
+            assert!(!result.cleanup_pending, "{:?}", result.error);
+            assert!(codex::list_pending_deletes(roots).sessions.is_empty());
+            assert_eq!(child.is_file(), publish && !moves_away);
+            assert_eq!(moved.join(child.file_name().unwrap()).is_file(), moves_away);
+            assert!(!staged.exists(), "abandoned stage should be reclaimed");
+        }
+    }
+
+    #[test]
+    fn restart_reclaims_interrupted_first_and_later_rollout_copies() {
+        use crate::session_manager::providers::codex;
+
+        for already_restored in [false, true] {
+            let temp = tempdir().unwrap();
+            let home = temp.path().canonicalize().unwrap();
+            let session_id = "11111111-1111-4111-8111-111111111111";
+            let (sessions, source, _, _) = pending_codex_backup(&home, session_id);
+            let roots = std::slice::from_ref(&sessions);
+            let child = sessions
+                .join("rollout-2026-01-01T00-00-00-22222222-2222-4222-8222-222222222222.jsonl");
+            if already_restored {
+                let first = sessions.join(format!("{RESTORE_STAGING_PREFIX}first.tmp"));
+                std::fs::write(&first, b"synced rollout").unwrap();
+                let mut guard = codex::track_rollout_restore_stage(&home, &child, &first).unwrap();
+                guard.prepare_publication(&[session_id]).unwrap();
+                std::fs::rename(first, &child).unwrap();
+                guard.finish(true).unwrap();
+            }
+            let stage = sessions.join(format!("{RESTORE_STAGING_PREFIX}interrupted.tmp"));
+            let mut file = std::fs::File::create(&stage).unwrap();
+            let guard = codex::track_rollout_restore_stage(&home, &source, &stage).unwrap();
+            file.write_all(b"partial rollout").unwrap();
+            // Abandon a partially copied file without advancing publication.
+            drop(file);
+            drop(guard);
+
+            let pending = codex::list_pending_deletes(roots);
+            assert_eq!(pending.sessions.len(), usize::from(!already_restored));
+            assert!(pending.warnings.is_empty());
+            assert!(!stage.exists() && !source.exists());
+            assert_eq!(child.is_file(), already_restored);
+        }
+    }
+
+    #[test]
+    fn unreadable_restore_destination_preserves_intent_without_blocking_other_deletes() {
+        use crate::session_manager::providers::codex;
+
+        let temp = tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        let affected = "11111111-1111-4111-8111-111111111111";
+        let unrelated = "22222222-2222-4222-8222-222222222222";
+        let (sessions, source, _, _) = pending_codex_backup(&home, affected);
+        let (_, other_source, _, _) = pending_codex_backup(&home, unrelated);
+        let dated = sessions.join("2026").join("01").join("01");
+        std::fs::create_dir_all(&dated).unwrap();
+        let staged_name = format!("{RESTORE_STAGING_PREFIX}interrupted.tmp");
+        let staged = dated.join(&staged_name);
+        let target = dated.join(source.file_name().unwrap());
+        std::fs::write(&staged, b"synced rollout").unwrap();
+        let mut guard = codex::track_rollout_restore_stage(&home, &target, &staged).unwrap();
+        guard.prepare_publication(&[affected]).unwrap();
+        drop(guard);
+        let ledger = codex::restore_protection_path(&home);
+        let intent = std::fs::read(&ledger).unwrap();
+
+        let moved = home.join("moved-date");
+        std::fs::rename(&dated, &moved).unwrap();
+        std::fs::write(&dated, b"obstructed ancestor").unwrap();
+        std::fs::remove_file(home.join("config.toml")).unwrap();
+
+        let listed = codex::list_pending_deletes(std::slice::from_ref(&sessions));
+        assert_eq!(listed.sessions.len(), 1);
+        assert_eq!(listed.sessions[0].session_id, unrelated);
+        assert!(listed
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("恢复结果暂时无法确认")));
+
+        // An occupied source path also makes the receipt ineligible for
+        // retry. The outstanding publication warning must still appear.
+        std::fs::create_dir(&source).unwrap();
+        let occupied = codex::list_pending_deletes(std::slice::from_ref(&sessions));
+        assert_eq!(occupied.sessions.len(), 1);
+        assert_eq!(occupied.sessions[0].session_id, unrelated);
+        assert_eq!(occupied.warnings, listed.warnings);
+        std::fs::remove_dir(&source).unwrap();
+
+        let blocked = codex::cleanup_deleted_session(&sessions, &source, affected).unwrap_err();
+        assert!(blocked.contains("恢复结果暂时无法确认"), "{blocked}");
+        let clean = codex::cleanup_deleted_session(&sessions, &other_source, unrelated).unwrap();
+        assert!(
+            !clean.cleanup_pending && !clean.cleanup_cancelled,
+            "{:?}",
+            clean.error
+        );
+        assert_eq!(std::fs::read(&ledger).unwrap(), intent);
+        assert!(moved.join(&staged_name).is_file());
+
+        std::fs::remove_file(&dated).unwrap();
+        std::fs::rename(&moved, &dated).unwrap();
+        let recovered = codex::cleanup_deleted_session(&sessions, &source, affected).unwrap();
+        assert!(
+            !recovered.cleanup_pending && !recovered.cleanup_cancelled,
+            "{:?}",
+            recovered.error
+        );
+        assert!(!target.exists() && !staged.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn codex_restore_reclaims_stage_after_a_publication_lock_is_released() {
+        use crate::session_manager::providers::codex;
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        let temp = tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        let session_id = "11111111-1111-4111-8111-111111111111";
+        let (sessions, source, backups, name) = pending_codex_backup(&home, session_id);
+        let roots = std::slice::from_ref(&sessions);
+        let mut lock = None;
+        let mut staged_path = None;
+        let error = restore_in(&backups, "codex", &name, roots, |file, output| {
+            copy_restore_contents(file, output)?;
+            let staged = std::fs::read_dir(&sessions)?
+                .map(|entry| entry.unwrap().path())
+                .find(|entry| {
+                    entry
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(RESTORE_STAGING_PREFIX)
+                })
+                .unwrap();
+            lock = Some(
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                    .open(&staged)?,
+            );
+            staged_path = Some(staged);
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(error.starts_with("无法恢复 "), "{error}");
+        let staged = staged_path.unwrap();
+        let ledger = codex::restore_protection_path(&home);
+        let read_ledger = || {
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(&ledger).unwrap()).unwrap()
+        };
+        assert!(read_ledger()["pending"].is_object());
+        assert!(!source.exists() && staged.is_file());
+
+        assert_eq!(codex::list_pending_deletes(roots).sessions.len(), 1);
+        let settled = read_ledger();
+        assert!(settled["pending"].is_null());
+        assert_eq!(settled["revision"], 0);
+        assert_eq!(settled["stages_to_remove"].as_array().unwrap().len(), 1);
+        assert!(staged.is_file());
+        drop(lock.take().unwrap());
+
+        assert_eq!(codex::list_pending_deletes(roots).sessions.len(), 1);
+        assert!(read_ledger()["stages_to_remove"].is_null());
+        assert!(!staged.exists());
+        let restored = restore_in(&backups, "codex", &name, roots, copy_restore_contents).unwrap();
+        assert_eq!(restored.restored_files, 1);
+        assert!(source.is_file());
+    }
+
+    #[test]
+    fn codex_restore_ignores_unrelated_corrupt_journals_and_other_homes() {
+        use crate::session_manager::providers::codex;
+
+        let temp = tempdir().unwrap();
+        let base = temp.path().canonicalize().unwrap();
+        let chosen = base.join("chosen");
+        let other = base.join("other");
+        let session_id = "11111111-1111-4111-8111-111111111111";
+        let (root, source, backups, name) = pending_codex_backup(&chosen, session_id);
+        let (other_root, other_source, _, _) = pending_codex_backup(&other, session_id);
+        let corrupt = chosen
+            .join("codex-session-delete-pending")
+            .join("unrelated.json");
+        std::fs::write(&corrupt, b"malformed").unwrap();
+
+        let roots = [other_root, root];
+        let result = restore_in(&backups, "codex", &name, &roots, copy_restore_contents).unwrap();
+        assert_eq!(result.restored_files, 1);
+        assert!(source.is_file() && !other_source.exists());
+        assert_eq!(std::fs::read(&corrupt).unwrap(), b"malformed");
+        let pending = codex::list_pending_deletes(&roots).sessions;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].source_path.as_deref(), other_source.to_str());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn codex_restore_commit_failure_leaves_rollouts_and_pending_deletes_alone() {
+        use crate::session_manager::providers::codex;
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+        let temp = tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        let (root, source, backups, name) =
+            pending_codex_backup(&home, "11111111-1111-4111-8111-111111111111");
+        let roots = [root];
+        codex::record_restore_for_test(&home, &["unrelated"]);
+        let protection = codex::restore_protection_path(&home);
+        let before = std::fs::read(&protection).unwrap();
+        let locked = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&protection)
+            .unwrap();
+
+        let error =
+            restore_in(&backups, "codex", &name, &roots, copy_restore_contents).unwrap_err();
+        assert!(error.contains("无法保存 Codex 会话恢复记录"), "{error}");
+        drop(locked);
+        assert_eq!(std::fs::read(&protection).unwrap(), before);
+        assert!(!source.exists());
+        assert_eq!(codex::list_pending_deletes(&roots).sessions.len(), 1);
+        assert_eq!(
+            restore_in(&backups, "codex", &name, &roots, copy_restore_contents)
+                .unwrap()
+                .restored_files,
+            1
+        );
+    }
+
+    #[test]
+    fn interrupted_staging_leaves_the_original_path_and_cleanup_retry_intact() {
+        use crate::session_manager::providers::codex;
+
+        let temp = tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        let session_id = "11111111-1111-4111-8111-111111111111";
+        let (root, source, backups, name) = pending_codex_backup(&home, session_id);
+        codex::record_restore_for_test(&home, &["previously-restored"]);
+        let ledger = codex::restore_protection_path(&home);
+        let previous = std::fs::read(&ledger).unwrap();
+        let roots = [root];
+        for interrupted in [true, false] {
+            let error = restore_in(&backups, "codex", &name, &roots, |file, staged| {
+                let copying: Value = serde_json::from_slice(&std::fs::read(&ledger)?).unwrap();
+                assert!(copying["pending"].is_null());
+                assert_eq!(copying["stages_to_remove"].as_array().unwrap().len(), 1);
+                staged.write_all(b"partial rollout")?;
+                assert!(!file.original.exists());
+                if interrupted {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "fixture failure",
+                    ));
+                }
+                Ok(()) // The staged checksum still prevents publication.
+            })
+            .unwrap_err();
+            assert!(
+                error.contains(if interrupted {
+                    "fixture failure"
+                } else {
+                    "校验失败"
+                }),
+                "{error}"
+            );
+            assert!(!source.exists());
+            assert_eq!(std::fs::read_dir(&roots[0]).unwrap().count(), 0);
+            assert_eq!(std::fs::read(&ledger).unwrap(), previous);
+            assert_eq!(codex::list_pending_deletes(&roots).sessions.len(), 1);
+        }
+        let restored = restore_in(&backups, "codex", &name, &roots, copy_restore_contents).unwrap();
+        assert_eq!(restored.restored_files, 1);
+        assert!(source.is_file());
+    }
+
+    #[test]
+    fn partial_codex_restore_cancels_both_missing_rollout_delete_paths() {
+        use crate::session_manager::providers::codex;
+        use rusqlite::Connection;
+
+        let temp = tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        let sessions = home.join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        std::fs::write(
+            home.join("config.toml"),
+            format!("sqlite_home = '{}'\n", home.display()),
+        )
+        .unwrap();
+        let parent_id = "11111111-1111-4111-8111-111111111111";
+        let child_id = "22222222-2222-4222-8222-222222222222";
+        let parent = sessions.join(format!("rollout-2026-01-01T00-00-01-{parent_id}.jsonl"));
+        let child = sessions.join(format!("rollout-2026-01-01T00-00-00-{child_id}.jsonl"));
+        for (path, id) in [(&parent, parent_id), (&child, child_id)] {
+            std::fs::write(
+                path,
+                format!(
+                    "{}\n",
+                    json!({"type": "session_meta", "payload": {"id": id}})
+                ),
+            )
+            .unwrap();
+        }
+        let conn =
+            Connection::open(home.join(crate::codex_state_db::CODEX_STATE_DB_FILENAME)).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT, status TEXT);
+             CREATE TABLE threads (id TEXT PRIMARY KEY);
+             CREATE TRIGGER fail_parent_cleanup BEFORE DELETE ON threads
+               BEGIN SELECT RAISE(ABORT, 'blocked'); END;",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO thread_spawn_edges VALUES (?1, ?2, 'running')",
+            [parent_id, child_id],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO threads VALUES (?1)", [parent_id])
+            .unwrap();
+        let result = codex::delete_session(&sessions, &parent, parent_id).unwrap();
+        assert!(result.source_deleted && result.cleanup_pending);
+        assert_eq!(
+            codex::list_pending_deletes(std::slice::from_ref(&sessions))
+                .sessions
+                .len(),
+            1
+        );
+        assert!(!parent.exists() && !child.exists());
+
+        let backups = home.join("session-delete-backups");
+        let generation = generations(&backups).pop().unwrap();
+        // Use a valid backup with the child first, then simulate a failure
+        // writing the parent after the child reached disk.
+        let mut manifest = generation.manifest;
+        manifest["rollouts"]
+            .as_array_mut()
+            .unwrap()
+            .sort_by_key(|entry| entry["originalPath"].as_str() == parent.to_str());
+        crate::config::atomic_write(
+            &generation.dir.join(BACKUP_MANIFEST),
+            &serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let error = restore_in(
+            &backups,
+            "codex",
+            &generation.name,
+            std::slice::from_ref(&sessions),
+            |file, staged| {
+                if file.original == parent {
+                    let ledger = std::fs::read(codex::restore_protection_path(&home))?;
+                    let copying: Value = serde_json::from_slice(&ledger).unwrap();
+                    assert!(copying["pending"].is_null());
+                    assert_eq!(copying["stages_to_remove"].as_array().unwrap().len(), 1);
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "blocked parent write",
+                    ));
+                }
+                copy_restore_contents(file, staged)
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("blocked parent write"), "{error}");
+        assert!(child.is_file() && !parent.exists());
+        assert!(codex::list_pending_deletes(std::slice::from_ref(&sessions))
+            .sessions
+            .is_empty());
+
+        conn.execute_batch("DROP TRIGGER fail_parent_cleanup")
+            .unwrap();
+        for retry in [codex::cleanup_deleted_session, codex::delete_session] {
+            let result = retry(&sessions, &parent, parent_id).unwrap();
+            assert!(result.cleanup_cancelled && !result.cleanup_pending);
+            assert!(result.error.unwrap().contains("清理已因恢复操作取消"));
+            assert!(child.is_file());
+        }
+
+        let restored = restore_in(
+            &backups,
+            "codex",
+            &generation.name,
+            std::slice::from_ref(&sessions),
+            copy_restore_contents,
+        )
+        .unwrap();
+        assert_eq!((restored.restored_files, restored.skipped_existing), (1, 1));
+        let result = codex::delete_session(&sessions, &parent, parent_id).unwrap();
+        assert!(
+            result.source_deleted && !result.cleanup_pending,
+            "{:?}",
+            result.error
+        );
+        assert!(!parent.exists() && !child.exists());
     }
 
     #[test]
@@ -1016,7 +1776,8 @@ mod tests {
 
         let other_root = temp.path().join("elsewhere");
         std::fs::create_dir_all(&other_root).unwrap();
-        let error = restore_in(&root, "claude", &name, &[other_root]).unwrap_err();
+        let error =
+            restore_in(&root, "claude", &name, &[other_root], copy_restore_contents).unwrap_err();
         assert!(error.contains("不在会话目录内"), "{error}");
         assert!(!main.exists());
 
@@ -1027,12 +1788,16 @@ mod tests {
             .unwrap()
             .path();
         std::fs::write(&copy, b"tampered").unwrap();
-        let error = restore_in(&root, "claude", &name, &[sessions]).unwrap_err();
+        let error =
+            restore_in(&root, "claude", &name, &[sessions], copy_restore_contents).unwrap_err();
         assert!(error.contains("校验失败"), "{error}");
         assert!(!main.exists());
 
         for bad in ["../x", "a/b", "", ".."] {
-            assert!(restore_in(&root, "claude", bad, &[]).is_err(), "{bad}");
+            assert!(
+                restore_in(&root, "claude", bad, &[], copy_restore_contents).is_err(),
+                "{bad}"
+            );
         }
         assert!(parse_backup_id("opencode/x").is_err());
         assert!(parse_backup_id("claude/../x").is_err());
@@ -1081,18 +1846,88 @@ mod tests {
     }
 
     #[test]
-    fn clear_removes_generations_but_not_stray_files() {
+    fn clear_removes_only_confirmed_generations() {
         let temp = tempdir().unwrap();
         let root = temp.path().join("backups");
-        std::fs::create_dir_all(root.join("20261001_a").join("files")).unwrap();
-        std::fs::write(root.join("20261001_a").join("files").join("0-x"), b"12345").unwrap();
-        std::fs::create_dir_all(root.join("20261002_b")).unwrap();
-        std::fs::write(root.join("notes.txt"), b"keep").unwrap();
+        let shown = root.join("20261001_a");
+        write_manifest(&shown, &json!({"files": []})).unwrap();
+        std::fs::write(shown.join("payload"), b"12345").unwrap();
+        let expected_size = directory_size(&shown);
+        let mut confirmed: Vec<String> = list_in_roots(&[("codex", root.clone())])
+            .into_iter()
+            .map(|backup| backup.id)
+            .collect();
+        confirmed.push("codex/pruned_since_confirmation".into());
+        let newer = root.join("20261002_b");
+        write_manifest(&newer, &json!({"files": []})).unwrap();
+        let incomplete = root.join("incomplete");
+        std::fs::create_dir(&incomplete).unwrap();
+        let stray = root.join("notes.txt");
+        std::fs::write(&stray, b"keep").unwrap();
 
-        let cleared = clear_in_roots(&[root.clone(), temp.path().join("missing")]).unwrap();
-        assert_eq!(cleared.removed_backups, 2);
-        assert_eq!(cleared.freed_bytes, 5);
-        assert!(root.join("notes.txt").exists());
-        assert!(!root.join("20261001_a").exists());
+        let mut malformed = confirmed.clone();
+        malformed.push("codex/../other".into());
+        assert!(clear_confirmed_backups(
+            &malformed,
+            |_| root.clone(),
+            |path| std::fs::remove_dir_all(path)
+        )
+        .is_err());
+        assert!(shown.exists());
+
+        let cleared = clear_confirmed_backups(
+            &confirmed,
+            |_| root.clone(),
+            |path| std::fs::remove_dir_all(path),
+        )
+        .unwrap();
+        assert_eq!(cleared.removed_backups, 1);
+        assert_eq!(cleared.freed_bytes, expected_size);
+        assert!(!shown.exists());
+        assert!(newer.exists() && incomplete.exists() && stray.exists());
+    }
+
+    #[test]
+    fn interrupted_clear_remains_listed_without_a_manifest_and_only_retries_that_backup() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("backups");
+        let name = "20261001_000000_a";
+        let shown = root.join(name);
+        write_manifest(&shown, &json!({"files": []})).unwrap();
+        std::fs::write(shown.join("payload"), b"12345").unwrap();
+        let roots = [("claude", root.clone())];
+        let id = format!("claude/{name}");
+        let error = clear_confirmed_backups(
+            &[id],
+            |_| root.clone(),
+            |path| {
+                std::fs::remove_file(path.join(BACKUP_MANIFEST))?;
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "locked payload",
+                ))
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("locked payload"));
+        assert!(!shown.exists());
+        let pending = list_in_roots(&roots).pop().unwrap();
+        assert!(pending.pending_clear);
+        assert_eq!(pending.total_bytes, 5);
+        assert_eq!(pending.restorable_files, 0);
+        let (_, pending_name) = parse_backup_id(&pending.id).unwrap();
+        assert!(open_generation(&root, pending_name).is_err());
+        // A separately created generation is still restorable and is not part of
+        // this explicit retry, even if it happens to reuse the original name.
+        write_manifest(&shown, &json!({"files": []})).unwrap();
+        let cleared = clear_confirmed_backups(
+            &[pending.id],
+            |_| root.clone(),
+            |path| std::fs::remove_dir_all(path),
+        )
+        .unwrap();
+        assert_eq!((cleared.removed_backups, cleared.freed_bytes), (1, 5));
+        assert_eq!(list_in_roots(&roots).len(), 1);
+        assert!(shown.exists());
     }
 }

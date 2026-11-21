@@ -1282,11 +1282,15 @@ describe("Pi page navigation retains work", () => {
     await screen.findByText("正在加载模块…");
     await act(async () => {
       for (const handler of handlers.get("request-lightweight-close") ?? []) {
-        await handler({ payload: null });
+        await handler({ payload: { fromTray: false, mainActivation: 0 } });
       }
     });
-    expect(mocks.invoke).toHaveBeenCalledWith("hide_main_window");
-    expect(mocks.invoke).not.toHaveBeenCalledWith("enter_lightweight_mode");
+    expect(mocks.invoke).toHaveBeenCalledWith("hide_main_window", {
+      mainActivation: 0,
+    });
+    expect(mocks.invoke.mock.calls.map(([name]) => name)).not.toContain(
+      "enter_lightweight_mode",
+    );
     await chooseTool("Pi");
     expect(await screen.findByRole("textbox", { name: "模型 ID" })).toHaveValue(
       "keep-through-loading",

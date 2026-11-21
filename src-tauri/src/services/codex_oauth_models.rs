@@ -3,6 +3,9 @@
 //! ChatGPT Codex exposes models through `chatgpt.com/backend-api/codex/models`,
 //! which is not an OpenAI-compatible `/v1/models` endpoint.
 
+use crate::proxy::providers::codex_oauth_auth::{
+    CODEX_OAUTH_CLIENT_VERSION, CODEX_OAUTH_ORIGINATOR,
+};
 use crate::services::model_fetch::FetchedModel;
 use serde_json::Value;
 use std::time::Duration;
@@ -10,24 +13,27 @@ use std::time::Duration;
 const CODEX_OAUTH_MODELS_URL: &str = "https://chatgpt.com/backend-api/codex/models";
 const CODEX_OAUTH_FETCH_TIMEOUT_SECS: u64 = 15;
 const ERROR_BODY_MAX_CHARS: usize = 512;
-// The catalog gate can exceed model metadata (GPT-6.1 Sol: 0.159.0,
-// upstream cc-switch #7806). Share identity with generation so discovery
-// never advertises a model that the forwarding identity cannot access.
-pub(crate) const CODEX_OAUTH_CLIENT_VERSION: &str = "0.159.0";
-pub(crate) const CODEX_OAUTH_ORIGINATOR: &str = "codex_cli_rs";
 
-pub async fn fetch_models_with_token(
+fn models_request(
+    client: &reqwest::Client,
     token: &str,
     account_id: &str,
-) -> Result<Vec<FetchedModel>, String> {
-    let client = crate::proxy::http_client::get();
-    let response = client
+) -> reqwest::RequestBuilder {
+    client
         .get(CODEX_OAUTH_MODELS_URL)
         .query(&[("client_version", CODEX_OAUTH_CLIENT_VERSION)])
         .header("Authorization", format!("Bearer {token}"))
         .header("originator", CODEX_OAUTH_ORIGINATOR)
         .header("chatgpt-account-id", account_id)
         .timeout(Duration::from_secs(CODEX_OAUTH_FETCH_TIMEOUT_SECS))
+}
+
+pub async fn fetch_models_with_token(
+    token: &str,
+    account_id: &str,
+) -> Result<Vec<FetchedModel>, String> {
+    let client = crate::proxy::http_client::get();
+    let response = models_request(&client, token, account_id)
         .send()
         .await
         .map_err(|e| format!("Request failed: {e}"))?;
@@ -207,17 +213,14 @@ mod tests {
     }
 
     #[test]
-    fn codex_oauth_client_version_meets_gpt61_catalog_floor() {
-        let parts: Vec<u64> = CODEX_OAUTH_CLIENT_VERSION
-            .split('.')
-            .map(|part| part.parse().expect("numeric version component"))
-            .collect();
-        assert_eq!(parts.len(), 3);
-        assert!(
-            (parts[0], parts[1], parts[2]) >= (0, 159, 0),
-            "gpt-6.1-sol catalog requires client_version 0.159.0"
-        );
-        assert_eq!(CODEX_OAUTH_ORIGINATOR, "codex_cli_rs");
+    fn codex_oauth_discovery_sends_shared_client_identity() {
+        let request = models_request(&reqwest::Client::new(), "test-token", "test-account")
+            .build()
+            .unwrap();
+        assert_eq!(request.url().query(), Some("client_version=0.169.0"));
+        assert_eq!(request.headers()["originator"], "codex_cli_rs");
+        assert_eq!(request.headers()["chatgpt-account-id"], "test-account");
+        assert_eq!(request.headers()["authorization"], "Bearer test-token");
     }
 
     #[test]

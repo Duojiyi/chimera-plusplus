@@ -58,6 +58,8 @@ mod store;
 mod tool_registry;
 
 mod tray;
+#[cfg(target_os = "windows")]
+mod tray_panel;
 mod usage_events;
 mod usage_script;
 
@@ -434,20 +436,7 @@ async fn update_tray_menu(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, String> {
-    match tray::create_tray_menu(&app, state.inner()) {
-        Ok(new_menu) => {
-            if let Some(tray) = app.tray_by_id(tray::TRAY_ID) {
-                tray.set_menu(Some(new_menu))
-                    .map_err(|e| format!("更新托盘菜单失败: {e}"))?;
-                return Ok(true);
-            }
-            Ok(false)
-        }
-        Err(err) => {
-            log::error!("创建托盘菜单失败: {err}");
-            Ok(false)
-        }
-    }
+    tray::update_tray_menu(&app, state.inner())
 }
 
 #[cfg(target_os = "macos")]
@@ -486,15 +475,24 @@ static SECOND_INSTANCE_WORK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// What happens when the user starts Chimera++ again while it is running:
 /// leave lightweight mode, hand over any deep link, and focus the window.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn handle_second_instance(app: &tauri::AppHandle, args: Vec<String>) {
+fn handle_second_instance(
+    app: &tauri::AppHandle,
+    args: Vec<String>,
+    #[cfg(target_os = "windows")] intent: u64,
+) {
     log::info!("=== Single Instance Callback Triggered ===");
     log::debug!("Args count: {}", args.len());
     for (i, arg) in args.iter().enumerate() {
         log::debug!("  arg[{i}]: {}", url_for_log(arg));
     }
 
+    #[cfg(target_os = "windows")]
+    if let Err(error) = tray_panel::activate_main_from_worker(app, intent) {
+        log::error!("打开主窗口失败: {error}");
+    }
+    #[cfg(not(target_os = "windows"))]
     if crate::lightweight::is_lightweight_mode() {
-        if let Err(e) = crate::lightweight::exit_lightweight_mode(app) {
+        if let Err(e) = crate::lightweight::show_main_window(app) {
             log::error!("退出轻量模式重建窗口失败: {e}");
         }
     }
@@ -513,16 +511,8 @@ fn handle_second_instance(app: &tauri::AppHandle, args: Vec<String>) {
         );
     }
 
-    // Show and focus window regardless
+    #[cfg(not(target_os = "windows"))]
     if let Some(window) = app.get_webview_window("main") {
-        // A silent start or close-to-tray leaves the running instance
-        // with skip_taskbar(true); show() alone keeps it off the
-        // taskbar, and minimizing it then makes it vanish.
-        // Adapted from farion1231/cc-switch 6f6087cdb (MIT).
-        #[cfg(target_os = "windows")]
-        {
-            let _ = window.set_skip_taskbar(false);
-        }
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
@@ -556,11 +546,18 @@ pub fn run() {
             // there blocks that thread (and with it the tray), so the work moves
             // to a worker and runs one launch at a time.
             let app = app.clone();
+            #[cfg(target_os = "windows")]
+            let intent = tray_panel::request_main_activation();
             tauri::async_runtime::spawn_blocking(move || {
                 let _serialized = SECOND_INSTANCE_WORK
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                handle_second_instance(&app, args);
+                handle_second_instance(
+                    &app,
+                    args,
+                    #[cfg(target_os = "windows")]
+                    intent,
+                );
             });
         }));
     }
@@ -570,6 +567,22 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         // 拦截窗口关闭：根据设置决定是否最小化到托盘
         .on_window_event(|window, event| {
+            #[cfg(target_os = "windows")]
+            if window.label() == tray_panel::LABEL {
+                match event {
+                    // Ignore a stale focus-loss notification if the same
+                    // panel was already reopened by a subsequent click.
+                    tauri::WindowEvent::Focused(false) if !window.is_focused().unwrap_or(false) => {
+                        let _ = window.hide();
+                    }
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        tray_panel::hide(window.app_handle());
+                    }
+                    _ => {}
+                }
+                return;
+            }
             #[cfg(target_os = "windows")]
             if matches!(
                 event,
@@ -600,10 +613,13 @@ pub fn run() {
                     if settings.lightweight_on_close {
                         // The frontend checks edits and active operations before destruction.
                         // If it is not ready, leave the window intact rather than lose state.
-                        if let Err(error) = window.emit("request-lightweight-close", ()) {
+                        if let Err(error) = crate::lightweight::request_close(window.app_handle(), false) {
                             log::error!("请求轻量关闭失败: {error}");
                         }
-                    } else if let Err(error) = crate::lightweight::hide_main_window(window.app_handle()) {
+                    } else if let Err(error) = crate::lightweight::hide_main_window(
+                        window.app_handle(),
+                        crate::lightweight::main_activation(),
+                    ) {
                         log::error!("隐藏主窗口失败: {error}");
                     }
                 } else {
@@ -619,6 +635,7 @@ pub fn run() {
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(window_state_flags())
+                .with_denylist(&["tray-panel"])
                 .build(),
         )
         .setup(|app| {
@@ -1380,22 +1397,39 @@ pub fn run() {
             app.deep_link().on_open_url({
                 let app_handle = app.handle().clone();
                 move |event| {
-                    log::info!("=== Deep Link Event Received (on_open_url) ===");
+                    let app = app_handle.clone();
                     let urls = event.urls();
-                    log::info!("Received {} URL(s)", urls.len());
+                    #[cfg(target_os = "windows")]
+                    let intent = urls.iter().any(|url| product_policy::accepts_deep_link(url.as_str()))
+                        .then(tray_panel::request_main_activation);
+                    let open_links = move || {
+                        log::info!("=== Deep Link Event Received (on_open_url) ===");
+                        log::info!("Received {} URL(s)", urls.len());
 
-                    if crate::lightweight::is_lightweight_mode() {
-                        if let Err(e) = crate::lightweight::exit_lightweight_mode(&app_handle) {
-                            log::error!("退出轻量模式重建窗口失败: {e}");
+                        #[cfg(target_os = "windows")]
+                        if let Some(intent) = intent {
+                            if let Err(error) = tray_panel::activate_main_from_worker(&app, intent) {
+                                log::error!("打开主窗口失败: {error}");
+                            }
                         }
-                    }
+                        #[cfg(not(target_os = "windows"))]
+                        if crate::lightweight::is_lightweight_mode() {
+                            if let Err(e) = crate::lightweight::show_main_window(&app) {
+                                log::error!("退出轻量模式重建窗口失败: {e}");
+                            }
+                        }
 
-                    for (i, url) in urls.iter().enumerate() {
-                        let url_str = url.as_str();
-                        log::debug!("  URL[{i}]: {}", url_for_log(url_str));
+                        for (i, url) in urls.iter().enumerate() {
+                            let url_str = url.as_str();
+                            log::debug!("  URL[{i}]: {}", url_for_log(url_str));
 
-                        handle_deeplink_url(&app_handle, url_str, true, "on_open_url");
-                    }
+                            handle_deeplink_url(&app, url_str, !cfg!(target_os = "windows"), "on_open_url");
+                        }
+                    };
+                    #[cfg(target_os = "windows")]
+                    tauri::async_runtime::spawn_blocking(open_links);
+                    #[cfg(not(target_os = "windows"))]
+                    open_links();
                 }
             });
             log::info!("✓ Deep-link URL handler registered");
@@ -1417,49 +1451,48 @@ pub fn run() {
                 log::error!("同步开机自启动设置失败: {error}");
             }
 
-            // 创建动态托盘菜单
-            let menu = tray::create_tray_menu(app.handle(), &app_state)?;
-
             // 构建托盘
+            #[cfg(target_os = "windows")]
+            let tray_clicks = tray_panel::TrayClicks::default();
             let mut tray_builder = TrayIconBuilder::with_id(tray::TRAY_ID)
                 .tooltip(product_policy::PRODUCT_NAME)
-                .on_tray_icon_event(|tray, event| match event {
-                    TrayIconEvent::DoubleClick { button: tauri::tray::MouseButton::Left, .. } => {
-                        tray::handle_tray_menu_event(tray.app_handle(), "show_main");
-                    }
-                    // Windows：左键单击直接打开主窗口，右键仍弹出菜单。
-                    TrayIconEvent::Click { button, button_state, .. }
-                        if tray_click_opens_main_window(
-                            &button,
-                            &button_state,
-                            cfg!(target_os = "windows"),
-                        ) =>
-                    {
-                        tray::handle_tray_menu_event(tray.app_handle(), "show_main");
-                        if crate::product_policy::refresh_usage_from_tray() {
+                .on_tray_icon_event(move |tray, event| {
+                    #[cfg(target_os = "windows")]
+                    tray_clicks.handle(tray.app_handle(), &event);
+
+                    match event {
+                        #[cfg(not(target_os = "windows"))]
+                        TrayIconEvent::DoubleClick { button: tauri::tray::MouseButton::Left, .. } => {
+                            tray::handle_tray_menu_event(tray.app_handle(), "show_main");
+                        }
+                        // 用量后台刷新遵守产品开关，内部有 10 秒节流。
+                        TrayIconEvent::Enter { .. } | TrayIconEvent::Click { .. }
+                            if crate::product_policy::refresh_usage_from_tray() => {
                             let app = tray.app_handle().clone();
                             tauri::async_runtime::spawn(async move {
                                 crate::tray::refresh_all_usage_in_tray(&app).await;
                             });
                         }
+                        _ => {}
                     }
-                    // 鼠标悬停/点击到托盘图标时，后台异步刷新用量缓存，
-                    // 让用户下一次（或快速打开菜单的那一刻）看到较新的数字。
-                    // refresh_all_usage_in_tray 内部有 10 秒防抖。
-                    TrayIconEvent::Enter { .. } | TrayIconEvent::Click { .. }
-                        if crate::product_policy::refresh_usage_from_tray() => {
-                        let app = tray.app_handle().clone();
-                        tauri::async_runtime::spawn(async move {
-                            crate::tray::refresh_all_usage_in_tray(&app).await;
-                        });
-                    }
-                    _ => log::debug!("unhandled event {event:?}"),
                 })
-                .menu(&menu)
                 .on_menu_event(|app, event| {
-                    tray::handle_tray_menu_event(app, &event.id.0);
+                    // Opening the main window can recreate WebView2 from
+                    // lightweight mode. Keep Windows' UI thread responsive.
+                    if cfg!(target_os = "windows") && matches!(event.id.0.as_str(), "show_main" | "lightweight_mode") {
+                        let app = app.clone();
+                        let id = event.id.0.clone();
+                        tauri::async_runtime::spawn_blocking(move || tray::handle_tray_menu_event(&app, &id));
+                    } else {
+                        tray::handle_tray_menu_event(app, &event.id.0);
+                    }
                 })
                 .show_menu_on_left_click(false);
+
+            if tray::USE_NATIVE_TRAY_MENU {
+                let menu = tray::create_tray_menu(app.handle(), &app_state)?;
+                tray_builder = tray_builder.menu(&menu);
+            }
 
             // 使用平台对应的托盘图标（macOS 使用模板图标适配深浅色）
             #[cfg(target_os = "macos")]
@@ -1758,6 +1791,12 @@ pub fn run() {
             commands::delete_provider,
             commands::remove_provider_from_live_config,
             commands::switch_provider,
+            #[cfg(target_os = "windows")]
+            tray_panel::get_tray_panel,
+            #[cfg(target_os = "windows")]
+            tray_panel::switch_tray_line,
+            #[cfg(target_os = "windows")]
+            tray_panel::tray_panel_action,
             commands::list_official_accounts,
             commands::get_official_account_quota,
             commands::save_current_official_login,
@@ -1850,6 +1889,7 @@ pub fn run() {
             commands::patch_preferences,
             commands::patch_config_directory,
             commands::get_codex_runtime_status,
+            commands::set_codex_external_portable_root,
             commands::get_codex_process_status,
             commands::probe_codex_renderer_unlock,
             commands::open_codex_runtime,
@@ -2095,6 +2135,7 @@ pub fn run() {
             commands::export_session_file,
             commands::delete_session,
             commands::delete_sessions,
+            commands::list_pending_session_deletes,
             commands::list_session_delete_backups,
             commands::restore_session_delete_backup,
             commands::clear_session_delete_backups,
@@ -2153,6 +2194,7 @@ pub fn run() {
             commands::disable_current_omo_slim,
             // lightweight mode (for testing or low-resource environments)
             commands::hide_main_window,
+            commands::show_main_window,
             commands::enter_lightweight_mode,
             commands::fetch_models_dev_catalog,
         ]);
@@ -2238,7 +2280,7 @@ pub fn run() {
                         let _ = window.set_focus();
                         tray::apply_tray_policy(app_handle, true);
                     } else if crate::lightweight::is_lightweight_mode() {
-                        if let Err(e) = crate::lightweight::exit_lightweight_mode(app_handle) {
+                        if let Err(e) = crate::lightweight::show_main_window(app_handle) {
                             log::error!("退出轻量模式重建窗口失败: {e}");
                         }
                     }
@@ -2251,9 +2293,7 @@ pub fn run() {
 
                         if crate::product_policy::accepts_deep_link(&url_str) {
                             if crate::lightweight::is_lightweight_mode() {
-                                if let Err(e) =
-                                    crate::lightweight::exit_lightweight_mode(app_handle)
-                                {
+                                if let Err(e) = crate::lightweight::show_main_window(app_handle) {
                                     log::error!("退出轻量模式重建窗口失败: {e}");
                                 }
                             }
@@ -2744,25 +2784,6 @@ pub fn restart_process(app_handle: &tauri::AppHandle) -> ! {
     tauri::process::restart(&app_handle.env());
 }
 
-/// Whether a tray click opens the main window. Windows users expect a single
-/// left click (on release) to do this; other platforms keep the double click,
-/// since a left click there may be what opens the menu.
-// Adapted from farion1231/cc-switch 91ab270e
-fn tray_click_opens_main_window(
-    button: &tauri::tray::MouseButton,
-    state: &tauri::tray::MouseButtonState,
-    windows: bool,
-) -> bool {
-    windows
-        && matches!(
-            (button, state),
-            (
-                tauri::tray::MouseButton::Left,
-                tauri::tray::MouseButtonState::Up
-            )
-        )
-}
-
 #[cfg(test)]
 mod tests {
     /// The database-too-new recovery screen calls `install_update_and_restart`,
@@ -2787,40 +2808,10 @@ mod tests {",
     use super::{
         classify_exit_request, enabled_proxy_apps_on_startup, redact_url_for_log,
         redact_url_for_log_with_secrets, redact_url_origin_for_log, runtime_log_level_allows,
-        strip_bare_userinfo, tray_click_opens_main_window, ExitRequestAction,
+        strip_bare_userinfo, ExitRequestAction,
     };
     use crate::database::Database;
     use crate::settings::VisibleApps;
-
-    #[test]
-    fn windows_tray_left_click_release_opens_the_main_window() {
-        use tauri::tray::{MouseButton, MouseButtonState};
-
-        assert!(tray_click_opens_main_window(
-            &MouseButton::Left,
-            &MouseButtonState::Up,
-            true
-        ));
-        // Press only: the release opens it, so one click does not fire twice.
-        assert!(!tray_click_opens_main_window(
-            &MouseButton::Left,
-            &MouseButtonState::Down,
-            true
-        ));
-        for button in [MouseButton::Right, MouseButton::Middle] {
-            assert!(!tray_click_opens_main_window(
-                &button,
-                &MouseButtonState::Up,
-                true
-            ));
-        }
-        // macOS/Linux keep their behaviour.
-        assert!(!tray_click_opens_main_window(
-            &MouseButton::Left,
-            &MouseButtonState::Up,
-            false
-        ));
-    }
 
     #[test]
     fn log_url_redaction_strips_credentials_and_query_keeps_path() {

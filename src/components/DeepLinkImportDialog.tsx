@@ -76,6 +76,37 @@ function errorReason(error: unknown): string {
   return text.replace(/^无效输入:\s*/, "").trim();
 }
 
+const isStringList = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === "string");
+
+function isImportPreview(value: unknown): value is DeepLinkImportPreview {
+  if (!value || typeof value !== "object") return false;
+  const preview = value as Partial<DeepLinkImportPreview>;
+  const usage = preview.usage;
+  return (
+    isStringList(preview.targetPaths) &&
+    preview.targetPaths.every((path) => path.trim().length > 0) &&
+    typeof preview.writesLive === "boolean" &&
+    (preview.mayActivate === undefined ||
+      typeof preview.mayActivate === "boolean") &&
+    typeof preview.content === "string" &&
+    Array.isArray(preview.env) &&
+    preview.env.every(
+      (entry) =>
+        entry &&
+        typeof entry.key === "string" &&
+        ["allowed", "denied", "needsConfirmation"].includes(entry.status),
+    ) &&
+    (preview.ignored === undefined || isStringList(preview.ignored)) &&
+    (usage == null ||
+      (typeof usage.code === "string" &&
+        isStringList(usage.hosts) &&
+        typeof usage.linkRequestsEnabled === "boolean" &&
+        (usage.autoIntervalMinutes == null ||
+          Number.isFinite(usage.autoIntervalMinutes))))
+  );
+}
+
 /**
  * Env values a Claude / Gemini link config carries, for display next to the
  * backend's verdicts. Quiet on purpose: the input may hold secrets, so a
@@ -295,7 +326,12 @@ export function DeepLinkImportDialog({
     void deeplinkApi
       .previewDeeplinkImport(incomingRequest)
       .then((result) => {
-        if (active) setPreview(result);
+        if (!active) return;
+        if (!isImportPreview(result)) {
+          setPreviewError("导入预览格式无法识别，请取消后重新打开链接。");
+          return;
+        }
+        setPreview(result);
       })
       .catch((error: unknown) => {
         if (active) setPreviewError(errorReason(error));
@@ -671,7 +707,7 @@ export function DeepLinkImportDialog({
               request={request}
               state={loadState}
               content={preview?.content ?? ""}
-              targetPath={preview?.targetPaths[0]}
+              targetPath={writtenFiles[0]}
             />
           )}
           {request.resource === "mcp" && (

@@ -127,9 +127,14 @@ pub async fn delete_session(
     let source_path = sourcePath.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
-        if provider_id == "codex" {
+        let _runtime_guard = if provider_id == "codex" {
+            let guard = super::codex_runtime::acquire_operation_lock("codex_session_delete")?;
             ensure_codex_closed_for_delete()?;
-        }
+            Some(guard)
+        } else {
+            None
+        };
+        let _backup_guard = session_manager::delete_backup::lock_backup_operations()?;
         session_manager::delete_session(&provider_id, &session_id, &source_path)
     })
     .await
@@ -141,13 +146,32 @@ pub async fn delete_sessions(
     items: Vec<session_manager::DeleteSessionRequest>,
 ) -> Result<Vec<session_manager::DeleteSessionOutcome>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        if items.iter().any(|item| item.provider_id == "codex") {
+        let _runtime_guard = if items.iter().any(|item| item.provider_id == "codex") {
+            let guard = super::codex_runtime::acquire_operation_lock("codex_session_delete")?;
             ensure_codex_closed_for_delete()?;
-        }
+            Some(guard)
+        } else {
+            None
+        };
+        let _backup_guard = session_manager::delete_backup::lock_backup_operations()?;
         Ok::<_, String>(session_manager::delete_sessions(&items))
     })
     .await
     .map_err(|e| format!("Failed to delete sessions: {e}"))?
+}
+
+/// List Codex cleanup left from earlier deletes. Retrying is a separate,
+/// user-confirmed call through `delete_sessions` and its runtime guard.
+#[tauri::command]
+pub async fn list_pending_session_deletes(
+) -> Result<session_manager::providers::codex::PendingDeletes, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        use session_manager::providers::codex;
+        let _backup_guard = session_manager::delete_backup::lock_backup_operations()?;
+        Ok(codex::list_pending_deletes(&codex::session_roots()))
+    })
+    .await
+    .map_err(|error| format!("读取待清理的会话失败：{error}"))?
 }
 
 /// Backups taken before session deletes (every tool), newest first.
@@ -168,6 +192,14 @@ pub async fn restore_session_delete_backup(
     backupId: String,
 ) -> Result<session_manager::delete_backup::SessionDeleteRestoreOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let _runtime_guard = if backupId.starts_with("codex/") {
+            Some(super::codex_runtime::acquire_operation_lock(
+                "codex_session_restore",
+            )?)
+        } else {
+            None
+        };
+        let _backup_guard = session_manager::delete_backup::lock_backup_operations()?;
         session_manager::delete_backup::restore_session_delete_backup(&backupId)
     })
     .await
@@ -176,10 +208,12 @@ pub async fn restore_session_delete_backup(
 
 #[tauri::command]
 pub async fn clear_session_delete_backups(
+    backupIds: Vec<String>,
 ) -> Result<session_manager::delete_backup::SessionDeleteBackupsCleared, String> {
-    tauri::async_runtime::spawn_blocking(
-        session_manager::delete_backup::clear_session_delete_backups,
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        let _backup_guard = session_manager::delete_backup::lock_backup_operations()?;
+        session_manager::delete_backup::clear_session_delete_backups(&backupIds)
+    })
     .await
     .map_err(|e| format!("清理删除备份失败: {e}"))?
 }

@@ -2575,6 +2575,10 @@ impl RequestForwarder {
             is_copilot,
         );
 
+        if should_send_codex_oauth_session_headers {
+            set_managed_codex_identity(&mut ordered_headers);
+        }
+
         reject_proxy_placeholder_for_managed_account_upstream(&url, &ordered_headers)?;
 
         // 日志目标 URL 的脱敏分两种情形：
@@ -3601,6 +3605,22 @@ fn append_query_to_full_url(base_url: &str, query: Option<&str>) -> String {
     }
 }
 
+// Insert after merging client, authorization, and provider headers so upstream
+// always gets one value per managed identity field.
+fn set_managed_codex_identity(headers: &mut http::HeaderMap) {
+    use crate::proxy::providers::codex_oauth_auth::{
+        CODEX_OAUTH_CLIENT_VERSION, CODEX_OAUTH_ORIGINATOR,
+    };
+    headers.insert(
+        "originator",
+        http::HeaderValue::from_static(CODEX_OAUTH_ORIGINATOR),
+    );
+    headers.insert(
+        "version",
+        http::HeaderValue::from_static(CODEX_OAUTH_CLIENT_VERSION),
+    );
+}
+
 fn build_codex_oauth_session_headers(
     session_id: &str,
 ) -> Vec<(http::HeaderName, http::HeaderValue)> {
@@ -4044,7 +4064,7 @@ mod tests {
             current_providers: Arc::new(RwLock::new(HashMap::new())),
             gemini_shadow: Arc::new(GeminiShadowStore::new()),
             codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
-            failover_manager: Arc::new(FailoverSwitchManager::new(db)),
+            failover_manager: Arc::new(FailoverSwitchManager::new()),
             app_handle: None,
             current_provider_id_at_start: String::new(),
             session_id: String::new(),
@@ -4242,6 +4262,37 @@ mod tests {
             serde_json::to_string(&prepared).unwrap(),
             r#"{"a":2,"tools":[{"name":"lookup","parameters":{"properties":{"_id":{"type":"string"},"a":{"type":"string"},"b":{"type":"number"}},"type":"object"}}],"z":1}"#
         );
+    }
+
+    #[test]
+    fn codex_anthropic_outbound_preserves_nested_tool_arguments() {
+        let args = json!({"_id": "item-1", "nested": [{"__typename": "Item", "_meta": true}]});
+        let mut converted = crate::proxy::providers::transform_codex_anthropic::responses_request_to_anthropic(
+            json!({"model": "claude", "input": [
+                {"role": "user", "content": "Find the item"},
+                {"type": "function_call", "call_id": "call_1", "name": "find_item", "arguments": args.to_string()},
+                {"type": "function_call_output", "call_id": "call_1", "output": "found"}
+            ]}),
+            8192,
+        ).unwrap();
+        converted["_trace"] = json!("internal");
+        converted["metadata"] = json!({"type": "tool_use", "input": {"_trace": "internal"}});
+        let call = converted["messages"][1]["content"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|block| block["type"] == "tool_use")
+            .unwrap();
+        call["_trace"] = json!("internal");
+        let outbound = prepare_upstream_request_body(converted);
+        let call = outbound["messages"][1]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|block| block["type"] == "tool_use")
+            .unwrap();
+        assert_eq!(call["input"], args);
+        assert!(!outbound.to_string().contains("_trace"));
     }
 
     #[test]
@@ -4453,6 +4504,20 @@ value"
         };
 
         assert!(matches!(err, ProxyError::ForwardFailed(_)));
+    }
+
+    #[test]
+    fn codex_oauth_identity_replaces_all_client_and_provider_values() {
+        let mut headers = http::HeaderMap::new();
+        for name in ["originator", "version"] {
+            headers.append(name, http::HeaderValue::from_static("client"));
+            headers.append(name, http::HeaderValue::from_static("provider"));
+        }
+        set_managed_codex_identity(&mut headers);
+        assert_eq!(headers.get_all("version").iter().count(), 1);
+        assert_eq!(headers.get_all("originator").iter().count(), 1);
+        assert_eq!(headers["version"], "0.169.0");
+        assert_eq!(headers["originator"], "codex_cli_rs");
     }
 
     #[test]

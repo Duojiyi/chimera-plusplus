@@ -10,6 +10,21 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.2] - 2026-11-22
+
+### Added
+
+- 新增「线路 / 用量」托盘面板，支持快速切换线路和项目。Windows 下左右键单击均打开面板，左键双击打开主界面。
+- 用量页新增按日统计的日历视图，并优化统计卡片、时间范围和明细布局。
+- Codex 管理支持手动指定 Windows 便携版目录，可识别平铺和嵌套的应用布局，从所选目录启动 Codex。
+
+### Fixed
+
+- 更新 Codex 官方账号的模型目录请求版本，改善可用模型的获取。
+- 转发请求时保留工具参数，并在 Responses 转 Chat 时跳过空用户消息，保持并行工具调用与结果的对应关系。
+- 兼容新版 Codex 会话数据库的模型记录，改进会话删除、备份清理和中断恢复，避免覆盖恢复位置的新文件。
+- 改进线路切换、配置方案和 MCP 写入的并发处理与失败恢复。Claude 插件配置保留已有 API 密钥和其他用户设置。
+
 ## [2.9.1] - 2026-11-17
 
 ### Changed

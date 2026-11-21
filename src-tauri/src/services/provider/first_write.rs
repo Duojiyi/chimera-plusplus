@@ -162,17 +162,7 @@ fn adopt_live(
         .values()
         .any(|provider| provider.settings_config == live)
     {
-        let mut id = "default".to_string();
-        let mut name = "default".to_string();
-        let mut counter = 2;
-        while providers.contains_key(&id) {
-            id = format!("default-{counter}");
-            name = format!("default ({counter})");
-            counter += 1;
-        }
-        let mut adopted = Provider::with_id(id, name, live.clone(), None);
-        adopted.category = Some("custom".to_string());
-        state.db.save_provider(app.as_str(), &adopted)?;
+        state.db.insert_adopted_provider(app.as_str(), &live)?;
     }
 
     if mode == FirstWritePreservation::SharedSnippet

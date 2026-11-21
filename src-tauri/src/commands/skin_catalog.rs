@@ -9,7 +9,7 @@
 //! where it is safe to show: catalog and package URLs are public, and network
 //! errors are described without echoing request URLs.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -26,7 +26,6 @@ const SKIN_CATALOG_TIMEOUT_SECS: u64 = 20;
 const SKIN_CATALOG_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// 发送给皮肤镜像站点的标准 User-Agent。
 const SKIN_CATALOG_USER_AGENT: &str = "chimera-plus-plus";
-const NOT_INSTALLED_MESSAGE: &str = "未检测到 Codex 安装，请先在“Codex 管理”中安装 Codex。";
 const MSIX_CUSTOM_HOME_MESSAGE: &str = "Codex 标准安装使用自定义 CODEX_HOME 时无法应用皮肤：系统激活不能同时传入调试参数和自定义目录。请恢复默认的 ~/.codex 目录，或改用免安装版 Codex。";
 
 /// One verified catalog entry returned to the appearance gallery.
@@ -124,10 +123,6 @@ fn themes_root() -> PathBuf {
 
 fn active_path() -> PathBuf {
     data_root().join("active-codex-skin.txt")
-}
-
-fn portable_root() -> Result<PathBuf, String> {
-    crate::settings::resolve_codex_portable_root()
 }
 
 // A fixed, source-code-visible debug port here would let any other local
@@ -345,26 +340,19 @@ pub async fn import_skin_package(path: String) -> Result<String, String> {
     .map_err(|error| format!("导入皮肤的任务被中断：{error}"))?
 }
 
-/// Closing Codex already reports plain-Chinese reasons; keep them.
-fn close_codex(
-    installed: &codex_win_engine::InstalledWindowsCodex,
-    portable_root: &Path,
+fn close_and_launch(
+    target: &super::codex_runtime::RuntimeTarget,
+    debug_port: u16,
 ) -> Result<(), String> {
-    super::codex_runtime::close_codex_for_restart(installed, portable_root)
-}
-
-fn close_and_launch(portable_root: &Path, debug_port: Option<u16>) -> Result<(), String> {
-    let installed = super::codex_runtime::detect_managed_codex(portable_root)
-        .ok_or_else(|| NOT_INSTALLED_MESSAGE.to_string())?;
-    if debug_port.is_some() && !super::codex_runtime::renderer_unlock_available(&installed) {
+    if !super::codex_runtime::renderer_unlock_available(&target.installed) {
         return Err(MSIX_CUSTOM_HOME_MESSAGE.to_string());
     }
-    close_codex(&installed, portable_root)?;
+    super::codex_runtime::close_codex_for_restart(&target.installed)?;
     super::codex_runtime::launch_codex_with_config(
-        &installed,
+        target,
         codex_win_engine::LaunchOptions {
             disable_codex_self_updates: true,
-            remote_debugging_port: debug_port,
+            remote_debugging_port: Some(debug_port),
             ..Default::default()
         },
     )
@@ -403,24 +391,21 @@ pub async fn apply_skin_package(skin_id: String, confirm: bool) -> Result<(), St
         return Err("应用皮肤需要用户明确确认".to_string());
     }
     let root = themes_root();
-    let portable_root = portable_root()?;
     let native = native_paths();
     let active = active_path();
     let id = skin_id.clone();
     let apply_root = root.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = super::codex_runtime::acquire_operation_lock("apply_skin_package")?;
-        super::codex_runtime::recover_interrupted_layout(&portable_root)?;
+        let target = super::codex_runtime::runtime_target_for_launch()?;
         let dir = codex_theme_engine::theme::resolve_theme_dir(&apply_root, &id)
             .map_err(|error| format!("读取皮肤失败：{error}"))?;
         let loaded = codex_theme_engine::theme::load_theme(&dir)
             .map_err(|error| format!("读取皮肤失败：{error}"))?;
-        let installed = super::codex_runtime::detect_managed_codex(&portable_root)
-            .ok_or_else(|| NOT_INSTALLED_MESSAGE.to_string())?;
-        if !super::codex_runtime::renderer_unlock_available(&installed) {
+        if !super::codex_runtime::renderer_unlock_available(&target.installed) {
             return Err(MSIX_CUSTOM_HOME_MESSAGE.to_string());
         }
-        close_codex(&installed, &portable_root)?;
+        super::codex_runtime::close_codex_for_restart(&target.installed)?;
         if let Some(block) = loaded.codex_theme.as_ref() {
             if block.is_object() {
                 let parsed = codex_theme_engine::codex_theme::parse_codex_theme(
@@ -455,7 +440,7 @@ pub async fn apply_skin_package(skin_id: String, confirm: bool) -> Result<(), St
             }
         }
         super::codex_runtime::launch_codex_with_config(
-            &installed,
+            &target,
             codex_win_engine::LaunchOptions {
                 disable_codex_self_updates: true,
                 remote_debugging_port: Some(theme_cdp_port()),
@@ -492,7 +477,6 @@ pub async fn try_skin_package(skin_id: String, confirm: bool) -> Result<(), Stri
         return Err("试穿皮肤需要用户明确确认".to_string());
     }
     let root = themes_root();
-    let portable_root = portable_root()?;
     tauri::async_runtime::spawn_blocking(move || {
         // Must take the same cross-process lock as apply/restore/install: this
         // closes and relaunches Codex, which can otherwise race an in-flight
@@ -500,8 +484,8 @@ pub async fn try_skin_package(skin_id: String, confirm: bool) -> Result<(), Stri
         // root (the update would see its freshly-launched process holding the
         // directory open and fail, or trigger a spurious auto-rollback).
         let _guard = super::codex_runtime::acquire_operation_lock("try_skin_package")?;
-        super::codex_runtime::recover_interrupted_layout(&portable_root)?;
-        close_and_launch(&portable_root, Some(theme_cdp_port()))
+        let target = super::codex_runtime::runtime_target_for_launch()?;
+        close_and_launch(&target, theme_cdp_port())
     })
     .await
     .map_err(|error| format!("试穿皮肤的任务被中断：{error}"))??;
@@ -514,15 +498,12 @@ pub async fn restore_skin_package(confirm: bool) -> Result<(), String> {
     if !confirm {
         return Err("恢复 Codex 默认外观需要用户明确确认".to_string());
     }
-    let portable_root = portable_root()?;
     let native = native_paths();
     let active = active_path();
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = super::codex_runtime::acquire_operation_lock("restore_skin_package")?;
-        super::codex_runtime::recover_interrupted_layout(&portable_root)?;
-        let installed = super::codex_runtime::detect_managed_codex(&portable_root)
-            .ok_or_else(|| NOT_INSTALLED_MESSAGE.to_string())?;
-        close_codex(&installed, &portable_root)
+        let target = super::codex_runtime::runtime_target_for_launch()?;
+        super::codex_runtime::close_codex_for_restart(&target.installed)
             .map_err(|error| format!("恢复外观前无法关闭 Codex：{error}"))?;
         let snapshots = crate::codex_live_write::CodexLiveSnapshots::read()
             .map_err(|e| format!("读取 Codex 配置失败：{e}"))?;
@@ -543,7 +524,7 @@ pub async fn restore_skin_package(confirm: bool) -> Result<(), String> {
                 .map_err(|error| format!("清理外观备份失败：{error}"))?;
         }
         super::codex_runtime::launch_codex_with_config(
-            &installed,
+            &target,
             codex_win_engine::LaunchOptions::default(),
         )
         .map_err(|error| format!("已恢复 Codex 默认外观，但重启 Codex 失败：{error}"))?;
@@ -606,8 +587,7 @@ mod tests {
         // Launch-path failures from the runtime are already plain Chinese.
         assert!(source.contains("重启 Codex 以应用皮肤失败：{error}"));
         assert!(source.contains("已恢复 Codex 默认外观，但重启 Codex 失败：{error}"));
-        assert!(source
-            .contains("super::codex_runtime::close_codex_for_restart(installed, portable_root)\n"));
+        assert!(source.contains("super::codex_runtime::close_codex_for_restart(&target.installed)"));
         for english in [
             "Could not",
             "The skin",
@@ -623,7 +603,7 @@ mod tests {
     /// Codex first finish or undo an interrupted layout migration, under the
     /// same operation lock, before they look for the install.
     #[test]
-    fn skin_relaunches_recover_an_interrupted_layout_before_detection() {
+    fn skin_relaunches_resolve_the_runtime_target_under_the_lock() {
         let source = include_str!("skin_catalog.rs")
             .split("mod tests {")
             .next()
@@ -639,14 +619,11 @@ mod tests {
                 .unwrap_or_else(|| panic!("{lock} takes the operation lock"));
             assert!(
                 body.trim_start().starts_with(
-                    "super::codex_runtime::recover_interrupted_layout(&portable_root)?;"
+                    "let target = super::codex_runtime::runtime_target_for_launch()?;"
                 ),
-                "{lock} must recover an interrupted layout migration first"
+                "{lock} must use the configured runtime target"
             );
         }
-        // Every detection runs on a path that recovered first: the three
-        // commands above, and `close_and_launch`, which only `try` calls.
-        assert_eq!(source.matches("detect_managed_codex(").count(), 3);
-        assert_eq!(source.matches("close_and_launch(").count(), 2);
+        assert!(!source.contains("detect_managed_codex("));
     }
 }

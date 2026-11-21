@@ -174,7 +174,7 @@ fn is_generated_staging_name(name: &str, prefix: &str) -> bool {
 
 /// Real directories (not links) next to `root` whose name starts with its
 /// staging prefix.
-fn staging_dirs(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn staging_dirs(root: &Path) -> Vec<PathBuf> {
     let (Some(parent), Some(prefix)) = (root.parent(), staging_prefix(root)) else {
         return Vec::new();
     };

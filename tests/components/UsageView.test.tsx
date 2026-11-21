@@ -21,9 +21,17 @@ import type {
 } from "@/types/usage";
 
 vi.mock("@/components/usage/UsageDashboard", () => ({
-  UsageDashboard: ({ refreshIntervalMs }: { refreshIntervalMs: number }) => (
+  UsageDashboard: ({
+    refreshIntervalMs,
+    rangePreset,
+    initialAppType,
+  }: {
+    refreshIntervalMs: number;
+    rangePreset: string;
+    initialAppType: string;
+  }) => (
     <div data-testid="advanced-usage-dashboard">
-      refresh:{refreshIntervalMs}
+      refresh:{refreshIntervalMs} range:{rangePreset} app:{initialAppType}
     </div>
   ),
 }));
@@ -45,6 +53,8 @@ vi.mock("@/lib/api/usage", () => ({
     getUsageSummary: vi.fn(),
     getUsageTrends: vi.fn(),
     getModelStats: vi.fn(),
+    getProviderStats: vi.fn(),
+    getUsageByConversation: vi.fn(),
     rebuildCodexUsage: vi.fn(),
   },
 }));
@@ -121,6 +131,8 @@ beforeEach(() => {
   api.getUsageSummary.mockResolvedValue(summary);
   api.getUsageTrends.mockResolvedValue([day]);
   api.getModelStats.mockResolvedValue(models);
+  api.getProviderStats.mockResolvedValue([]);
+  api.getUsageByConversation.mockRejectedValue(new Error("unavailable"));
   api.rebuildCodexUsage.mockResolvedValue({
     ...sync,
     backupPath: "C:\\backups\\usage.db",
@@ -201,7 +213,8 @@ describe("UsageView", () => {
     expect(api.getUsageSummary).toHaveBeenCalledTimes(2);
     const metrics = within(screen.getByRole("region", { name: "用量总览" }));
     expect(metrics.getByTitle("2,000 词元")).toHaveTextContent("2,000");
-    expect(metrics.getByText("缓存命中 50%")).toBeVisible();
+    expect(metrics.getByText("缓存命中率")).toBeVisible();
+    expect(metrics.getByText("50.0%")).toBeVisible();
     expect(liveStatus()).toHaveTextContent(
       "统计加载完成，近 30 天共 2,000 词元",
     );
@@ -324,12 +337,49 @@ describe("UsageView", () => {
     );
     render(<UsageView />);
     await loaded();
+    await userEvent.click(screen.getByRole("button", { name: "柱状图" }));
     for (const label of ["08/20", "08/27", "09/03", "09/10", "09/18"]) {
       expect(screen.getByText(label, { selector: AXIS })).toBeVisible();
     }
     expect(
       screen.queryByText("08/21", { selector: AXIS }),
     ).not.toBeInTheDocument();
+  });
+
+  it("starts on the daily calendar with local weekday alignment and a tabular alternative", async () => {
+    api.getUsageTrends.mockResolvedValue([
+      day,
+      {
+        ...day,
+        date: "2026-09-19",
+        requestCount: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCacheCreationTokens: 0,
+        totalCacheReadTokens: 0,
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<UsageView />);
+    await loaded();
+    expect(screen.getByRole("button", { name: "日历" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    const calendar = screen.getByRole("img", {
+      name: /每日词元热力图，2 天中 1 天有词元/,
+    });
+    const friday = within(calendar).getByTitle(
+      "2026-09-18 · 2,000 词元 · 4 次请求",
+    );
+    const saturday = within(calendar).getByTitle(
+      "2026-09-19 · 0 词元 · 0 次请求",
+    );
+    expect(calendar.children[11]).toBe(friday);
+    expect(friday).toHaveAttribute("data-level", "4");
+    expect(saturday).toHaveAttribute("data-level", "0");
+    await user.click(screen.getByRole("button", { name: "表格" }));
+    expect(screen.getByRole("table", { name: "按日词元汇总" })).toBeVisible();
   });
 
   it("labels today's buckets by hour and retains the loaded range when switching fails", async () => {
@@ -346,6 +396,12 @@ describe("UsageView", () => {
     await loaded(/^统计加载完成，今日共/);
     expect(screen.getByText("峰值 09:00 · 2,000")).toBeVisible();
     expect(screen.getByText("每小时词元")).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "日历" }),
+    ).not.toBeInTheDocument();
+    expect(
+      await screen.findByTestId("advanced-usage-dashboard"),
+    ).toHaveTextContent("range:today");
     expect(screen.getByText("09:00", { selector: AXIS })).toBeInTheDocument();
     const args = api.getUsageSummary.mock.calls.at(-1)!;
     expect(api.getUsageTrends).toHaveBeenLastCalledWith(...args);
@@ -359,6 +415,9 @@ describe("UsageView", () => {
       "下方仍是上次成功读取的结果（今日）",
     );
     expect(screen.getByRole("alert")).toHaveTextContent("range offline");
+    expect(screen.getByTestId("advanced-usage-dashboard")).toHaveTextContent(
+      "range:today",
+    );
     expect(document.querySelector(".usage-status-period")).toHaveTextContent(
       /^今日/,
     );
@@ -367,6 +426,51 @@ describe("UsageView", () => {
       "aria-pressed",
       "true",
     );
+  });
+
+  it("keeps optional results from the displayed window when the new trend fails", async () => {
+    const user = userEvent.setup();
+    const provider = {
+      providerId: "old",
+      providerName: "旧范围线路",
+      requestCount: 4,
+      totalTokens: 2000,
+      totalCost: "0",
+      successRate: 100,
+      avgLatencyMs: 1,
+    };
+    api.getProviderStats.mockResolvedValue([provider]);
+    api.getUsageByConversation.mockResolvedValue({
+      conversations: [],
+      totalConversations: 0,
+      matchedConversations: 0,
+      unattributedRequests: 4,
+      unattributedTokens: 2000,
+    });
+    render(<UsageView />);
+    await loaded();
+    expect(await screen.findByText(provider.providerName)).toBeVisible();
+    const oldWindow = api.getUsageSummary.mock.lastCall!.slice(0, 2);
+    await waitFor(() =>
+      expect(api.getUsageByConversation).toHaveBeenLastCalledWith(
+        ...oldWindow,
+        undefined,
+      ),
+    );
+    const conversationCalls = api.getUsageByConversation.mock.calls.length;
+
+    api.getProviderStats.mockResolvedValue([
+      { ...provider, providerId: "new", providerName: "新范围线路" },
+    ]);
+    api.getUsageTrends.mockRejectedValueOnce(new Error("trend unavailable"));
+    await user.click(screen.getByRole("button", { name: "近 7 天" }));
+    await loaded(STALE_STATUS);
+    expect(api.getProviderStats.mock.lastCall!.slice(0, 2)).not.toEqual(
+      oldWindow,
+    );
+    expect(screen.getByText(provider.providerName)).toBeVisible();
+    expect(screen.queryByText("新范围线路")).not.toBeInTheDocument();
+    expect(api.getUsageByConversation).toHaveBeenCalledTimes(conversationCalls);
   });
 
   it.each([86400, 86401, 88200])(
@@ -406,6 +510,13 @@ describe("UsageView", () => {
       const label = hourly ? "00:00" : "11/01";
       expect(screen.getByText(heading)).toBeVisible();
       expect(screen.getByText(`峰值 ${label} · 2,000`)).toBeVisible();
+      if (!hourly) {
+        expect(screen.getByRole("button", { name: "日历" })).toHaveAttribute(
+          "aria-pressed",
+          "true",
+        );
+        await user.click(screen.getByRole("button", { name: "柱状图" }));
+      }
       expect(screen.getByText(label, { selector: AXIS })).toBeVisible();
       expect(liveStatus()).toHaveTextContent(/^统计加载完成，今日共/);
 
@@ -585,27 +696,17 @@ it("does not paint token bars for zero usage", async () => {
   ]);
   render(<UsageView />);
   await loaded();
+  await userEvent.click(screen.getByRole("button", { name: "柱状图" }));
   expect(screen.getByText("近 30 天没有词元用量")).toBeVisible();
   const bars = document.querySelectorAll<HTMLElement>(".usage-bar");
   expect(bars.length).toBeGreaterThan(0);
   bars.forEach((bar) => expect(bar.style.height).toBe("0%"));
 });
 
-it("opens existing cost and request tools only on demand, with polling off", async () => {
+it("shows the inline Codex details using the overview range and leaves polling off", async () => {
   render(<UsageView />);
+  const details = screen.getByRole("region", { name: "成本与请求明细" });
   expect(
-    screen.queryByTestId("advanced-usage-dashboard"),
-  ).not.toBeInTheDocument();
-  await userEvent.click(
-    screen.getByRole("button", { name: "成本、计价与请求明细" }),
-  );
-  expect(
-    await screen.findByTestId("advanced-usage-dashboard"),
-  ).toHaveTextContent("refresh:0");
-  await userEvent.click(
-    screen.getByRole("button", { name: "收起成本与请求明细" }),
-  );
-  expect(
-    screen.queryByTestId("advanced-usage-dashboard"),
-  ).not.toBeInTheDocument();
+    await within(details).findByTestId("advanced-usage-dashboard"),
+  ).toHaveTextContent("refresh:0 range:30d app:codex");
 });

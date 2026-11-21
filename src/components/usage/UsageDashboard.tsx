@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { UsageHero } from "./UsageHero";
 import { UsageTrendChart } from "./UsageTrendChart";
@@ -78,21 +78,45 @@ interface UsageDashboardProps {
   refreshIntervalMs?: number;
   onRefreshIntervalChange?: (next: number) => Promise<boolean> | boolean | void;
   /** Starts on the range and tool the surrounding page shows. */
-  initialRange?: UsageRangeSelection;
+  rangePreset?: Exclude<UsageRangeSelection["preset"], "custom">;
   initialAppType?: AppTypeFilter;
+  detailsOnly?: boolean;
+  refreshStamp?: number;
 }
 
 export function UsageDashboard({
   refreshIntervalMs: savedRefreshIntervalMs,
   onRefreshIntervalChange,
-  initialRange,
+  rangePreset: outerPreset = "today",
   initialAppType = "all",
+  detailsOnly = false,
+  refreshStamp,
 }: UsageDashboardProps = {}) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
-  const [range, setRange] = useState<UsageRangeSelection>(
-    () => initialRange ?? { preset: "today" },
+  const [rangeOverride, setRangeOverride] = useState<{
+    outerPreset: UsageRangeSelection["preset"];
+    selection: UsageRangeSelection;
+  }>();
+  const range = useMemo(
+    (): UsageRangeSelection =>
+      rangeOverride?.outerPreset === outerPreset
+        ? rangeOverride.selection
+        : { preset: outerPreset },
+    [outerPreset, rangeOverride],
   );
+  const setRange = (selection: UsageRangeSelection) =>
+    setRangeOverride({ outerPreset, selection });
+  useEffect(() => {
+    setRangeOverride(undefined);
+  }, [outerPreset]);
+  const lastRefresh = useRef(refreshStamp);
+  useEffect(() => {
+    if (refreshStamp !== undefined && refreshStamp !== lastRefresh.current) {
+      lastRefresh.current = refreshStamp;
+      void queryClient.invalidateQueries({ queryKey: usageKeys.all });
+    }
+  }, [queryClient, refreshStamp]);
   const [appType, setAppType] = useState<AppTypeFilter>(initialAppType);
   const [providerName, setProviderName] = useState<string | undefined>(
     undefined,
@@ -210,18 +234,31 @@ export function UsageDashboard({
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4 }}
-      className="space-y-8 pb-8"
+      className={detailsOnly ? "usage-details-dashboard" : "space-y-8 pb-8"}
     >
-      <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 mb-2">
+      <div
+        className={cn(
+          "flex flex-col justify-between gap-3 mb-2",
+          !detailsOnly && "lg:flex-row lg:items-end",
+        )}
+      >
         <div className="flex flex-col gap-1">
-          <h2 className="text-base font-semibold">成本与请求明细</h2>
+          {!detailsOnly && (
+            <h2 className="text-base font-semibold">成本与请求明细</h2>
+          )}
           <p className="text-sm text-muted-foreground">
-            包含本地代理和已导入的会话记录；成本按模型定价估算，不是服务商账单。
+            {detailsOnly
+              ? "下方筛选仅影响明细。成本按模型定价估算。"
+              : "包含本地代理和已导入的会话记录，成本按模型定价估算。"}
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center p-1 bg-muted/30 rounded-lg border border-border/50">
+        <div className="usage-detail-filters flex flex-wrap items-center gap-2">
+          <div
+            role="group"
+            aria-label="应用范围"
+            className="flex flex-wrap items-center p-1 bg-muted/30 rounded-lg border border-border/50"
+          >
             {APP_FILTER_OPTIONS.map((type) => {
               const label = t(`usage.appFilter.${type}`);
               return (
@@ -231,6 +268,7 @@ export function UsageDashboard({
                   onClick={() => changeAppType(type)}
                   title={label}
                   aria-label={label}
+                  aria-pressed={appType === type}
                   className={cn(
                     "flex h-8 items-center justify-center px-2.5 rounded-md transition-all",
                     appType === type
@@ -337,27 +375,34 @@ export function UsageDashboard({
         </div>
       </div>
 
-      <UsageHero
-        range={range}
-        appType={appType === "all" ? undefined : appType}
-        providerName={providerName}
-        model={model}
-        refreshIntervalMs={refreshIntervalMs}
-      />
+      {!detailsOnly && (
+        <>
+          <UsageHero
+            range={range}
+            appType={appType === "all" ? undefined : appType}
+            providerName={providerName}
+            model={model}
+            refreshIntervalMs={refreshIntervalMs}
+          />
 
-      <UsageTrendChart
-        range={range}
-        rangeLabel={rangeLabel}
-        appType={appType}
-        providerName={providerName}
-        model={model}
-        refreshIntervalMs={refreshIntervalMs}
-      />
+          <UsageTrendChart
+            range={range}
+            rangeLabel={rangeLabel}
+            appType={appType}
+            providerName={providerName}
+            model={model}
+            refreshIntervalMs={refreshIntervalMs}
+          />
+        </>
+      )}
 
       <div className="space-y-4">
         <Tabs defaultValue="logs" className="w-full">
           <div className="flex items-center justify-between mb-4">
-            <TabsList className="bg-muted/50">
+            <TabsList
+              className="usage-detail-tabs bg-muted/50"
+              aria-label="用量明细类型"
+            >
               <TabsTrigger value="logs" className="gap-2">
                 <ListFilter className="h-4 w-4" />
                 {t("usage.requestLogs")}

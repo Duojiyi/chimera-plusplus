@@ -39,6 +39,7 @@ import { HelpTip } from "@/components/ui/help-tip";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConversationUsageSection } from "@/components/usage/ConversationUsageSection";
+import { UsageCalendar } from "@/components/usage/UsageCalendar";
 import { UsageCoverageNote } from "@/components/usage/UsageCoverageNote";
 import { formatTokenCell } from "@/components/usage/format";
 import {
@@ -46,6 +47,7 @@ import {
   totalDailyTokens,
   usageBucketLabel,
   usageTrendTicks,
+  usageTrendsAreHourly,
   usageWindow,
   type UsageRange,
 } from "@/utils/usageMetrics";
@@ -163,9 +165,11 @@ const AdvancedUsageDashboard = lazy(() =>
 );
 
 export function UsageView() {
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [allModelsOpen, setAllModelsOpen] = useState(false);
-  const [tableMode, setTableMode] = useState(false);
+  const [displayMode, setDisplayMode] = useState<
+    "calendar" | "chart" | "table"
+  >("calendar");
+  const tableMode = displayMode === "table";
   const [loadedRange, setLoadedRange] = useState<UsageRange>("30d");
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   const [trends, setTrends] = useState<DailyStats[]>([]);
@@ -199,6 +203,11 @@ export function UsageView() {
   const initialLoad = useRef(false);
   const requestId = useRef(0);
   const conversationRequest = useRef(0);
+  const displayedWindow = useRef<{
+    id: number;
+    start: number;
+    end: number;
+  } | null>(null);
   const latestRange = useRef(range);
   const latestConversationQuery = useRef(conversationQuery);
   const fetchedConversationQuery = useRef("");
@@ -206,7 +215,10 @@ export function UsageView() {
   latestRange.current = range;
   latestConversationQuery.current = conversationQuery;
 
-  const loadConversations = useCallback(async (start: number, end: number) => {
+  const loadConversations = useCallback(async () => {
+    const statsWindow = displayedWindow.current;
+    if (!statsWindow) return;
+    const { start, end } = statsWindow;
     const nextId = ++conversationRequest.current;
     const query = latestConversationQuery.current.trim();
     fetchedConversationQuery.current = query;
@@ -232,26 +244,15 @@ export function UsageView() {
     }
   }, []);
 
-  const loadProviders = useCallback(
-    async (start: number, end: number, nextRequestId: number) => {
-      try {
-        const rows = await Promise.resolve().then(() =>
-          usageApi.getProviderStats(start, end, "codex"),
-        );
-        if (nextRequestId === requestId.current)
-          setProviders(Array.isArray(rows) ? rows : null);
-      } catch {
-        if (nextRequestId === requestId.current) setProviders(null);
-      }
-    },
-    [],
-  );
-
   const loadStats = useCallback(
     async (selectedRange: UsageRange, nextRequestId: number) => {
       const { start, end } = usageWindow(selectedRange);
-      void loadConversations(start, end);
-      void loadProviders(start, end, nextRequestId);
+      // Optional rankings should not delay the overview. Publish them only
+      // after the required data for this exact query window has committed.
+      const nextProviders = Promise.resolve()
+        .then(() => usageApi.getProviderStats(start, end, "codex"))
+        .then((rows) => (Array.isArray(rows) ? rows : null))
+        .catch(() => null);
       try {
         const [nextSummary, nextTrends, nextModels] = await Promise.all([
           usageApi.getUsageSummary(start, end, "codex"),
@@ -259,18 +260,26 @@ export function UsageView() {
           usageApi.getModelStats(start, end, "codex"),
         ]);
         if (nextRequestId !== requestId.current) return;
+        displayedWindow.current = { id: nextRequestId, start, end };
         setLoadedRange(selectedRange);
-        setLoadedHourly(selectedRange === "today" && end - start <= 86400);
+        setLoadedHourly(usageTrendsAreHourly(start, end));
         setSummary(nextSummary);
         setTrends(nextTrends);
         setModels(nextModels);
         setLoadedAt(Date.now());
         setStatsError("");
+        setProviders(null);
+        setConversations(null);
+        setConversationsAvailable(false);
+        void nextProviders.then((rows) => {
+          if (displayedWindow.current?.id === nextRequestId) setProviders(rows);
+        });
+        void loadConversations();
       } catch (reason) {
         if (nextRequestId === requestId.current) setStatsError(String(reason));
       }
     },
-    [loadConversations, loadProviders],
+    [loadConversations],
   );
 
   const finishSync = useCallback(
@@ -349,6 +358,7 @@ export function UsageView() {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      displayedWindow.current = null;
       requestId.current += 1;
       conversationRequest.current += 1;
     };
@@ -364,8 +374,7 @@ export function UsageView() {
     const query = conversationQuery.trim();
     const timer = window.setTimeout(() => {
       if (query === fetchedConversationQuery.current) return;
-      const { start, end } = usageWindow(latestRange.current);
-      void loadConversations(start, end);
+      void loadConversations();
     }, CONVERSATION_SEARCH_DELAY_MS);
     return () => window.clearTimeout(timer);
   }, [conversationQuery, loadConversations]);
@@ -541,34 +550,31 @@ export function UsageView() {
     bad?: boolean;
   }[] = [
     {
-      label: "输入",
-      value: summary ? compactTokens(summary.totalInputTokens) : "—",
-      title: summary ? exact(summary.totalInputTokens) : undefined,
-    },
-    {
-      label: "输出",
-      value: summary ? compactTokens(summary.totalOutputTokens) : "—",
-      title: summary ? exact(summary.totalOutputTokens) : undefined,
-    },
-    {
-      label: "缓存读",
-      value: summary ? compactTokens(summary.totalCacheReadTokens) : "—",
-      title: summary ? exact(summary.totalCacheReadTokens) : undefined,
-      note: hasData
-        ? `缓存命中 ${(summary.cacheHitRate * 100).toFixed(0)}%`
-        : "缓存命中 —",
-    },
-    {
-      label: "成本",
+      label: "估算成本",
       value: summary ? usd(summary.totalCost) : "—",
       title: summary ? "按本机计价表估算；未计价的模型不计入" : undefined,
       note: summary ? "按本机计价表估算" : undefined,
     },
     {
-      label: "请求",
+      label: "请求数",
       value: summary ? n(summary.totalRequests) : "—",
       note: summary ? `失败 ${n(failures)} 次` : undefined,
       bad: failures > 0,
+    },
+    {
+      label: "总词元",
+      value: summary ? compactTokens(total) : "—",
+      title: summary ? exact(total) : undefined,
+      note: summary
+        ? `输入 ${compactTokens(summary.totalInputTokens)} · 输出 ${compactTokens(summary.totalOutputTokens)}`
+        : undefined,
+    },
+    {
+      label: "缓存命中率",
+      value: hasData ? `${(summary.cacheHitRate * 100).toFixed(1)}%` : "—",
+      note: summary
+        ? `读取 ${compactTokens(summary.totalCacheReadTokens)} · 创建 ${compactTokens(summary.totalCacheCreationTokens)}`
+        : undefined,
     },
   ];
 
@@ -578,7 +584,7 @@ export function UsageView() {
         <div className="usage-heading-text">
           <h1>用量</h1>
           <p className="usage-status-period">
-            {usageRangeTitles[displayedRange]} · 数据来自本地代理日志与会话文件
+            <span>{usageRangeTitles[displayedRange]} · 本地代理与会话记录</span>
             {runningInTauri && (
               <span className="usage-files-note">
                 · 会话文件 <span>{filesNote}</span>
@@ -745,20 +751,13 @@ export function UsageView() {
         <header className="usage-card-head">
           <strong>总量</strong>
           <span>
-            合计{" "}
-            <b
-              className="usage-mono"
-              title={summary ? exact(total) : undefined}
-            >
-              {summary ? compactTokens(total) : "—"}
-            </b>{" "}
-            词元 · 含缓存
+            词元含缓存
             {loadedAt && (
               <span
                 title={`统计读取于 ${formatUsageDateTime(loadedAt / 1000)}`}
               >
-                {" "}
-                · {clock(loadedAt)} 读取
+                {" · "}
+                {clock(loadedAt)} 读取
               </span>
             )}
           </span>
@@ -863,17 +862,29 @@ export function UsageView() {
               </p>
             </div>
             <div className="usage-view-seg" role="group" aria-label="显示方式">
+              {!loadedHourly && (
+                <button
+                  type="button"
+                  aria-pressed={displayMode === "calendar"}
+                  onClick={() => setDisplayMode("calendar")}
+                >
+                  日历
+                </button>
+              )}
               <button
                 type="button"
-                aria-pressed={!tableMode}
-                onClick={() => setTableMode(false)}
+                aria-pressed={
+                  displayMode === "chart" ||
+                  (displayMode === "calendar" && loadedHourly)
+                }
+                onClick={() => setDisplayMode("chart")}
               >
-                图表
+                柱状图
               </button>
               <button
                 type="button"
                 aria-pressed={tableMode}
-                onClick={() => setTableMode(true)}
+                onClick={() => setDisplayMode("table")}
               >
                 表格
               </button>
@@ -923,6 +934,8 @@ export function UsageView() {
                 </tbody>
               </table>
             </div>
+          ) : displayMode === "calendar" && !loadedHourly ? (
+            <UsageCalendar days={trends} />
           ) : (
             <div className="usage-plot">
               <ol className="usage-y-axis" aria-hidden="true">
@@ -983,6 +996,30 @@ export function UsageView() {
               </div>
             </div>
           )}
+        </section>
+      )}
+
+      {runningInTauri && (
+        <section
+          aria-labelledby="usage-details-heading"
+          className="usage-inline-details"
+        >
+          <h2 id="usage-details-heading">成本与请求明细</h2>
+          <Suspense
+            fallback={
+              <p role="status" className="usage-advanced-loading">
+                正在加载请求明细…
+              </p>
+            }
+          >
+            <AdvancedUsageDashboard
+              detailsOnly
+              refreshIntervalMs={0}
+              rangePreset={displayedRange}
+              initialAppType="codex"
+              refreshStamp={loadedAt ?? undefined}
+            />
+          </Suspense>
         </section>
       )}
 
@@ -1151,37 +1188,6 @@ export function UsageView() {
         onConfirm={() => void rebuildUsage()}
         onCancel={() => setRebuildDialogOpen(false)}
       />
-      <section aria-label="成本与请求明细" className="usage-advanced">
-        <button
-          type="button"
-          className="usage-advanced-toggle"
-          aria-expanded={advancedOpen}
-          aria-controls="advanced-usage"
-          disabled={!runningInTauri}
-          title={runningInTauri ? undefined : "浏览器预览不读取本机数据"}
-          onClick={() => setAdvancedOpen((open) => !open)}
-        >
-          <ChevronRight size={15} aria-hidden="true" />
-          {advancedOpen ? "收起成本与请求明细" : "成本、计价与请求明细"}
-        </button>
-        {advancedOpen && (
-          <div id="advanced-usage" className="usage-advanced-body">
-            <Suspense
-              fallback={
-                <p role="status" className="usage-advanced-loading">
-                  正在加载请求明细…
-                </p>
-              }
-            >
-              <AdvancedUsageDashboard
-                refreshIntervalMs={0}
-                initialRange={{ preset: range }}
-                initialAppType="codex"
-              />
-            </Suspense>
-          </div>
-        )}
-      </section>
       <div className="sr-only usage-live-status" role="status">
         {liveStatus}
       </div>

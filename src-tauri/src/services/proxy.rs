@@ -3211,6 +3211,29 @@ impl ProxyService {
         self.hot_switch_provider_inner(app_type, provider_id).await
     }
 
+    /// A response may complete after the user explicitly selected a line.
+    /// Recheck failover under the same locks as a manual switch.
+    pub(crate) async fn finish_failover_switch(
+        &self,
+        app_type: &str,
+        provider_id: &str,
+    ) -> Result<bool, String> {
+        let _lifecycle_guard = self.lock_lifecycle().await;
+        let _switch_guard = self.lock_switch_for_app(app_type).await;
+        let config = self
+            .db
+            .get_proxy_config_for_app(app_type)
+            .await
+            .map_err(|error| error.to_string())?;
+        if !config.enabled || !config.auto_failover_enabled {
+            return Ok(false);
+        }
+        Ok(self
+            .hot_switch_provider_inner(app_type, provider_id)
+            .await?
+            .logical_target_changed)
+    }
+
     pub(crate) async fn hot_switch_provider_inner(
         &self,
         app_type: &str,
@@ -3226,12 +3249,10 @@ impl ProxyService {
 
         // Defense-in-depth: only the built-in Codex official provider supports
         // native OpenAI auth passthrough during takeover.
-        if provider.category.as_deref() == Some("official")
-            && !crate::services::provider::official_provider_supports_proxy_takeover(
-                &app_type_enum,
-                &provider,
-            )
-        {
+        if crate::services::provider::official_provider_blocked_during_takeover(
+            &app_type_enum,
+            &provider,
+        ) {
             return Err(
                 "代理接管模式下不能切换到官方供应商 (Cannot switch to official provider during proxy takeover)"
                     .to_string(),

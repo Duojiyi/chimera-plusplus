@@ -978,6 +978,21 @@ impl Database {
         .unwrap_or((false, false))
     }
 
+    /// Change only failover, leaving the takeover and other settings intact.
+    pub(crate) fn set_auto_failover_flag(
+        &self,
+        app_type: &str,
+        enabled: bool,
+    ) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.execute(
+            "UPDATE proxy_config SET auto_failover_enabled = ?2, updated_at = datetime('now') WHERE app_type = ?1",
+            rusqlite::params![app_type, enabled],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     /// 同步设置应用的 proxy 启用状态和自动故障转移状态
     ///
     /// 用于托盘菜单点击等同步场景

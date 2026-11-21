@@ -28,6 +28,15 @@ pub struct Profile {
 }
 
 impl Database {
+    #[cfg(target_os = "windows")]
+    pub fn has_profiles(&self) -> Result<bool, AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.query_row("SELECT EXISTS(SELECT 1 FROM profiles)", [], |row| {
+            row.get(0)
+        })
+        .map_err(|e| AppError::Database(e.to_string()))
+    }
+
     /// 获取所有项目（按 sort_order 优先、created_at 兜底排序）
     pub fn get_all_profiles(&self) -> Result<Vec<Profile>, AppError> {
         let conn = lock_conn!(self.conn);

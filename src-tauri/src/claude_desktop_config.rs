@@ -1571,6 +1571,9 @@ fn macos_paths_from_home(home: &Path) -> ClaudeDesktopPaths {
 
 #[cfg(windows)]
 fn windows_local_app_data_dir() -> PathBuf {
+    if let Some(path) = crate::config::test_home_override() {
+        return path.join("AppData/Local");
+    }
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| get_home_dir().join("AppData").join("Local"))
@@ -1652,6 +1655,68 @@ mod tests {
             paths.threep_config_path,
             dir.path().join("Claude-3p").join(CONFIG_FILE)
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_current_paths_respect_isolated_home() {
+        // Run the environment-override path in its own process so that
+        // parallel tests can keep their independent profiles.
+        const CHILD_HOME: &str = "CHIMERA_CLAUDE_PATHS_REGRESSION_HOME";
+        let Some(isolated_home) = std::env::var_os(CHILD_HOME).map(PathBuf::from) else {
+            let dir = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    concat!(
+                        module_path!(),
+                        "::windows_current_paths_respect_isolated_home"
+                    )
+                    .split_once("::")
+                    .unwrap()
+                    .1,
+                ])
+                .env(CHILD_HOME, dir.path())
+                .env("CC_SWITCH_TEST_HOME", dir.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        };
+
+        let local = isolated_home.join("AppData/Local");
+        let assert_paths = |normal: &Path| {
+            let paths = current_platform_paths().unwrap();
+            assert_eq!(paths.normal_config_path, normal.join(CONFIG_FILE));
+            assert_eq!(
+                paths.threep_config_path,
+                local.join("Claude-3p").join(CONFIG_FILE)
+            );
+        };
+        assert_paths(&local.join("Claude"));
+        for (order, candidate) in [
+            isolated_home.join("AppData/Roaming/Claude"),
+            local.join("Claude-Data/claude_testpublisher"),
+            local.join("Packages/Claude_testpublisher/LocalCache/Roaming/Claude"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            std::fs::create_dir_all(&candidate).unwrap();
+            let file = std::fs::File::create(candidate.join("config.json")).unwrap();
+            file.set_modified(
+                std::time::UNIX_EPOCH
+                    + std::time::Duration::from_secs(1_700_000_000 + order as u64),
+            )
+            .unwrap();
+            assert_paths(&candidate);
+        }
     }
 
     #[test]

@@ -12,7 +12,11 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { sessionsApi, type SessionDeleteBackup } from "@/lib/api/sessions";
+import {
+  PENDING_SESSION_DELETES_QUERY_KEY,
+  sessionsApi,
+  type SessionDeleteBackup,
+} from "@/lib/api/sessions";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import {
   formatTimestamp,
@@ -30,7 +34,7 @@ const formatBytes = (bytes: number) => {
 };
 
 const backupTitle = (backup: SessionDeleteBackup) =>
-  backup.title?.trim() ||
+  (backup.pendingClear ? "备份清理未完成" : backup.title?.trim()) ||
   (backup.sessionIds[0]
     ? `会话 ${shortSessionId(backup.sessionIds[0])}`
     : "未命名会话");
@@ -55,7 +59,9 @@ export function SessionDeleteBackupsDialog({
 }: SessionDeleteBackupsDialogProps) {
   const queryClient = useQueryClient();
   const [restoringId, setRestoringId] = useState<string | null>(null);
-  const [confirmClear, setConfirmClear] = useState(false);
+  const [confirmedBackupIds, setConfirmedBackupIds] = useState<string[] | null>(
+    null,
+  );
   const [isClearing, setIsClearing] = useState(false);
 
   const { data, isLoading, isError, error, refetch } = useQuery({
@@ -67,7 +73,7 @@ export function SessionDeleteBackupsDialog({
   const includesCodex = backups.some((backup) => backup.providerId === "codex");
 
   useEffect(() => {
-    if (!open) setConfirmClear(false);
+    if (!open) setConfirmedBackupIds(null);
   }, [open]);
 
   const handleRestore = async (backup: SessionDeleteBackup) => {
@@ -85,25 +91,31 @@ export function SessionDeleteBackupsDialog({
       } else {
         toast.info("没有需要恢复的文件", { description: skipped });
       }
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["sessions"] }),
-        refetch(),
-      ]);
     } catch (restoreError) {
       toast.error(extractErrorMessage(restoreError) || "恢复失败");
     } finally {
+      // A partial restore can already have recreated files and cancelled cleanup.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["sessions"] }),
+        queryClient.invalidateQueries({
+          queryKey: PENDING_SESSION_DELETES_QUERY_KEY,
+        }),
+        refetch(),
+      ]);
       setRestoringId(null);
     }
   };
 
   const handleClear = async () => {
-    if (!confirmClear) {
-      setConfirmClear(true);
+    if (restoringId !== null || isClearing) return;
+    if (!confirmedBackupIds) {
+      if (backups.length > 0)
+        setConfirmedBackupIds(backups.map(({ id }) => id));
       return;
     }
     setIsClearing(true);
     try {
-      const result = await sessionsApi.clearDeleteBackups();
+      const result = await sessionsApi.clearDeleteBackups(confirmedBackupIds);
       toast.success(`已清空 ${result.removedBackups} 份删除备份`, {
         description: `释放 ${formatBytes(result.freedBytes)}`,
       });
@@ -111,7 +123,7 @@ export function SessionDeleteBackupsDialog({
       toast.error(extractErrorMessage(clearError) || "清空失败");
     } finally {
       setIsClearing(false);
-      setConfirmClear(false);
+      setConfirmedBackupIds(null);
       void refetch();
     }
   };
@@ -158,29 +170,44 @@ export function SessionDeleteBackupsDialog({
                       </span>
                       <span className="session-delete-item-meta">
                         <span>{getProviderLabel(backup.providerId)}</span>
-                        <span>{backupTime(backup)}</span>
+                        {!backup.pendingClear && (
+                          <span>{backupTime(backup)}</span>
+                        )}
                         <span>{formatBytes(backup.totalBytes)}</span>
                       </span>
                     </span>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="session-backup-restore"
-                      disabled={nothingToRestore || restoringId !== null}
-                      aria-label={`恢复 ${title}`}
-                      title={
-                        nothingToRestore
-                          ? "原位置已有这些文件，无需恢复"
-                          : undefined
-                      }
-                      onClick={() => void handleRestore(backup)}
-                    >
-                      <RotateCcw
-                        className={`size-3.5${restoringId === backup.id ? " motion-safe:animate-spin" : ""}`}
-                        aria-hidden
-                      />
-                      {nothingToRestore ? "已在原位" : "恢复"}
-                    </Button>
+                    {backup.pendingClear ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={restoringId !== null || isClearing}
+                        onClick={() => setConfirmedBackupIds([backup.id])}
+                      >
+                        重试清理
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="session-backup-restore"
+                        disabled={
+                          nothingToRestore || restoringId !== null || isClearing
+                        }
+                        aria-label={`恢复 ${title}`}
+                        title={
+                          nothingToRestore
+                            ? "原位置已有这些文件，无需恢复"
+                            : undefined
+                        }
+                        onClick={() => void handleRestore(backup)}
+                      >
+                        <RotateCcw
+                          className={`size-3.5${restoringId === backup.id ? " motion-safe:animate-spin" : ""}`}
+                          aria-hidden
+                        />
+                        {nothingToRestore ? "已在原位" : "恢复"}
+                      </Button>
+                    )}
                   </li>
                 );
               })}
@@ -200,11 +227,17 @@ export function SessionDeleteBackupsDialog({
 
         <DialogFooter className="session-delete-dialog-footer session-backups-footer">
           <Button
-            variant={confirmClear ? "destructive" : "ghost"}
-            disabled={backups.length === 0 || isClearing}
+            variant={confirmedBackupIds ? "destructive" : "ghost"}
+            disabled={
+              (!confirmedBackupIds && backups.length === 0) ||
+              isClearing ||
+              restoringId !== null
+            }
             onClick={() => void handleClear()}
           >
-            {confirmClear ? `确认清空 ${backups.length} 份备份` : "清空备份"}
+            {confirmedBackupIds
+              ? `确认清空 ${confirmedBackupIds.length} 份备份`
+              : "清空备份"}
           </Button>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             关闭

@@ -66,6 +66,14 @@ pub fn official_provider_supports_proxy_takeover(app_type: &AppType, provider: &
         && crate::proxy::providers::is_codex_official_provider(provider)
 }
 
+pub(crate) fn official_provider_blocked_during_takeover(
+    app_type: &AppType,
+    provider: &Provider,
+) -> bool {
+    provider.category.as_deref() == Some("official")
+        && !official_provider_supports_proxy_takeover(app_type, provider)
+}
+
 /// 统一会话开关变更后，立即按新开关状态重写当前官方 Codex 供应商的
 /// live 配置，使开关即时生效（无需等下一次切换）。
 /// 当前供应商非官方（或不存在）时为 no-op：注入只作用于官方配置，
@@ -3378,10 +3386,7 @@ impl ProviderService {
 
         // Block switching to official providers when proxy takeover is active.
         // Using a proxy with official APIs (Anthropic/OpenAI/Google) may cause account bans.
-        if should_hot_switch
-            && _provider.category.as_deref() == Some("official")
-            && !official_provider_supports_proxy_takeover(&app_type, _provider)
-        {
+        if should_hot_switch && official_provider_blocked_during_takeover(&app_type, _provider) {
             return Err(AppError::localized(
                 "switch.official_blocked_by_proxy",
                 "代理接管模式下不能切换到官方供应商，使用代理访问官方 API 可能导致账号被封禁。请先关闭代理接管，或选择第三方供应商。",
@@ -3458,11 +3463,14 @@ impl ProviderService {
                 // it just to warn about the designed error would misreport every
                 // single Claude Desktop switch as "your live edits may be lost".
                 if !app_type.is_additive_mode() && !matches!(app_type, AppType::ClaudeDesktop) {
-                    // Only backfill when switching to a different provider
+                    // The list hides damaged rows. Resolve the outgoing row strictly
+                    // before touching Live, including when reading Live would fail.
+                    let outgoing = state
+                        .db
+                        .get_provider_by_id(&current_id, app_type.as_str())?;
                     match read_live_settings(app_type.clone()) {
                         Ok(live_config) => {
-                            if let Some(mut current_provider) = providers.get(&current_id).cloned()
-                            {
+                            if let Some(mut current_provider) = outgoing {
                                 // 切走前先把 live 里的可共享改动（含用户直接在应用内
                                 // 装插件/加 hook/改偏好）同步进通用配置片段，再做剥离回填。
                                 // 详见 sync_common_config_snippet_from_live 的文档。
@@ -4304,15 +4312,12 @@ impl ProviderService {
         app_type: AppType,
         updates: Vec<ProviderSortUpdate>,
     ) -> Result<bool, AppError> {
-        let mut providers = state.db.get_all_providers(app_type.as_str())?;
-
-        for update in updates {
-            if let Some(provider) = providers.get_mut(&update.id) {
-                provider.sort_index = Some(update.sort_index);
-                state.db.save_provider(app_type.as_str(), provider)?;
-            }
-        }
-
+        state.db.update_provider_sort_indices(
+            app_type.as_str(),
+            updates
+                .iter()
+                .map(|update| (update.id.as_str(), update.sort_index)),
+        )?;
         Ok(true)
     }
 

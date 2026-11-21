@@ -87,8 +87,10 @@ pub async fn set_auto_failover_enabled(
         "[Failover] Setting auto_failover_enabled: app_type='{app_type}', enabled={enabled}"
     );
 
-    // 读取当前配置
-    let mut config = state
+    // Serialize manual selection, failover completion and the flag toggle.
+    let lifecycle_guard = state.proxy_service.lock_lifecycle().await;
+    let switch_guard = state.proxy_service.lock_switch_for_app(&app_type).await;
+    let config = state
         .db
         .get_proxy_config_for_app(&app_type)
         .await
@@ -142,7 +144,7 @@ pub async fn set_auto_failover_enabled(
     if enabled {
         if let Err(e) = state
             .proxy_service
-            .switch_proxy_target(&app_type, &p1_provider_id)
+            .hot_switch_provider_inner(&app_type, &p1_provider_id)
             .await
         {
             if let Some(provider_id) = auto_added_provider_id {
@@ -152,15 +154,21 @@ pub async fn set_auto_failover_enabled(
         }
     }
 
-    // 更新 auto_failover_enabled 字段
-    config.auto_failover_enabled = enabled;
-
-    // 写回数据库
     state
         .db
-        .update_proxy_config_for_app(config)
-        .await
-        .map_err(|e| e.to_string())?;
+        .set_auto_failover_flag(&app_type, enabled)
+        .map_err(|error| error.to_string())?;
+    drop(switch_guard);
+    drop(lifecycle_guard);
+
+    let flags = serde_json::json!({
+        "appType": app_type,
+        "proxyEnabled": config.enabled,
+        "autoFailoverEnabled": enabled,
+    });
+    if let Err(error) = app.emit("proxy-flags-changed", flags) {
+        log::error!("发射 proxy-flags-changed 事件失败: {error}");
+    }
 
     if enabled {
         // 发射 provider-switched 事件（让前端刷新当前供应商）
@@ -173,11 +181,7 @@ pub async fn set_auto_failover_enabled(
     }
 
     // 刷新托盘菜单，确保状态同步
-    if let Ok(new_menu) = crate::tray::create_tray_menu(&app, &state) {
-        if let Some(tray) = app.tray_by_id(crate::tray::TRAY_ID) {
-            let _ = tray.set_menu(Some(new_menu));
-        }
-    }
+    crate::tray::refresh_tray_menu(&app);
 
     Ok(())
 }

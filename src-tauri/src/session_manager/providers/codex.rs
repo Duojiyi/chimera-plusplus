@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::codex_config::{get_codex_config_dir, read_codex_config_text};
@@ -16,10 +16,10 @@ use crate::codex_state_db::{
     CODEX_STATE_DB_FILENAME,
 };
 use crate::error::AppError;
-use crate::security_limits::{read_limited, MAX_CONFIG_FILE_BYTES};
+use crate::security_limits::{is_link_or_reparse_point, read_limited, MAX_CONFIG_FILE_BYTES};
 use crate::session_manager::delete_backup::{
     available_space, backup_files, human_size, manifest_entries, new_generation_name,
-    prune_session_delete_backups, write_manifest, BackedUpFile,
+    prune_session_delete_backups, write_manifest, BackedUpFile, RESTORE_STAGING_PREFIX,
 };
 use crate::session_manager::{SessionDeleteResult, SessionMessage, SessionMeta};
 
@@ -558,19 +558,33 @@ fn notice(content: String) -> SessionMessage {
     }
 }
 
-/// Finish as much cleanup as possible. The caller keeps the original request
-/// when cleanup_pending is true and can retry even though the rollout is gone.
-pub(crate) fn delete_session_records(
+/// The requested rollout is already gone. Journal the request before backing
+/// up the remaining stores, so a later visit can resume even if backup fails.
+fn delete_session_records(
     root: &Path,
+    path: &Path,
     session_id: &str,
 ) -> Result<SessionDeleteResult, String> {
-    let cleanup = SessionCleanup::prepare(root, session_id)?;
-    if let Err(error) = cleanup.backup() {
-        // The rollout is already gone, so report a retryable partial delete
-        // rather than touching any store without a backup.
-        return Ok(cleanup.finish(vec![error], Vec::new()));
+    Ok(
+        match SessionCleanup::prepare(root, path, session_id, true)? {
+            Some(cleanup) => cleanup.run_missing_source(),
+            None => SessionDeleteResult::cleanup_cancelled(),
+        },
+    )
+}
+
+pub(crate) fn cleanup_deleted_session(
+    root: &Path,
+    path: &Path,
+    session_id: &str,
+) -> Result<SessionDeleteResult, String> {
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            delete_session_records(root, path, session_id)
+        }
+        Ok(_) => Ok(SessionDeleteResult::cleanup_cancelled()),
+        Err(error) => Err(format!("无法检查会话文件：{error}")),
     }
-    Ok(cleanup.run())
 }
 
 pub(crate) fn delete_session(
@@ -584,7 +598,7 @@ pub(crate) fn delete_session(
         .try_exists()
         .map_err(|error| format!("Failed to inspect session file: {error}"))?
     {
-        return delete_session_records(root, session_id);
+        return delete_session_records(root, path, session_id);
     }
     let meta = parse_session(path)
         .ok_or_else(|| format!("Failed to parse Codex session metadata: {}", path.display()))?;
@@ -594,11 +608,13 @@ pub(crate) fn delete_session(
             meta.session_id
         ));
     }
-    let mut cleanup = SessionCleanup::prepare(root, session_id)?;
-    cleanup.requested_rollout = Some(path.to_path_buf());
-    cleanup.title = meta.title;
+    let Some(mut cleanup) = SessionCleanup::prepare(root, path, session_id, false)? else {
+        return Ok(SessionDeleteResult::cleanup_cancelled());
+    };
+    cleanup.title = meta.title.or(cleanup.title);
     // Nothing has been removed yet: a failed backup leaves the session intact.
     cleanup.backup()?;
+    cleanup.persist_pending()?;
     match std::fs::remove_file(path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -616,30 +632,113 @@ pub(crate) fn delete_session(
 /// sessions are hidden from the list but still own rollouts and rows), and
 /// the SQLite homes that may hold them. Resolved before anything is removed.
 struct SessionCleanup {
+    root: PathBuf,
     config_dir: PathBuf,
     homes: Vec<PathBuf>,
+    available_homes: Vec<PathBuf>,
     /// The session first, then its spawned descendants.
     thread_ids: Vec<String>,
     /// Homes whose spawn graph could not be read. Their state DB keeps its
     /// edges and thread rows so a retry can find the same subtree.
     unreadable_graph_homes: Vec<PathBuf>,
     errors: Vec<String>,
+    /// Keep discovery durable across a partial delete of two SQLite homes.
+    journal_path: PathBuf,
+    /// Restores newer than this deletion can invalidate its cleanup.
+    restore_revision: u64,
+    /// Whether the pending-delete list can already recover this request.
+    has_pending_entry: bool,
     /// Where this delete keeps its copies of the stores it rewrites.
     backup_dir: PathBuf,
     /// The rollout the caller asked to delete, backed up with the subtree's
     /// rollouts even if its name does not follow Codex's pattern.
-    requested_rollout: Option<PathBuf>,
+    requested_rollout: PathBuf,
     /// The session's list title, kept in the backup manifest so the restore
     /// list can name it.
     title: Option<String>,
 }
 
 impl SessionCleanup {
-    fn prepare(root: &Path, session_id: &str) -> Result<Self, String> {
+    /// `None` means a restore superseded this absent-source cleanup.
+    fn prepare(
+        root: &Path,
+        path: &Path,
+        session_id: &str,
+        source_missing: bool,
+    ) -> Result<Option<Self>, String> {
+        session_relative_path(root, path).ok_or("无效的 Codex 会话路径")?;
         let config_dir = root
             .parent()
             .ok_or("Codex session root has no config directory")?
             .to_path_buf();
+        let primary_journal = pending_thread_ids_path(&config_dir, session_id);
+        let fallback_journal = fallback_pending_delete_path(&config_dir, session_id);
+        let (journal_path, journal) = match read_pending_delete(&fallback_journal)? {
+            Some(entry) => (fallback_journal, Some(entry)),
+            None if source_missing
+                && std::fs::symlink_metadata(&primary_journal).is_ok_and(|metadata| {
+                    metadata.is_dir() && !is_link_or_reparse_point(&metadata)
+                }) =>
+            {
+                // A directory at this filename cannot contain a primary receipt.
+                (fallback_journal, None)
+            }
+            None => {
+                let entry = read_pending_delete(&primary_journal)?;
+                (primary_journal, entry)
+            }
+        };
+        let restores = RestoreProtection::read(&config_dir)?;
+        let mut homes = Vec::new();
+        let mut thread_ids = vec![session_id.to_string()];
+        let mut title = None;
+        // Without a journal we have no evidence that an absent-source request
+        // was made after any restore. Only a confirmed delete of a live rollout
+        // can begin a new operation at the current revision.
+        let mut restore_revision = 0;
+        let mut has_pending_entry = false;
+        if let Some(journal) = journal {
+            let ids = match journal {
+                PendingDeleteFile::Current(entry) => {
+                    if entry.session_id != session_id || entry.root.parent() != Some(&config_dir) {
+                        return Err("会话删除记录与当前会话不匹配".into());
+                    }
+                    if entry.sqlite_homes.iter().any(|home| !home.is_absolute()) {
+                        return Err("会话删除记录包含无效的 SQLite 目录".into());
+                    }
+                    restores.validate_revision(entry.restore_revision)?;
+                    restore_revision = entry.restore_revision;
+                    has_pending_entry = true;
+                    homes = entry.sqlite_homes;
+                    title = entry.title;
+                    entry.thread_ids
+                }
+                PendingDeleteFile::Legacy(ids) => ids,
+                PendingDeleteFile::RestoreGuard(_) if source_missing => {
+                    return Ok(None);
+                }
+                PendingDeleteFile::RestoreGuard(_) => Vec::new(),
+            };
+            for id in ids {
+                if !thread_ids.contains(&id) {
+                    thread_ids.push(id);
+                }
+            }
+        }
+        if restores.protects_after(restore_revision, &thread_ids) {
+            if source_missing {
+                return Ok(None);
+            }
+            // A fresh, confirmed delete must use the current spawn graph,
+            // not the descendants recorded by a cancelled operation.
+            homes.clear();
+            thread_ids.truncate(1);
+            title = None;
+        }
+        if !source_missing {
+            restore_revision = restores.revision;
+        }
+
         let mut errors = Vec::new();
         let config_path = config_dir.join("config.toml");
         let config_text = match crate::security_limits::read_to_string_limited(
@@ -659,16 +758,36 @@ impl SessionCleanup {
                 None
             }
         };
-        let homes = match config_text {
+        let current_homes = match config_text {
             Some(text) => codex_sqlite_homes(&config_dir, &text),
             // With an unreadable config the external SQLite override is unknown.
             // Clean the known local stores; report the unresolved location for retry.
             None => vec![config_dir.clone()],
         };
 
-        let mut thread_ids = vec![session_id.to_string()];
+        // Keep both the configured and previously journaled stores. An offline
+        // location still needs cleanup once it becomes reachable. Re-resolve it
+        // on retry so that it is deduplicated with any now-resolvable aliases.
+        let mut resolved_homes = Vec::new();
+        for home in homes.into_iter().chain(current_homes) {
+            let absolute = std::path::absolute(&home)
+                .map_err(|error| format!("无法解析 SQLite 目录 {}：{error}", home.display()))?;
+            let resolved = absolute.canonicalize().unwrap_or(absolute);
+            if !resolved_homes.contains(&resolved) {
+                resolved_homes.push(resolved);
+            }
+        }
+        let homes = resolved_homes;
+        let mut available_homes = Vec::new();
         let mut unreadable_graph_homes = Vec::new();
         for home in &homes {
+            // A missing database in a reachable directory is clean. A missing
+            // directory from an earlier attempt may still hold pending rows.
+            if let Err(error) = check_sqlite_home(home) {
+                errors.push(error);
+                continue;
+            }
+            available_homes.push(home.clone());
             let db_path = home.join(CodexRuntimeDb::State.filename());
             match read_spawned_descendants(&db_path, session_id) {
                 Ok(descendants) => {
@@ -685,17 +804,92 @@ impl SessionCleanup {
             }
         }
 
+        restores.ensure_resolved(&thread_ids)?;
         let backup_dir = session_delete_backup_root(&config_dir).join(new_generation_name());
-        Ok(Self {
+        let cleanup = Self {
+            root: root.to_path_buf(),
             config_dir,
             homes,
+            available_homes,
             thread_ids,
             unreadable_graph_homes,
             errors,
+            journal_path,
+            restore_revision,
+            has_pending_entry,
             backup_dir,
-            requested_rollout: None,
-            title: None,
-        })
+            requested_rollout: path.to_path_buf(),
+            title,
+        };
+        if source_missing && restores.protects_after(restore_revision, &cleanup.thread_ids) {
+            // Save the newly discovered relationship so the list can hide the
+            // cancelled retry without opening SQLite. A failed write must not
+            // allow the cleanup to proceed.
+            if cleanup.has_pending_entry {
+                if let Err(error) = cleanup.persist_pending() {
+                    log::warn!("{error}");
+                }
+            }
+            return Ok(None);
+        }
+        Ok(Some(cleanup))
+    }
+
+    fn run_missing_source(mut self) -> SessionDeleteResult {
+        if let Err(error) = self.persist_pending() {
+            let mut errors = vec![error];
+            let fallback = fallback_pending_delete_path(&self.config_dir, &self.thread_ids[0]);
+            if !self.has_pending_entry && self.journal_path != fallback {
+                // The rollout was already gone before this request. Keep a
+                // complete retry receipt even if its primary destination is
+                // blocked. Neither store is touched until a receipt is durable.
+                self.journal_path = fallback;
+                match self.persist_pending() {
+                    Ok(()) => return self.backup_and_run(),
+                    Err(error) => errors.push(error),
+                }
+            }
+            let mut result = self.finish(errors, Vec::new());
+            result.cleanup_unjournaled = !self.has_pending_entry;
+            return result;
+        }
+        self.backup_and_run()
+    }
+
+    fn backup_and_run(self) -> SessionDeleteResult {
+        if let Err(error) = self.backup() {
+            return self.finish(vec![error], Vec::new());
+        }
+        self.run()
+    }
+
+    fn persist_pending(&self) -> Result<(), String> {
+        let relative_path = session_relative_path(&self.root, &self.requested_rollout)
+            .ok_or("无效的 Codex 会话路径")?;
+        let entry = PendingDelete {
+            session_id: self.thread_ids[0].clone(),
+            root: self.root.clone(),
+            relative_path: relative_path.to_path_buf(),
+            title: self.title.clone(),
+            thread_ids: self.thread_ids.clone(),
+            sqlite_homes: self.homes.clone(),
+            restore_revision: self.restore_revision,
+        };
+        let bytes = serde_json::to_vec(&entry).map_err(|error| error.to_string())?;
+        if bytes.len() as u64 > MAX_CONFIG_FILE_BYTES {
+            return Err("待清理的 Codex 会话记录过大".into());
+        }
+        let parent = self.journal_path.parent().ok_or("无效的会话删除记录路径")?;
+        match std::fs::symlink_metadata(parent) {
+            Ok(metadata)
+                if metadata.is_dir()
+                    && !crate::security_limits::is_link_or_reparse_point(&metadata) => {}
+            Ok(_) => return Err("会话删除记录路径不是普通目录".into()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("无法读取会话删除记录目录：{error}")),
+        }
+        crate::config::atomic_write(&self.journal_path, &bytes)
+            .map_err(|error| format!("无法保存待清理的 Codex 会话：{error}"))
     }
 
     /// Back up every runtime DB that holds rows for these threads, with the
@@ -708,7 +902,8 @@ impl SessionCleanup {
     fn backup(&self) -> Result<(), String> {
         let backup_dir = &self.backup_dir;
         let mut state_db_backups = Vec::new();
-        for (index, home) in self.homes.iter().enumerate() {
+        for (index, home) in self.available_homes.iter().enumerate() {
+            check_sqlite_home(home)?;
             for db in CodexRuntimeDb::DELETE_ORDER {
                 let db_path = home.join(db.filename());
                 let failed = |error: String| {
@@ -739,6 +934,7 @@ impl SessionCleanup {
                     "file": format!("{index}/{}", db.filename()),
                 }));
             }
+            check_sqlite_home(home)?;
         }
         let rollouts = backup_files(
             &self.rollout_sources(),
@@ -759,10 +955,8 @@ impl SessionCleanup {
 
     fn rollout_sources(&self) -> Vec<PathBuf> {
         let mut sources = rollout_files_for(&self.config_dir, &self.thread_ids);
-        if let Some(requested) = &self.requested_rollout {
-            if !sources.contains(requested) {
-                sources.insert(0, requested.clone());
-            }
+        if !sources.contains(&self.requested_rollout) {
+            sources.insert(0, self.requested_rollout.clone());
         }
         sources
     }
@@ -817,7 +1011,7 @@ impl SessionCleanup {
         // Do not short-circuit on one store's error: the other stores and
         // homes may be writable. Within a home, the state DB goes last and is
         // kept while anything that depends on its spawn graph is pending.
-        for home in &self.homes {
+        for home in &self.available_homes {
             let mut keep_graph = !rollouts_removed || self.unreadable_graph_homes.contains(home);
             for db in CodexRuntimeDb::DELETE_ORDER {
                 let db_path = home.join(db.filename());
@@ -841,6 +1035,13 @@ impl SessionCleanup {
         }
 
         self.verify(&mut errors, &mut notes);
+        if errors.is_empty() && self.errors.is_empty() {
+            match std::fs::remove_file(&self.journal_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => errors.push(format!("无法清理会话删除记录：{error}")),
+            }
+        }
         self.finish(errors, notes)
     }
 
@@ -849,11 +1050,20 @@ impl SessionCleanup {
     /// newer Codex state DB; a history that is oversized, a link or not a
     /// regular file) goes to `notes` instead.
     fn verify(&self, errors: &mut Vec<String>, notes: &mut Vec<String>) {
-        for home in &self.homes {
+        for home in &self.available_homes {
+            if let Err(error) = check_sqlite_home(home) {
+                errors.push(error);
+                continue;
+            }
             for db in CodexRuntimeDb::DELETE_ORDER {
                 let db_path = home.join(db.filename());
-                if !db_path.try_exists().unwrap_or(false) {
-                    continue;
+                match db_path.try_exists() {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(error) => {
+                        errors.push(format!("{}: {error}", db_path.display()));
+                        continue;
+                    }
                 }
                 let remaining = open_runtime_db(&db_path)
                     .and_then(|conn| tables_with_thread_rows(db, &conn, &self.thread_ids));
@@ -916,10 +1126,538 @@ impl SessionCleanup {
         SessionDeleteResult {
             source_deleted: true,
             cleanup_pending: error.is_some(),
+            cleanup_cancelled: false,
+            cleanup_unjournaled: false,
             error,
             cleanup_note,
         }
     }
+}
+
+#[derive(Serialize, Deserialize)]
+struct PendingDelete {
+    session_id: String,
+    root: PathBuf,
+    relative_path: PathBuf,
+    title: Option<String>,
+    thread_ids: Vec<String>,
+    #[serde(default)]
+    sqlite_homes: Vec<PathBuf>,
+    #[serde(default)]
+    restore_revision: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PendingDeleteFile {
+    Current(PendingDelete),
+    Legacy(Vec<String>),
+    RestoreGuard(RestoreGuard),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum RestoreGuard {
+    RestoreStarted,
+}
+
+/// One ledger per canonical Codex home. An uncertain publication defers
+/// deletes of its own threads until the session directory can be read again.
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct RestoreProtection {
+    revision: u64,
+    threads: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending: Option<RestoreIntent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    stages_to_remove: Vec<RestoreStage>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct RestoreIntent {
+    #[serde(flatten)]
+    stage: RestoreStage,
+    thread_ids: Vec<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct RestoreStage {
+    target: PathBuf,
+    staged_name: String,
+}
+
+impl RestoreStage {
+    /// Validate the names and every existing ancestor below the canonical
+    /// Codex home. None means a dated directory (or the root) moved away.
+    fn checked_path(&self, config_dir: &Path) -> Result<Option<PathBuf>, String> {
+        let invalid = || "会话恢复记录包含无效路径".to_string();
+        let parent = self.target.parent().ok_or_else(invalid)?;
+        let relative = session_relative_path(config_dir, parent).ok_or_else(invalid)?;
+        let root_name = relative
+            .components()
+            .next()
+            .ok_or_else(invalid)?
+            .as_os_str();
+        let nonce = self
+            .staged_name
+            .strip_prefix(RESTORE_STAGING_PREFIX)
+            .and_then(|name| name.strip_suffix(".tmp"));
+        if !["sessions", ARCHIVED_SESSIONS_DIR].iter().any(|name| {
+            let name = std::ffi::OsStr::new(name);
+            root_name == name || (cfg!(windows) && root_name.eq_ignore_ascii_case(name))
+        }) || !nonce.is_some_and(|value| {
+            !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        }) || session_relative_path(config_dir, &self.target).is_none()
+        {
+            return Err(invalid());
+        }
+        let mut current = config_dir.to_path_buf();
+        for part in relative.components() {
+            current.push(part.as_os_str());
+            match std::fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.is_dir() && !is_link_or_reparse_point(&metadata) => {}
+                Ok(_) => return Err(invalid()),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(format!("无法读取会话恢复目录：{error}")),
+            }
+        }
+        Ok(Some(parent.join(&self.staged_name)))
+    }
+
+    fn metadata(path: &Path) -> Result<Option<std::fs::Metadata>, String> {
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_file() && !is_link_or_reparse_point(&metadata) => {
+                Ok(Some(metadata))
+            }
+            Ok(_) => Err("会话恢复暂存路径不是普通文件".to_string()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!("无法读取会话恢复暂存文件：{error}")),
+        }
+    }
+
+    fn remove(&self, config_dir: &Path) -> Result<(), String> {
+        if let Some(path) = self.checked_path(config_dir)? {
+            if Self::metadata(&path)?.is_some() {
+                match std::fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(format!("无法清理会话恢复暂存文件：{error}")),
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl RestoreIntent {
+    fn publication_possible(&self, config_dir: &Path) -> Result<bool, String> {
+        // A missing stage can mean the rollout was published and later moved,
+        // even when its entire dated directory is now gone. Protect its threads.
+        let Some(path) = self.stage.checked_path(config_dir)? else {
+            return Ok(true);
+        };
+        let Some(staged) = RestoreStage::metadata(&path)? else {
+            return Ok(true);
+        };
+        let target = match std::fs::symlink_metadata(&self.stage.target) {
+            Ok(metadata) => Some(metadata),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("无法确认上次 Codex 会话恢复的结果：{error}")),
+        };
+        // The no-clobber rename consumes the stage. On Unix, the hard-link
+        // fallback may publish the same inode before unlinking the stage.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Ok(target.is_some_and(|target| {
+                target.is_file() && target.dev() == staged.dev() && target.ino() == staged.ino()
+            }))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (target, staged);
+            Ok(false)
+        }
+    }
+}
+
+impl RestoreProtection {
+    fn read(config_dir: &Path) -> Result<Self, String> {
+        let path = restore_protection_path(config_dir);
+        let bytes = match read_limited(&path, MAX_CONFIG_FILE_BYTES) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) => return Err(format!("无法读取会话恢复记录：{error}")),
+        };
+        let mut entry: Self = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("无法读取会话恢复记录：{error}"))?;
+        if entry
+            .threads
+            .values()
+            .any(|&value| value == 0 || value > entry.revision)
+            || entry.pending.as_ref().is_some_and(|intent| {
+                intent.thread_ids.is_empty() || intent.thread_ids.iter().any(String::is_empty)
+            })
+        {
+            return Err("会话恢复记录包含无效版本或会话编号".into());
+        }
+        if let Some(intent) = &entry.pending {
+            let resolution = intent
+                .publication_possible(config_dir)
+                .and_then(|published| entry.settle(&path, published));
+            if let Err(error) = resolution {
+                // Preserve the in-flight intent on ambiguous I/O. Callers can
+                // still operate on unrelated threads using the last known revision.
+                log::warn!("{error}");
+            }
+        }
+        entry.remove_settled_stages(config_dir, &path);
+        Ok(entry)
+    }
+
+    fn ensure_resolved(&self, thread_ids: &[String]) -> Result<(), String> {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|intent| thread_ids.iter().any(|id| intent.thread_ids.contains(id)))
+        {
+            return Err("该 Codex 会话的恢复结果暂时无法确认，请检查目录后重试".into());
+        }
+        Ok(())
+    }
+
+    fn remove_settled_stages(&mut self, config_dir: &Path, path: &Path) {
+        let before = self.stages_to_remove.len();
+        self.stages_to_remove
+            .retain(|stage| match stage.remove(config_dir) {
+                Ok(()) => false,
+                Err(error) => {
+                    log::warn!("{error}");
+                    true
+                }
+            });
+        if self.stages_to_remove.len() != before {
+            if let Err(error) = write_restore_protection(path, self) {
+                log::warn!("{error}");
+            }
+        }
+    }
+
+    fn next_revision(&self) -> Result<u64, String> {
+        self.revision
+            .checked_add(1)
+            .ok_or("会话恢复记录版本已满".into())
+    }
+
+    fn mark_restored(
+        &mut self,
+        thread_ids: impl IntoIterator<Item = String>,
+    ) -> Result<(), String> {
+        let revision = self.next_revision()?;
+        self.revision = revision;
+        self.threads
+            .extend(thread_ids.into_iter().map(|id| (id, revision)));
+        Ok(())
+    }
+
+    fn record_resolution(&mut self, published: bool) -> Result<(), String> {
+        if let Some(intent) = self.pending.take() {
+            if published {
+                self.mark_restored(intent.thread_ids)?;
+            }
+            self.stages_to_remove.push(intent.stage);
+        }
+        Ok(())
+    }
+
+    fn settle(&mut self, path: &Path, published: bool) -> Result<(), String> {
+        let mut settled = self.clone();
+        settled.record_resolution(published)?;
+        // Save the outcome and the cleanup obligation before unlinking the stage.
+        write_restore_protection(path, &settled)?;
+        *self = settled;
+        Ok(())
+    }
+
+    fn validate_revision(&self, revision: u64) -> Result<(), String> {
+        if revision > self.revision {
+            return Err("会话恢复记录缺失或版本较旧，无法安全继续清理".into());
+        }
+        Ok(())
+    }
+
+    fn protects_after(&self, revision: u64, threads: &[String]) -> bool {
+        threads.iter().any(|id| {
+            self.threads
+                .get(id)
+                .is_some_and(|&restored| restored > revision)
+        })
+    }
+}
+
+pub(in crate::session_manager) struct RolloutRestoreGuard {
+    config_dir: PathBuf,
+    path: PathBuf,
+    protection: RestoreProtection,
+}
+
+impl RolloutRestoreGuard {
+    /// The first verified rollout protects all threads in the restored backup.
+    pub(in crate::session_manager) fn prepare_publication(
+        &mut self,
+        thread_ids: &[&str],
+    ) -> Result<(), String> {
+        let mut publishing = self.protection.clone();
+        let stage = publishing
+            .stages_to_remove
+            .pop()
+            .ok_or("会话恢复暂存记录不存在")?;
+        publishing.pending = Some(RestoreIntent {
+            stage,
+            thread_ids: thread_ids.iter().map(|&id| id.to_owned()).collect(),
+        });
+        // A near-full ledger must have room for the outcome and stage cleanup.
+        let mut committed = publishing.clone();
+        committed.record_resolution(true)?;
+        encode_restore_protection(&committed)?;
+        write_restore_protection(&self.path, &publishing)?;
+        self.protection = publishing;
+        Ok(())
+    }
+
+    pub(in crate::session_manager) fn finish(mut self, published: bool) -> Result<(), String> {
+        if self.protection.pending.is_some() {
+            self.protection.settle(&self.path, published)?;
+        }
+        self.protection
+            .remove_settled_stages(&self.config_dir, &self.path);
+        Ok(())
+    }
+}
+
+/// Track the empty stage before copying data. The backup operation lock
+/// prevents recovery from reclaiming a stage still in use by this process.
+pub(in crate::session_manager) fn track_rollout_restore_stage(
+    config_dir: &Path,
+    target: &Path,
+    staged: &Path,
+) -> Result<RolloutRestoreGuard, String> {
+    let path = restore_protection_path(config_dir);
+    let mut protection = RestoreProtection::read(config_dir)?;
+    if protection.pending.is_some() {
+        return Err("上次 Codex 会话的恢复结果暂时无法确认，请检查目录后重试".into());
+    }
+    let staged_name = staged
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|_| staged.parent() == target.parent())
+        .ok_or("无效的会话恢复暂存路径")?;
+    let stage = RestoreStage {
+        target: target.to_path_buf(),
+        staged_name: staged_name.to_owned(),
+    };
+    if stage.checked_path(config_dir)?.as_deref() != Some(staged) {
+        return Err("会话恢复暂存目录发生变化".into());
+    }
+    protection.stages_to_remove.push(stage);
+    write_restore_protection(&path, &protection)?;
+    Ok(RolloutRestoreGuard {
+        config_dir: config_dir.to_path_buf(),
+        path,
+        protection,
+    })
+}
+
+#[cfg(test)]
+pub(in crate::session_manager) fn record_restore_for_test(config_dir: &Path, thread_ids: &[&str]) {
+    let mut protection = RestoreProtection::read(config_dir).unwrap();
+    protection
+        .mark_restored(thread_ids.iter().map(|&id| id.to_owned()))
+        .unwrap();
+    write_restore_protection(&restore_protection_path(config_dir), &protection).unwrap();
+}
+
+fn encode_restore_protection(protection: &RestoreProtection) -> Result<Vec<u8>, String> {
+    let bytes = serde_json::to_vec(protection).map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_CONFIG_FILE_BYTES {
+        return Err("Codex 会话恢复记录过大".into());
+    }
+    Ok(bytes)
+}
+
+fn write_restore_protection(path: &Path, protection: &RestoreProtection) -> Result<(), String> {
+    crate::config::atomic_write(path, &encode_restore_protection(protection)?)
+        .map_err(|error| format!("无法保存 Codex 会话恢复记录：{error}"))
+}
+
+fn read_pending_delete(path: &Path) -> Result<Option<PendingDeleteFile>, String> {
+    match read_limited(path, MAX_CONFIG_FILE_BYTES) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|error| format!("无法读取会话删除记录：{error}")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("无法读取会话删除记录：{error}")),
+    }
+}
+
+fn check_sqlite_home(home: &Path) -> Result<(), String> {
+    match std::fs::metadata(home) {
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Ok(_) => Err(format!("SQLite 路径不是目录：{}", home.display())),
+        Err(error) => Err(format!("SQLite 目录暂不可用：{}：{error}", home.display())),
+    }
+}
+
+fn session_relative_path<'a>(root: &Path, path: &'a Path) -> Option<&'a Path> {
+    let relative = path.strip_prefix(root).ok()?;
+    (!relative.as_os_str().is_empty()
+        && relative
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_))))
+    .then_some(relative)
+}
+
+#[derive(Default, Serialize)]
+pub struct PendingDeletes {
+    pub(crate) sessions: Vec<SessionMeta>,
+    pub(crate) warnings: Vec<String>,
+}
+
+/// Enumerate each receipt store independently. Never offer an entry when
+/// its committed restore protection cannot be verified.
+pub(crate) fn list_pending_deletes(roots: &[PathBuf]) -> PendingDeletes {
+    let mut result = PendingDeletes::default();
+    for root in roots {
+        let canonical_root = match root.canonicalize() {
+            Ok(path) => path,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                result
+                    .warnings
+                    .push(format!("无法读取 Codex 会话目录：{error}"));
+                continue;
+            }
+        };
+        let Some(config_dir) = canonical_root.parent() else {
+            continue;
+        };
+        let restores = match RestoreProtection::read(config_dir) {
+            Ok(restores) => restores,
+            Err(error) => {
+                result.warnings.push(error);
+                continue;
+            }
+        };
+        let mut journals = BTreeMap::new();
+        // Match the retry path's precedence if two filenames overlap.
+        for dir in [
+            fallback_pending_delete_dir(config_dir),
+            pending_delete_dir(config_dir),
+        ] {
+            let entries = match crate::security_limits::read_dir_without_links(&dir) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    result.warnings.push(format!(
+                        "无法列出会话删除记录（{}）：{error}",
+                        dir.display()
+                    ));
+                    continue;
+                }
+            };
+            for file in entries {
+                let path = file.path();
+                if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                    journals.entry(file.file_name()).or_insert(path);
+                }
+            }
+        }
+        for (name, path) in journals {
+            let entry = match read_pending_delete(&path) {
+                Ok(Some(PendingDeleteFile::Current(entry))) => entry,
+                Ok(_) => continue,
+                Err(error) => {
+                    result
+                        .warnings
+                        .push(format!("{error} ({})", path.display()));
+                    continue;
+                }
+            };
+            if entry.root != canonical_root
+                || pending_thread_ids_path(config_dir, &entry.session_id).file_name()
+                    != Some(name.as_os_str())
+                || restores.validate_revision(entry.restore_revision).is_err()
+                || restores.protects_after(entry.restore_revision, &entry.thread_ids)
+            {
+                continue;
+            }
+            let source = root.join(&entry.relative_path);
+            if session_relative_path(root, &source).is_none() {
+                continue;
+            }
+            // Report the interrupted restore even if the path probe would
+            // exclude this receipt from the retry list.
+            if let Err(warning) = restores.ensure_resolved(&entry.thread_ids) {
+                result.warnings.push(warning);
+                continue;
+            }
+            if !matches!(
+                crate::security_limits::canonicalize_within_root(&source, root),
+                Err(error) if error.kind() == io::ErrorKind::NotFound
+            ) {
+                continue;
+            }
+            result.sessions.push(SessionMeta {
+                provider_id: PROVIDER_ID.into(),
+                session_id: entry.session_id,
+                title: entry.title,
+                source_path: Some(source.to_string_lossy().into_owned()),
+                archived: root.ends_with(ARCHIVED_SESSIONS_DIR),
+                summary: None,
+                project_dir: None,
+                created_at: None,
+                last_active_at: None,
+                resume_command: None,
+            });
+        }
+    }
+    result
+        .sessions
+        .sort_by(|a, b| a.session_id.cmp(&b.session_id));
+    result.warnings.sort();
+    result.warnings.dedup();
+    result
+}
+
+fn pending_delete_dir(config_dir: &Path) -> PathBuf {
+    session_delete_backup_root(config_dir).with_file_name("codex-session-delete-pending")
+}
+
+fn fallback_pending_delete_dir(config_dir: &Path) -> PathBuf {
+    session_delete_backup_root(config_dir).with_file_name("codex-session-delete-pending-recovery")
+}
+
+pub(in crate::session_manager) fn restore_protection_path(config_dir: &Path) -> PathBuf {
+    // Both receipt stores depend on this ledger. Neither should lose access
+    // to restore protection when the other store is obstructed.
+    config_dir.join("codex-session-delete-restores.json")
+}
+
+fn pending_thread_ids_path(config_dir: &Path, session_id: &str) -> PathBuf {
+    pending_delete_dir(config_dir).join(pending_delete_file_name(config_dir, session_id))
+}
+
+fn fallback_pending_delete_path(config_dir: &Path, session_id: &str) -> PathBuf {
+    fallback_pending_delete_dir(config_dir).join(pending_delete_file_name(config_dir, session_id))
+}
+
+fn pending_delete_file_name(config_dir: &Path, session_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(config_dir.as_os_str().as_encoded_bytes());
+    hash.update([0]);
+    hash.update(session_id.as_bytes());
+    format!("{:x}.json", hash.finalize())
 }
 
 #[cfg(not(test))]
@@ -1039,6 +1777,9 @@ fn thread_rows(db: CodexRuntimeDb) -> &'static [(&'static str, &'static str)] {
             // Adapted from openai/codex 0ada5d8806cdad498230d5b1b2924091e04c8feb
             // (Apache-2.0, modified): receipts have no FK cascade; delete before threads.
             ("thread_read_receipts", "thread_id"),
+            // openai/codex ccf9be8cc458bd6b8336fe84d68d8893f2691a5e,
+            // state migration 0063 (Apache-2.0): no foreign key cascade.
+            ("session_model_ids", "session_id"),
             ("threads", "id"),
         ],
     }
@@ -2521,7 +3262,7 @@ mod tests {
         std::fs::write(temp.path().join("config.toml"), "sqlite_home = [").unwrap();
         let index = temp.path().join(CODEX_SESSION_INDEX_FILENAME);
         std::fs::write(&index, "{\"id\":\"s1\"}\n").unwrap();
-        let result = delete_session_records(&root, "s1").unwrap();
+        let result = delete_session_records(&root, &root.join("missing.jsonl"), "s1").unwrap();
         assert!(result.source_deleted && result.cleanup_pending);
         assert!(result.error.unwrap().contains("config.toml"));
         assert!(std::fs::read_to_string(index).unwrap().is_empty());
@@ -2879,10 +3620,39 @@ mod tests {
         );
     ";
 
-    fn state_with_read_receipts(home: &Path, ids: &[&str]) -> Connection {
+    // Codex migration 0063 (Apache-2.0); the new table has no cascade.
+    const SESSION_MODEL_IDS_SCHEMA: &str = "
+        CREATE TABLE session_model_ids (
+            session_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            external_key TEXT NOT NULL,
+            ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+            initial_state TEXT,
+            PRIMARY KEY (session_id, kind, external_key),
+            UNIQUE (session_id, kind, ordinal),
+            CHECK ((ordinal = 0) = (initial_state IS NOT NULL))
+        );
+    ";
+
+    const STATE_SESSION_ROW_TABLES: &[(&str, &str)] = &[
+        ("threads", "id"),
+        ("thread_read_receipts", "thread_id"),
+        ("session_model_ids", "session_id"),
+    ];
+
+    fn insert_session_model_id(conn: &Connection, id: &str) {
+        conn.execute(
+            "INSERT INTO session_model_ids VALUES (?1, 'test-kind', 'test-key', 0, 'initial')",
+            [id],
+        )
+        .unwrap();
+    }
+
+    fn state_with_session_metadata(home: &Path, ids: &[&str]) -> Connection {
         create_runtime_dbs(home, &[CodexRuntimeDb::State]);
         let conn = Connection::open(home.join(CODEX_STATE_DB_FILENAME)).unwrap();
         conn.execute_batch(READ_RECEIPTS_SCHEMA).unwrap();
+        conn.execute_batch(SESSION_MODEL_IDS_SCHEMA).unwrap();
         for id in ids {
             conn.execute(
                 "INSERT INTO threads (id, rollout_path, title) VALUES (?1, 'rollout.jsonl', 'keep title')",
@@ -2894,18 +3664,20 @@ mod tests {
                 [id],
             )
             .unwrap();
+            insert_session_model_id(&conn, id);
         }
         conn
     }
 
     #[test]
-    fn codex_read_receipts_deletes_target_and_preserves_unrelated_state() {
+    fn codex_session_metadata_deletes_target_and_preserves_unrelated_state() {
         let temp = tempdir().unwrap();
-        let conn = state_with_read_receipts(temp.path(), &[ROOT_ID, OTHER_ID]);
+        let conn = state_with_session_metadata(temp.path(), &[ROOT_ID, OTHER_ID]);
         let ids = vec![ROOT_ID.to_string()];
-        assert!(tables_with_thread_rows(CodexRuntimeDb::State, &conn, &ids)
-            .unwrap()
-            .contains(&"thread_read_receipts"));
+        assert_eq!(
+            tables_with_thread_rows(CodexRuntimeDb::State, &conn, &ids).unwrap(),
+            ["thread_read_receipts", "session_model_ids", "threads"]
+        );
 
         delete_thread_rows(
             CodexRuntimeDb::State,
@@ -2916,7 +3688,7 @@ mod tests {
         assert!(tables_with_thread_rows(CodexRuntimeDb::State, &conn, &ids)
             .unwrap()
             .is_empty());
-        for (table, column) in [("threads", "id"), ("thread_read_receipts", "thread_id")] {
+        for &(table, column) in STATE_SESSION_ROW_TABLES {
             assert_eq!(
                 count_rows(temp.path(), CodexRuntimeDb::State, table, column, ROOT_ID),
                 0
@@ -2926,12 +3698,13 @@ mod tests {
                 1
             );
         }
-        let preserved: (String, String, String, String) = conn
+        let preserved: (String, String, String, String, String) = conn
             .query_row(
-                "SELECT threads.title, first_unread_turn, revision, last_published_turn
-             FROM threads JOIN thread_read_receipts ON thread_id = id WHERE id = ?1",
+                "SELECT threads.title, first_unread_turn, revision, last_published_turn, initial_state
+             FROM threads JOIN thread_read_receipts ON thread_id = id
+             JOIN session_model_ids ON session_id = id WHERE id = ?1",
                 [OTHER_ID],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .unwrap();
         assert_eq!(
@@ -2940,24 +3713,26 @@ mod tests {
                 "keep title".to_string(),
                 "unread-turn".to_string(),
                 "revision-1".to_string(),
-                "published-turn".to_string()
+                "published-turn".to_string(),
+                "initial".to_string(),
             )
         );
     }
 
     #[test]
-    fn codex_read_receipts_detects_and_cleans_orphans_without_thread_row() {
+    fn codex_session_metadata_detects_and_cleans_orphans_without_thread_row() {
         let temp = tempdir().unwrap();
-        let conn = state_with_read_receipts(temp.path(), &[OTHER_ID]);
+        let conn = state_with_session_metadata(temp.path(), &[OTHER_ID]);
         conn.execute(
             "INSERT INTO thread_read_receipts VALUES (?1, NULL, 'orphan-revision', NULL)",
             [ROOT_ID],
         )
         .unwrap();
+        insert_session_model_id(&conn, ROOT_ID);
         let ids = vec![ROOT_ID.to_string()];
         assert_eq!(
             tables_with_thread_rows(CodexRuntimeDb::State, &conn, &ids).unwrap(),
-            vec!["thread_read_receipts"]
+            ["thread_read_receipts", "session_model_ids"]
         );
 
         delete_thread_rows(
@@ -2982,11 +3757,12 @@ mod tests {
     }
 
     #[test]
-    fn codex_read_receipts_legacy_database_without_table_still_deletes() {
+    fn codex_session_metadata_legacy_database_without_table_still_deletes() {
         let temp = tempdir().unwrap();
         create_runtime_dbs(temp.path(), &[CodexRuntimeDb::State]);
         let conn = Connection::open(temp.path().join(CODEX_STATE_DB_FILENAME)).unwrap();
         assert!(!has_column(&conn, "thread_read_receipts", "thread_id").unwrap());
+        assert!(!has_column(&conn, "session_model_ids", "session_id").unwrap());
         for id in [ROOT_ID, OTHER_ID] {
             conn.execute(
                 "INSERT INTO threads VALUES (?1, 'rollout.jsonl', 'title')",
@@ -3015,12 +3791,13 @@ mod tests {
             1
         );
         assert!(!has_column(&conn, "thread_read_receipts", "thread_id").unwrap());
+        assert!(!has_column(&conn, "session_model_ids", "session_id").unwrap());
     }
 
     #[test]
-    fn codex_read_receipts_batch_failure_rolls_back_and_can_retry() {
+    fn codex_session_metadata_batch_failure_rolls_back_and_can_retry() {
         let temp = tempdir().unwrap();
-        let conn = state_with_read_receipts(temp.path(), &[ROOT_ID, CHILD_ID, OTHER_ID]);
+        let conn = state_with_session_metadata(temp.path(), &[ROOT_ID, CHILD_ID, OTHER_ID]);
         conn.execute_batch(&format!(
             "CREATE TRIGGER reject_child_delete BEFORE DELETE ON threads
              WHEN OLD.id = '{CHILD_ID}' BEGIN
@@ -3032,7 +3809,7 @@ mod tests {
         let db_path = temp.path().join(CODEX_STATE_DB_FILENAME);
         let error = delete_thread_rows(CodexRuntimeDb::State, &db_path, &ids).unwrap_err();
         assert!(error.contains("blocked child delete"), "{error}");
-        for (table, column) in [("threads", "id"), ("thread_read_receipts", "thread_id")] {
+        for &(table, column) in STATE_SESSION_ROW_TABLES {
             for id in [ROOT_ID, CHILD_ID, OTHER_ID] {
                 assert_eq!(
                     count_rows(temp.path(), CodexRuntimeDb::State, table, column, id),
@@ -3040,9 +3817,10 @@ mod tests {
                 );
             }
         }
-        assert!(tables_with_thread_rows(CodexRuntimeDb::State, &conn, &ids)
-            .unwrap()
-            .contains(&"thread_read_receipts"));
+        assert_eq!(
+            tables_with_thread_rows(CodexRuntimeDb::State, &conn, &ids).unwrap(),
+            ["thread_read_receipts", "session_model_ids", "threads"]
+        );
 
         conn.execute_batch("DROP TRIGGER reject_child_delete")
             .unwrap();
@@ -3050,7 +3828,7 @@ mod tests {
         assert!(tables_with_thread_rows(CodexRuntimeDb::State, &conn, &ids)
             .unwrap()
             .is_empty());
-        for (table, column) in [("threads", "id"), ("thread_read_receipts", "thread_id")] {
+        for &(table, column) in STATE_SESSION_ROW_TABLES {
             for id in [ROOT_ID, CHILD_ID] {
                 assert_eq!(
                     count_rows(temp.path(), CodexRuntimeDb::State, table, column, id),
@@ -3241,6 +4019,350 @@ mod tests {
                     "{table} still holds {id}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn first_delete_records_an_offline_sqlite_home_until_it_reconnects() {
+        let temp = tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        let (sessions, _) = codex_home_with_sessions(&home);
+        let secondary = home.join("secondary");
+        let offline = home.join("disconnected");
+        std::fs::create_dir(&offline).unwrap();
+        create_runtime_dbs(&offline, &[CodexRuntimeDb::State]);
+        let conn = Connection::open(offline.join(CODEX_STATE_DB_FILENAME)).unwrap();
+        for id in [ROOT_ID, OTHER_ID] {
+            conn.execute(
+                "INSERT INTO threads VALUES (?1, 'rollout.jsonl', 'title')",
+                [id],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let config = home.join("config.toml");
+        std::fs::write(
+            &config,
+            format!("sqlite_home = '{}'\n", secondary.display()),
+        )
+        .unwrap();
+        let source = sessions.join(rollout_name(ROOT_ID, "jsonl"));
+        write_codex_session(&source, ROOT_ID, "root");
+
+        let first = delete_session(&sessions, &source, ROOT_ID).unwrap();
+        assert!(first.source_deleted && first.cleanup_pending, "{first:?}");
+        assert!(!source.exists());
+        let journal = pending_thread_ids_path(&home, ROOT_ID);
+        let Some(PendingDeleteFile::Current(entry)) = read_pending_delete(&journal).unwrap() else {
+            panic!("expected a durable retry");
+        };
+        assert!(entry.sqlite_homes.contains(&secondary));
+
+        // The user can select another directory while this one is offline.
+        std::fs::write(&config, format!("sqlite_home = '{}'\n", home.display())).unwrap();
+        let pending = cleanup_deleted_session(&sessions, &source, ROOT_ID).unwrap();
+        assert!(pending.cleanup_pending, "{pending:?}");
+        assert!(!pending.cleanup_unjournaled);
+        std::fs::rename(&offline, &secondary).unwrap();
+        let completed = cleanup_deleted_session(&sessions, &source, ROOT_ID).unwrap();
+        assert!(
+            completed.source_deleted && !completed.cleanup_pending,
+            "{completed:?}"
+        );
+        assert!(!journal.exists());
+        assert_eq!(
+            count_rows(&secondary, CodexRuntimeDb::State, "threads", "id", ROOT_ID),
+            0
+        );
+        assert_eq!(
+            count_rows(&secondary, CodexRuntimeDb::State, "threads", "id", OTHER_ID),
+            1
+        );
+    }
+
+    #[test]
+    fn a_failed_secondary_home_retries_with_the_persisted_home_and_child_ids() {
+        let temp = tempdir().unwrap();
+        let config_dir = temp.path();
+        let (sessions, _) = codex_home_with_sessions(config_dir);
+        let secondary = config_dir.join("secondary");
+        std::fs::create_dir(&secondary).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            format!("sqlite_home = '{}'\n", secondary.display()),
+        )
+        .unwrap();
+        create_runtime_dbs(config_dir, &[CodexRuntimeDb::State]);
+        create_runtime_dbs(&secondary, &[CodexRuntimeDb::State]);
+        let primary = Connection::open(config_dir.join(CODEX_STATE_DB_FILENAME)).unwrap();
+        primary
+            .execute(
+                "INSERT INTO thread_spawn_edges VALUES (?1, ?2, 'running')",
+                [ROOT_ID, CHILD_ID],
+            )
+            .unwrap();
+        let external = Connection::open(secondary.join(CODEX_STATE_DB_FILENAME)).unwrap();
+        for id in [CHILD_ID, OTHER_ID] {
+            external
+                .execute(
+                    "INSERT INTO threads VALUES (?1, 'rollout.jsonl', 'title')",
+                    [id],
+                )
+                .unwrap();
+        }
+        external
+            .execute_batch(&format!(
+                "CREATE TRIGGER fail_child_delete BEFORE DELETE ON threads
+             WHEN OLD.id = '{CHILD_ID}' BEGIN SELECT RAISE(ABORT, 'blocked child'); END;"
+            ))
+            .unwrap();
+        let main = sessions.join(rollout_name(ROOT_ID, "jsonl"));
+        write_codex_session(&main, ROOT_ID, "root");
+
+        let partial = delete_session(&sessions, &main, ROOT_ID).unwrap();
+        assert!(partial.source_deleted && partial.cleanup_pending);
+        assert!(partial.error.unwrap().contains("blocked child"));
+        assert!(spawned_descendants(&primary, ROOT_ID).unwrap().is_empty());
+        let pending = pending_thread_ids_path(config_dir, ROOT_ID);
+        assert!(pending.is_file());
+
+        // A config change during a partial delete must not abandon the first
+        // SQLite home, even if the current graph no longer names this child.
+        let replacement = config_dir.join("replacement");
+        std::fs::create_dir(&replacement).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            format!("sqlite_home = '{}'\n", replacement.display()),
+        )
+        .unwrap();
+        create_runtime_dbs(&replacement, &[CodexRuntimeDb::State]);
+        let replacement_db = Connection::open(replacement.join(CODEX_STATE_DB_FILENAME)).unwrap();
+        replacement_db
+            .execute(
+                "INSERT INTO threads VALUES (?1, 'rollout.jsonl', 'title')",
+                [ROOT_ID],
+            )
+            .unwrap();
+
+        let still_pending = cleanup_deleted_session(&sessions, &main, ROOT_ID).unwrap();
+        assert!(still_pending.cleanup_pending);
+        assert!(still_pending.error.unwrap().contains("blocked child"));
+        assert!(pending.is_file());
+        assert_eq!(
+            count_rows(
+                &replacement,
+                CodexRuntimeDb::State,
+                "threads",
+                "id",
+                ROOT_ID
+            ),
+            0
+        );
+        external
+            .execute_batch("DROP TRIGGER fail_child_delete")
+            .unwrap();
+        drop(external);
+        let disconnected = config_dir.join("disconnected");
+        std::fs::rename(&secondary, &disconnected).unwrap();
+        let offline = cleanup_deleted_session(&sessions, &main, ROOT_ID).unwrap();
+        assert!(offline.cleanup_pending);
+        assert!(offline.error.unwrap().contains("SQLite 目录暂不可用"));
+        assert!(pending.is_file());
+        std::fs::rename(disconnected, &secondary).unwrap();
+        let retried = cleanup_deleted_session(&sessions, &main, ROOT_ID).unwrap();
+        assert!(!retried.cleanup_pending, "{:?}", retried.error);
+        assert_eq!(
+            count_rows(&secondary, CodexRuntimeDb::State, "threads", "id", CHILD_ID),
+            0
+        );
+        assert_eq!(
+            count_rows(&secondary, CodexRuntimeDb::State, "threads", "id", OTHER_ID),
+            1
+        );
+        assert!(!pending_thread_ids_path(config_dir, ROOT_ID).exists());
+    }
+
+    fn add_spawned_child(config_dir: &Path, child: &Path) {
+        write_codex_session(child, CHILD_ID, "child");
+        let db = Connection::open(config_dir.join(CODEX_STATE_DB_FILENAME)).unwrap();
+        db.execute(
+            "INSERT INTO thread_spawn_edges VALUES (?1, ?2, 'running')",
+            [ROOT_ID, CHILD_ID],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn failure_to_write_either_receipt_preserves_the_missing_rollout_retry() {
+        for restore_child in [false, true] {
+            let temp = tempdir().unwrap();
+            let home = temp.path().canonicalize().unwrap();
+            let (sessions, _) = codex_home_with_sessions(&home);
+            create_runtime_dbs(&home, &[CodexRuntimeDb::State]);
+            let source = sessions.join(rollout_name(ROOT_ID, "jsonl"));
+            let child = sessions.join(rollout_name(CHILD_ID, "jsonl"));
+            add_spawned_child(&home, &child);
+            let cleanup = SessionCleanup::prepare(&sessions, &source, ROOT_ID, true)
+                .unwrap()
+                .unwrap();
+            let journal = cleanup.journal_path.clone();
+            let fallback = fallback_pending_delete_path(&home, ROOT_ID);
+            std::fs::create_dir_all(&journal).unwrap();
+            std::fs::create_dir_all(&fallback).unwrap();
+            let failure = cleanup.run_missing_source();
+            assert!(
+                failure.source_deleted && failure.cleanup_pending && failure.cleanup_unjournaled
+            );
+            assert!(child.is_file());
+            assert!(!home.join("session-delete-backups").exists());
+            std::fs::remove_dir(&journal).unwrap();
+            std::fs::remove_dir(&fallback).unwrap();
+
+            if restore_child {
+                record_restore_for_test(&home, &[CHILD_ID]);
+                let result = cleanup_deleted_session(&sessions, &source, ROOT_ID).unwrap();
+                assert!(result.cleanup_cancelled && !result.cleanup_pending);
+                assert!(child.is_file());
+            } else {
+                let result = cleanup_deleted_session(&sessions, &source, ROOT_ID).unwrap();
+                assert!(!result.cleanup_pending, "{:?}", result.error);
+                assert!(!child.exists());
+            }
+            assert!(!journal.exists());
+        }
+    }
+
+    #[test]
+    fn fallback_receipt_survives_reopen_and_respects_later_restores() {
+        for restore_child in [false, true] {
+            let temp = tempdir().unwrap();
+            let home = temp.path().canonicalize().unwrap();
+            let (sessions, _) = codex_home_with_sessions(&home);
+            let roots = std::slice::from_ref(&sessions);
+            create_runtime_dbs(&home, &[CodexRuntimeDb::State]);
+            let source = sessions.join(rollout_name(ROOT_ID, "jsonl"));
+            let child = sessions.join(rollout_name(CHILD_ID, "jsonl"));
+            add_spawned_child(&home, &child);
+            let journal = pending_thread_ids_path(&home, ROOT_ID);
+            std::fs::create_dir_all(&journal).unwrap();
+            // Filesystem obstruction prevents backup after the fallback is saved.
+            let blocked_backup = session_delete_backup_root(&home);
+            std::fs::write(&blocked_backup, b"temporarily blocked").unwrap();
+            let pending = delete_session(&sessions, &source, ROOT_ID).unwrap();
+            assert!(pending.cleanup_pending && !pending.cleanup_unjournaled);
+            assert!(child.is_file());
+            let fallback = fallback_pending_delete_path(&home, ROOT_ID);
+            assert!(fallback.is_file());
+            assert_eq!(list_pending_deletes(roots).sessions[0].session_id, ROOT_ID);
+
+            std::fs::remove_file(&blocked_backup).unwrap();
+            if restore_child {
+                record_restore_for_test(&home, &[CHILD_ID]);
+            }
+            let retried = cleanup_deleted_session(&sessions, &source, ROOT_ID).unwrap();
+            assert!(!retried.cleanup_pending, "{:?}", retried.error);
+            assert_eq!(retried.cleanup_cancelled, restore_child);
+            assert_eq!(child.is_file(), restore_child);
+            assert!(list_pending_deletes(roots).sessions.is_empty());
+            assert!(
+                journal.is_dir(),
+                "must not remove the obstructing directory"
+            );
+            assert_eq!(fallback.is_file(), restore_child);
+        }
+    }
+
+    #[test]
+    fn blocked_primary_receipt_directory_does_not_hide_a_readable_fallback() {
+        let temp = tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        let (sessions, _) = codex_home_with_sessions(&home);
+        let source = sessions.join(rollout_name(ROOT_ID, "jsonl"));
+        let child = sessions.join(rollout_name(CHILD_ID, "jsonl"));
+        create_runtime_dbs(&home, &[CodexRuntimeDb::State]);
+        add_spawned_child(&home, &child);
+        record_restore_for_test(&home, &[OTHER_ID]);
+
+        // Fail the cleanup after recording a durable fallback, then make the
+        // primary directory itself unreadable as a receipt store.
+        let primary = pending_thread_ids_path(&home, ROOT_ID);
+        std::fs::create_dir_all(&primary).unwrap();
+        let blocked_backup = session_delete_backup_root(&home);
+        std::fs::write(&blocked_backup, b"temporarily blocked").unwrap();
+        let pending = delete_session(&sessions, &source, ROOT_ID).unwrap();
+        assert!(pending.cleanup_pending && !pending.cleanup_unjournaled);
+        std::fs::remove_dir(&primary).unwrap();
+        let primary_dir = pending_delete_dir(&home);
+        std::fs::remove_dir(&primary_dir).unwrap();
+        std::fs::write(&primary_dir, b"not a directory").unwrap();
+
+        let roots = std::slice::from_ref(&sessions);
+        let pending = list_pending_deletes(roots);
+        assert_eq!(pending.sessions.len(), 1);
+        assert_eq!(pending.sessions[0].session_id, ROOT_ID);
+        assert_eq!(pending.warnings.len(), 1);
+        assert!(pending.warnings[0].contains("无法列出会话删除记录"));
+
+        std::fs::remove_file(blocked_backup).unwrap();
+        let result = cleanup_deleted_session(&sessions, &source, ROOT_ID).unwrap();
+        assert!(
+            !result.cleanup_pending && !result.cleanup_cancelled,
+            "{:?}",
+            result.error
+        );
+        assert!(!child.exists());
+        assert!(list_pending_deletes(roots).sessions.is_empty());
+        assert!(primary_dir.is_file());
+    }
+
+    #[test]
+    fn retry_checks_restores_against_rediscovered_descendants() {
+        let temp = tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        let (sessions, _) = codex_home_with_sessions(&home);
+        let source = sessions.join(rollout_name(ROOT_ID, "jsonl"));
+        let child = sessions.join(rollout_name(CHILD_ID, "jsonl"));
+        SessionCleanup::prepare(&sessions, &source, ROOT_ID, true)
+            .unwrap()
+            .unwrap()
+            .persist_pending()
+            .unwrap();
+        create_runtime_dbs(&home, &[CodexRuntimeDb::State]);
+        add_spawned_child(&home, &child);
+        record_restore_for_test(&home, &[CHILD_ID]);
+        let roots = [sessions.clone()];
+        assert_eq!(list_pending_deletes(&roots).sessions.len(), 1);
+        let result = cleanup_deleted_session(&sessions, &source, ROOT_ID).unwrap();
+        assert!(result.cleanup_cancelled && !result.cleanup_pending);
+        assert!(child.is_file());
+        assert!(list_pending_deletes(&roots).sessions.is_empty());
+    }
+
+    #[test]
+    fn retries_accept_legacy_journals_without_a_sqlite_home_list() {
+        for legacy_array in [false, true] {
+            let temp = tempdir().unwrap();
+            let (sessions, _) = codex_home_with_sessions(temp.path());
+            let path = sessions.join(rollout_name(ROOT_ID, "jsonl"));
+            let child = sessions.join(rollout_name(CHILD_ID, "jsonl"));
+            write_codex_session(&child, CHILD_ID, "child");
+            let journal = if legacy_array {
+                json!([ROOT_ID, CHILD_ID])
+            } else {
+                json!({
+                    "session_id": ROOT_ID,
+                    "root": sessions,
+                    "relative_path": path.strip_prefix(&sessions).unwrap(),
+                    "title": "original delete",
+                    "thread_ids": [ROOT_ID, CHILD_ID],
+                })
+            };
+            let pending = pending_thread_ids_path(temp.path(), ROOT_ID);
+            crate::config::atomic_write(&pending, &serde_json::to_vec(&journal).unwrap()).unwrap();
+            let retried = cleanup_deleted_session(&sessions, &path, ROOT_ID).unwrap();
+            assert!(!retried.cleanup_pending, "{:?}", retried.error);
+            assert!(!pending.exists());
+            assert!(!child.exists());
         }
     }
 

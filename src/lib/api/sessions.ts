@@ -11,10 +11,20 @@ export type SessionListEntry = SessionMeta & { archived?: boolean };
  */
 export type SessionTranscriptEntry = SessionMessage & { truncated?: boolean };
 
+interface PendingSessionDeletes {
+  sessions: SessionListEntry[];
+  warnings: string[];
+}
+
+export const PENDING_SESSION_DELETES_QUERY_KEY = [
+  "pendingSessionDeletes",
+] as const;
+
 export interface DeleteSessionOptions {
   providerId: string;
   sessionId: string;
   sourcePath: string;
+  cleanupOnly?: boolean;
 }
 
 export interface DeleteSessionResult extends DeleteSessionOptions {
@@ -22,6 +32,10 @@ export interface DeleteSessionResult extends DeleteSessionOptions {
   /** Content is gone even when index cleanup needs another attempt. */
   sourceDeleted: boolean;
   cleanupPending: boolean;
+  /** A restore superseded this cleanup request. */
+  cleanupCancelled?: boolean;
+  /** The first retry record could not be saved. Retain the retry for this app session. */
+  cleanupUnjournaled?: boolean;
   error?: string;
   /**
    * Records left behind on purpose because no retry can clean them (a newer
@@ -54,6 +68,8 @@ export interface SessionDeleteBackup {
   totalBytes: number;
   /** Files whose original location is free, so a restore would write them. */
   restorableFiles: number;
+  /** Removal of this explicitly cleared backup was interrupted. */
+  pendingClear?: boolean;
 }
 
 export interface SessionDeleteRestoreResult {
@@ -80,6 +96,10 @@ export const sessionsApi = {
 
   async list(): Promise<SessionListEntry[]> {
     return await invoke("list_sessions");
+  },
+
+  async listPendingDeletes(): Promise<PendingSessionDeletes> {
+    return await invoke("list_pending_session_deletes");
   },
 
   async getMessages(
@@ -125,8 +145,10 @@ export const sessionsApi = {
     return await invoke("restore_session_delete_backup", { backupId });
   },
 
-  async clearDeleteBackups(): Promise<SessionDeleteBackupsCleared> {
-    return await invoke("clear_session_delete_backups");
+  async clearDeleteBackups(
+    backupIds: string[],
+  ): Promise<SessionDeleteBackupsCleared> {
+    return await invoke("clear_session_delete_backups", { backupIds });
   },
 
   async launchTerminal(options: {

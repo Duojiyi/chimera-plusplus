@@ -11,6 +11,129 @@ use serde_json::json;
 use std::collections::HashMap;
 use tempfile::NamedTempFile;
 
+#[test]
+fn provider_sort_is_atomic_and_updates_only_the_requested_apps_order() {
+    let db = Database::memory().unwrap();
+    let raw_settings = r#"{ "model": "keep", "future_field": [1, 2] }"#;
+    let raw_meta = r#"{ "future_meta": true }"#;
+    {
+        let conn = db.conn.lock().unwrap();
+        for (id, app, order) in [
+            ("same", "codex", 1),
+            ("last", "codex", 2),
+            ("same", "claude", 3),
+        ] {
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta, sort_index, is_current)
+                 VALUES (?1, ?2, ?1, ?3, ?4, ?5, 1)",
+                params![id, app, raw_settings, raw_meta, order],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO provider_endpoints (provider_id, app_type, url) VALUES ('same', 'codex', 'https://example.invalid')",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_last_sort BEFORE UPDATE OF sort_index ON providers
+             WHEN OLD.id = 'last' BEGIN SELECT RAISE(ABORT, 'blocked sort'); END;",
+        )
+        .unwrap();
+    }
+    assert!(db
+        .update_provider_sort_indices("codex", [("same", 2), ("last", 1)])
+        .is_err());
+    assert_eq!(
+        db.get_provider_by_id("same", "codex")
+            .unwrap()
+            .unwrap()
+            .sort_index,
+        Some(1)
+    );
+    db.conn
+        .lock()
+        .unwrap()
+        .execute_batch("DROP TRIGGER reject_last_sort")
+        .unwrap();
+    db.update_provider_sort_indices("codex", [("same", 2), ("last", 1)])
+        .unwrap();
+
+    let ordered = db.get_all_providers("codex").unwrap();
+    assert_eq!(
+        ordered.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["last", "same"]
+    );
+    assert_eq!(
+        db.get_provider_by_id("same", "claude")
+            .unwrap()
+            .unwrap()
+            .sort_index,
+        Some(3)
+    );
+    let conn = db.conn.lock().unwrap();
+    let saved: (String, String, bool, String) = conn.query_row(
+        "SELECT settings_config, meta, is_current, url FROM providers
+         JOIN provider_endpoints ON provider_id = providers.id AND provider_endpoints.app_type = providers.app_type
+         WHERE providers.id = 'same' AND providers.app_type = 'codex'",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    ).unwrap();
+    assert_eq!(
+        saved,
+        (
+            raw_settings.into(),
+            raw_meta.into(),
+            true,
+            "https://example.invalid".into()
+        )
+    );
+}
+
+#[test]
+fn provider_reads_skip_corrupt_rows_without_replacing_their_data() {
+    let db = Database::memory().unwrap();
+    db.conn
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO providers (id, app_type, name, settings_config, meta) VALUES
+          ('broken_config', 'codex', 'Broken', 'private-invalid-config', '{}'),
+          ('broken_meta', 'codex', 'Broken', '{}', '{broken'),
+          ('valid', 'codex', 'Valid', '{}', '{}');
+          INSERT INTO providers (id, app_type, name, settings_config, category, meta) VALUES
+          ('official', 'codex', 'Official', '{}', 'official', '{\"officialAccount\":{\"v\":1,\"accountKey\":\"keep-pin\"}}');
+          UPDATE providers SET is_current = 1 WHERE id = 'broken_config' AND app_type = 'codex';",
+        )
+        .unwrap();
+    let providers = db.get_all_providers("codex").unwrap();
+    assert_eq!(
+        providers.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["official", "valid"]
+    );
+    assert_eq!(
+        db.get_current_provider("codex").unwrap().as_deref(),
+        Some("broken_config")
+    );
+    assert!(db.provider_exists("codex", "broken_config").unwrap());
+    assert!(db.get_provider_by_id("missing", "codex").unwrap().is_none());
+    for (id, field) in [
+        ("broken_config", "settings_config"),
+        ("broken_meta", "meta"),
+    ] {
+        let error = db.get_provider_by_id(id, "codex").unwrap_err().to_string();
+        assert!(error.contains(field), "{error}");
+        assert!(!error.contains("private-invalid-config"));
+    }
+    db.update_provider_sort_indices("codex", [("valid", 0), ("official", 1)])
+        .unwrap();
+    let official = db.get_provider_by_id("official", "codex").unwrap().unwrap();
+    assert_eq!(official.official_account_key(), Some("keep-pin"));
+    let saved = db.snapshot_provider_config_rows("codex").unwrap();
+    assert_eq!(saved[0].1, "private-invalid-config");
+    assert_eq!(saved[1].2, "{broken");
+}
+
 const LEGACY_SCHEMA_SQL: &str = r#"
     CREATE TABLE providers (
         id TEXT NOT NULL,

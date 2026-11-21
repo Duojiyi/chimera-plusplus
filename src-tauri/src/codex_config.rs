@@ -200,8 +200,17 @@ const CODEX_RESERVED_MODEL_PROVIDER_IDS: &[&str] = &[
     "lmstudio",
 ];
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TEST_CODEX_CONFIG_DIR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
 /// 获取 Codex 配置目录路径
 pub fn get_codex_config_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = TEST_CODEX_CONFIG_DIR.with(|dir| dir.borrow().clone()) {
+        return path;
+    }
     if let Some(custom) = crate::settings::get_codex_override_dir() {
         return custom;
     }
@@ -1810,6 +1819,13 @@ fn push_env_codex_cli_candidates(candidates: &mut Vec<PathBuf>, seen: &mut HashS
         // directory rather than adding `codex` to PATH. The managed portable
         // root comes first: it may be a custom location.
         let mut app_roots = Vec::new();
+        if let Some(installed) = crate::settings::get_settings()
+            .codex_external_portable_root
+            .as_deref()
+            .and_then(|root| crate::settings::detect_codex_external_portable(root).ok())
+        {
+            app_roots.push(PathBuf::from(installed.path));
+        }
         if let Ok(portable_root) = crate::settings::resolve_codex_portable_root() {
             app_roots.push(portable_root);
         }

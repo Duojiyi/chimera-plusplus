@@ -63,7 +63,7 @@ pub struct ProfilesResponse {
 pub fn emit_profile_apply_events(
     app: &tauri::AppHandle,
     state: &AppState,
-    profile_id: &str,
+    profile_id: Option<&str>,
     scope: ProfileScope,
 ) {
     for app_type in scope.apps().iter() {
@@ -150,12 +150,29 @@ pub fn delete_profile(state: State<'_, AppState>, id: String) -> Result<(), Stri
 }
 
 #[tauri::command]
-pub fn clear_current_profile(state: State<'_, AppState>, scope: String) -> Result<(), String> {
+pub async fn clear_current_profile(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    scope: String,
+) -> Result<(), String> {
     let scope = ProfileScope::parse(&scope).map_err(|e| e.to_string())?;
-    state
-        .db
-        .set_current_profile_id(scope.as_str(), None)
-        .map_err(|e| e.to_string())
+    {
+        let _profile_guard = state.profile_apply_lock.lock().await;
+        state
+            .db
+            .set_current_profile_id(scope.as_str(), None)
+            .map_err(|e| e.to_string())?;
+        #[cfg(target_os = "windows")]
+        crate::tray::send_tray_project_result(
+            &app,
+            &_profile_guard,
+            scope,
+            None,
+            crate::tray::TrayProjectResult::Cleared,
+        );
+    }
+    crate::tray::refresh_tray_menu(&app);
+    Ok(())
 }
 
 /// 应用项目快照（只作用于发起页所属分组内的应用）。
@@ -170,27 +187,45 @@ pub async fn apply_profile(
 ) -> Result<Vec<String>, String> {
     let scope = ProfileScope::parse(&scope).map_err(|e| e.to_string())?;
     let state = state.inner().clone();
-    let (warnings, should_stop_proxy) = ProfileService::apply(&state, &id, scope)
-        .await
-        .map_err(|e| e.to_string())?;
+    let outcome = {
+        let _profile_guard = state.profile_apply_lock.lock().await;
+        let outcome = ProfileService::apply_profile_lock_held(&state, &id, scope).await;
+        // The main window shows this operation's own result. Invalidate any
+        // older tray notice even when the main window reports a partial failure.
+        #[cfg(target_os = "windows")]
+        crate::tray::send_tray_project_result(
+            &app,
+            &_profile_guard,
+            scope,
+            Some(&id),
+            crate::tray::TrayProjectResult::Cleared,
+        );
+        outcome
+    };
+    let outcome = outcome.map_err(|e| e.to_string())?;
+    let current_id = outcome.bound.then_some(id);
 
-    if should_stop_proxy {
+    if outcome.should_stop_proxy {
         // sync 命令线程没有 Tokio runtime，无法直接 await stop()；
         // 把停止服务放到 Tauri async runtime，停止后再补发事件刷新 UI。
         let app_handle = app.clone();
-        let profile_id = id.clone();
         let proxy_service = state.proxy_service.clone();
         tauri::async_runtime::spawn(async move {
             if let Err(e) = proxy_service.stop_if_no_takeover().await {
                 log::warn!("切换项目后停止代理服务失败: {e}");
             }
             if let Some(app_state) = app_handle.try_state::<AppState>() {
-                emit_profile_apply_events(&app_handle, app_state.inner(), &profile_id, scope);
+                emit_profile_apply_events(
+                    &app_handle,
+                    app_state.inner(),
+                    current_id.as_deref(),
+                    scope,
+                );
             }
         });
     } else {
-        emit_profile_apply_events(&app, &state, &id, scope);
+        emit_profile_apply_events(&app, &state, current_id.as_deref(), scope);
     }
 
-    Ok(warnings)
+    Ok(outcome.warnings)
 }

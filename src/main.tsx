@@ -21,6 +21,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { listen } from "@tauri-apps/api/event";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { message } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { exit } from "@tauri-apps/plugin-process";
 import { FrontendErrorBoundary } from "./components/FrontendErrorBoundary";
 import { loadChimeraHubTemplate } from "./config/codexTemplates";
@@ -28,6 +29,14 @@ import {
   installGlobalErrorHandlers,
   reportFrontendError,
 } from "./lib/frontendLogger";
+
+const isTrayPanel = isTauri() && getCurrentWindow().label === "tray-panel";
+// v3 has one designed appearance, including auxiliary windows.
+const appTheme = {
+  defaultTheme: "light",
+  forceTheme: "light",
+  storageKey: "chimera-plus-plus-theme",
+} as const;
 
 installGlobalErrorHandlers();
 
@@ -91,7 +100,7 @@ async function handleConfigLoadError(
 }
 
 // 监听后端的配置加载错误事件：仅提醒用户并强制退出，不修改任何配置文件
-if (isTauri()) {
+if (isTauri() && !isTrayPanel) {
   void listen("configLoadError", async (evt) => {
     await handleConfigLoadError(evt.payload as ConfigLoadErrorPayload | null);
   }).catch((error) => {
@@ -101,6 +110,17 @@ if (isTauri()) {
 
 async function bootstrap() {
   // Render only after the selected language and its fallback are ready.
+  if (isTrayPanel) {
+    const { TrayPanel } = await import("./views/TrayPanel");
+    ReactDOM.createRoot(document.getElementById("root")!).render(
+      <FrontendErrorBoundary>
+        <ThemeProvider {...appTheme}>
+          <TrayPanel />
+        </ThemeProvider>
+      </FrontendErrorBoundary>,
+    );
+    return;
+  }
   await i18nReady;
   // 启动早期主动查询后端初始化错误，避免事件竞态
   if (isTauri()) {
@@ -113,11 +133,7 @@ async function bootstrap() {
         ReactDOM.createRoot(document.getElementById("root")!).render(
           <React.StrictMode>
             <FrontendErrorBoundary>
-              <ThemeProvider
-                defaultTheme="light"
-                forceTheme="light"
-                storageKey="chimera-plus-plus-theme"
-              >
+              <ThemeProvider {...appTheme}>
                 <DatabaseUpgrade payload={initError} />
                 <Toaster />
               </ThemeProvider>
@@ -147,12 +163,7 @@ async function bootstrap() {
     <React.StrictMode>
       <FrontendErrorBoundary>
         <QueryClientProvider client={queryClient}>
-          {/* v3 只有一套浅色外观：强制 light，避免出现没人设计过的深色界面。 */}
-          <ThemeProvider
-            defaultTheme="light"
-            forceTheme="light"
-            storageKey="chimera-plus-plus-theme"
-          >
+          <ThemeProvider {...appTheme}>
             <UpdateProvider>
               <App />
               <Toaster />

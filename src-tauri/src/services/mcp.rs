@@ -63,12 +63,16 @@ impl McpService {
         let _clients = Self::lock_clients(state);
         let _guard = lock_operation()?;
         Self::transaction(state, |state| {
-            let before = state.db.get_all_mcp_servers()?;
-            for server in servers {
+            // Refuse to overwrite damaged rows, even though lists skip them.
+            let before = servers
+                .iter()
+                .map(|server| state.db.get_mcp_server(&server.id))
+                .collect::<Result<Vec<_>, _>>()?;
+            for (server, old) in servers.iter().zip(before) {
                 let mut server = server.clone();
                 if server.apps.codex
                     && server.server.get("enabled").is_none()
-                    && before.get(&server.id).is_some_and(|old| {
+                    && old.is_some_and(|old| {
                         old.server
                             .get("enabled")
                             .and_then(serde_json::Value::as_bool)
@@ -95,25 +99,20 @@ impl McpService {
         let _clients = Self::lock_clients(state);
         let _guard = lock_operation()?;
         Self::transaction(state, |state| {
-            let mut server = state
-                .db
-                .get_all_mcp_servers()?
-                .get(&id)
-                .cloned()
-                .unwrap_or_else(|| McpServer {
-                    name: spec
-                        .get("name")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or(&id)
-                        .into(),
-                    id,
-                    server: spec.clone(),
-                    apps: Default::default(),
-                    description: None,
-                    homepage: None,
-                    docs: None,
-                    tags: Vec::new(),
-                });
+            let mut server = state.db.get_mcp_server(&id)?.unwrap_or_else(|| McpServer {
+                name: spec
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(&id)
+                    .into(),
+                id,
+                server: spec.clone(),
+                apps: Default::default(),
+                description: None,
+                homepage: None,
+                docs: None,
+                tags: Vec::new(),
+            });
             let codex_disabled = server
                 .server
                 .get("enabled")
@@ -137,10 +136,16 @@ impl McpService {
     pub fn delete_server(state: &AppState, id: &str) -> Result<bool, AppError> {
         let _clients = Self::lock_clients(state);
         let _guard = lock_operation()?;
-        Self::transaction(state, |state| {
-            if !state.db.get_all_mcp_servers()?.contains_key(id) {
-                return Ok(false);
+        let Some(server) = state.db.get_mcp_server(id)? else {
+            return Ok(false);
+        };
+        Self::with_projection_undo(state, |journal| {
+            for app in AppType::all() {
+                if let Some(old) = app_spec(&server, &app) {
+                    Self::project_one(state, &app, id, None, Some(&old), journal)?;
+                }
             }
+            // Delete last, so failed projection can never recreate a lossy row.
             state.db.delete_mcp_server(id)?;
             Ok(true)
         })
@@ -154,12 +159,44 @@ impl McpService {
     ) -> Result<(), AppError> {
         let _clients = Self::lock_clients(state);
         let _guard = lock_operation()?;
-        Self::transaction(state, |state| {
-            let Some(previous) = state.db.get_all_mcp_servers()?.get(id).cloned() else {
-                return Ok(());
+        Self::toggle_locked(state, id, app, enabled, false).map(|_| ())
+    }
+
+    fn toggle_locked(
+        state: &AppState,
+        id: &str,
+        app: AppType,
+        enabled: bool,
+        require_existing: bool,
+    ) -> Result<bool, AppError> {
+        let Some(before) = state.db.get_mcp_server(id)? else {
+            return if require_existing {
+                Err(AppError::InvalidInput(format!("MCP 服务器不存在: {id}")))
+            } else {
+                Ok(false)
             };
-            let updated = app_toggle_target(&previous, &app, enabled);
-            state.db.save_mcp_server(&updated)
+        };
+        let after = app_toggle_target(&before, &app, enabled);
+        if before.apps == after.apps && before.server == after.server {
+            return Ok(false);
+        }
+        let old_spec = app_spec(&before, &app);
+        let new_spec = app_spec(&after, &app);
+        Self::with_projection_undo(state, |journal| {
+            if old_spec != new_spec {
+                Self::project_one(
+                    state,
+                    &app,
+                    id,
+                    new_spec.as_ref(),
+                    old_spec.as_ref(),
+                    journal,
+                )?;
+            }
+            // Persist only after projection succeeds. If this write fails, the
+            // journal puts the live file and ownership ledger back.
+            state.db.update_mcp_toggle(&before, &after, &app)?;
+            Ok(true)
         })
     }
 
@@ -168,19 +205,23 @@ impl McpService {
         before: &IndexMap<String, McpServer>,
         errors: &mut Vec<String>,
     ) {
-        match state.db.get_all_mcp_servers() {
-            Ok(current) => {
-                for id in current.keys().filter(|id| !before.contains_key(*id)) {
-                    if let Err(e) = state.db.delete_mcp_server(id) {
-                        errors.push(format!("DB rollback: {e}"));
-                    }
-                }
+        let current = match state.db.get_all_mcp_servers() {
+            Ok(current) => current,
+            Err(error) => {
+                errors.push(format!("DB rollback: {error}"));
+                return;
             }
-            Err(e) => errors.push(format!("DB rollback: {e}")),
+        };
+        for id in current.keys().filter(|id| !before.contains_key(*id)) {
+            if let Err(error) = state.db.delete_mcp_server(id) {
+                errors.push(format!("DB rollback: {error}"));
+            }
         }
         for server in before.values() {
-            if let Err(e) = state.db.save_mcp_server(server) {
-                errors.push(format!("DB rollback: {e}"));
+            if current.get(&server.id) != Some(server) {
+                if let Err(error) = state.db.save_mcp_server(server) {
+                    errors.push(format!("DB rollback: {error}"));
+                }
             }
         }
     }
@@ -430,6 +471,10 @@ impl McpService {
         let existing = state.db.get_all_mcp_servers()?;
         let mut planned = Vec::new();
         for server in servers.values() {
+            if !existing.contains_key(&server.id) {
+                // An unreadable same-ID row must not be mistaken for an insert.
+                state.db.get_mcp_server(&server.id)?;
+            }
             let mut incoming = server.clone();
             incoming.apps = crate::app_config::McpApps::default();
             incoming.apps.set_enabled_for(app, true);
@@ -497,20 +542,7 @@ impl McpService {
     pub fn set_codex_enabled(state: &AppState, id: &str, enabled: bool) -> Result<bool, AppError> {
         // Compatibility entry: caller already holds the Codex switch lock.
         let _guard = lock_operation()?;
-        Self::transaction(state, |state| {
-            let previous = state
-                .db
-                .get_all_mcp_servers()?
-                .get(id)
-                .cloned()
-                .ok_or_else(|| AppError::InvalidInput(format!("MCP 服务器不存在: {id}")))?;
-            let updated = codex_toggle_target(&previous, enabled);
-            let changed = updated.apps != previous.apps || updated.server != previous.server;
-            if changed {
-                state.db.save_mcp_server(&updated)?;
-            }
-            Ok(changed)
-        })
+        Self::toggle_locked(state, id, AppType::Codex, enabled, true)
     }
 
     /// 从所有支持 MCP 的应用导入服务器，返回新导入的数量。

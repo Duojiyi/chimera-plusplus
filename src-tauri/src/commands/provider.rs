@@ -1485,6 +1485,39 @@ pub(crate) async fn switch_provider_with_automatic_routing_profile_lock_held_sta
     switch_provider_with_automatic_routing_locked(&state, app_type, id, auto_manage_routing).await
 }
 
+/// Explicit tray selection suspends failover without changing queue membership.
+/// Keep the profile, lifecycle and app locks through the switch and any rollback.
+/// The automatic routing path still sees the original takeover flag.
+pub(crate) async fn switch_tray_provider_state(
+    state: &AppState,
+    app_type: AppType,
+    id: String,
+) -> Result<SwitchResult, String> {
+    let _profile_guard = state.profile_apply_lock.lock().await;
+    let _lifecycle_guard = state.proxy_service.lock_lifecycle().await;
+    let app = app_type.as_str();
+    let _switch_guard = state.proxy_service.lock_switch_for_app(app).await;
+    let was_auto = state
+        .db
+        .get_proxy_config_for_app(app)
+        .await
+        .map_err(|error| error.to_string())?
+        .auto_failover_enabled;
+    if was_auto {
+        state
+            .db
+            .set_auto_failover_flag(app, false)
+            .map_err(|error| error.to_string())?;
+    }
+    match switch_provider_with_automatic_routing_locked(state, app_type.clone(), id, true).await {
+        Err(error) if was_auto => match state.db.set_auto_failover_flag(app, true) {
+            Ok(()) => Err(error),
+            Err(rollback) => Err(format!("{error}；恢复故障转移失败: {rollback}")),
+        },
+        result => result,
+    }
+}
+
 /// Metadata is restored directly after rolling back actual Codex writes. Never
 /// replay takeover during compensation: a failed CAS may be an external edit.
 struct CodexRoutingUndo {
@@ -1578,8 +1611,9 @@ async fn switch_provider_with_automatic_routing_locked(
     state: &AppState,
     app_type: AppType,
     id: String,
-    auto_manage_routing: bool,
+    app_lock_held: bool,
 ) -> Result<SwitchResult, String> {
+    let auto_manage_routing = matches!(app_type, AppType::Codex | AppType::GrokBuild);
     let proxy_service = state.proxy_service.clone();
     let db = state.db.clone();
 
@@ -1620,8 +1654,7 @@ async fn switch_provider_with_automatic_routing_locked(
     // compatible; copied/forged `category = official` entries remain blocked.
     if auto_manage_routing
         && previous_routing_enabled
-        && target.category.as_deref() == Some("official")
-        && !crate::services::provider::official_provider_supports_proxy_takeover(&app_type, &target)
+        && crate::services::provider::official_provider_blocked_during_takeover(&app_type, &target)
     {
         return Err(
             "代理接管模式下不能切换到此官方供应商。请先关闭接管，或选择受支持的官方供应商。"
@@ -1745,7 +1778,7 @@ async fn switch_provider_with_automatic_routing_locked(
     let switch_id = id.clone();
     let switch_state = state.clone();
     let switch_result = match tauri::async_runtime::spawn_blocking(move || {
-        if auto_manage_routing {
+        if app_lock_held {
             switch_provider_with_app_lock_held_internal(&switch_state, switch_app_type, &switch_id)
         } else {
             switch_provider_internal(&switch_state, switch_app_type, &switch_id)
@@ -2247,12 +2280,12 @@ pub async fn queryProviderUsage(
             "providerId": &providerId,
             "data": snapshot,
         });
-        if let Err(e) = app_handle.emit("usage-cache-updated", payload) {
-            log::error!("emit usage-cache-updated (script) 失败: {e}");
-        }
         state
             .usage_cache
             .put_script(app_type, providerId, snapshot.clone());
+        if let Err(e) = app_handle.emit("usage-cache-updated", payload) {
+            log::error!("emit usage-cache-updated (script) 失败: {e}");
+        }
         crate::tray::schedule_tray_refresh(&app_handle);
     }
     inner
@@ -2754,6 +2787,117 @@ mod automatic_routing_tests {
             ..ProviderMeta::default()
         });
         provider
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn tray_manual_selection_pins_the_actual_proxy_route_and_preserves_the_queue() {
+        use super::switch_tray_provider_state;
+        use crate::proxy::ProviderRouter;
+
+        let test_home = tempfile::tempdir().expect("create test home");
+        struct RestoreSettings(Option<std::ffi::OsString>);
+        impl Drop for RestoreSettings {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+                    None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+                }
+                let _ = crate::settings::reload_settings();
+            }
+        }
+        let _restore = RestoreSettings(std::env::var_os("CC_SWITCH_TEST_HOME"));
+        std::env::set_var("CC_SWITCH_TEST_HOME", test_home.path());
+        crate::settings::reload_settings().expect("load isolated settings");
+
+        let db = Arc::new(Database::memory().expect("initialize database"));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve a test port");
+        let listen_port = listener.local_addr().unwrap().port();
+        drop(listener);
+        db.update_proxy_config(ProxyConfig {
+            listen_port,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let state = AppState::new(db.clone());
+        let routed = |id: &str| {
+            let mut line = provider(
+                json!({
+                    "auth": {"OPENAI_API_KEY": "tray-test-key"},
+                    "config": format!(
+                        "model_provider = \"custom\"\nmodel = \"claude-test\"\n[model_providers.custom]\nname = \"{id}\"\nbase_url = \"https://{id}.example.invalid/v1\"\nwire_api = \"chat\"\n"
+                    ),
+                }),
+                Some("openai_chat"),
+            );
+            line.id = id.to_owned();
+            line
+        };
+        add_provider_with_automatic_routing_state(
+            state.clone(),
+            AppType::Codex,
+            routed("tray-route-a"),
+            true,
+        )
+        .await
+        .expect("activate the routed provider");
+        ProviderService::add_inactive(&state, AppType::Codex, routed("tray-route-b"), true)
+            .expect("add a provider outside the failover queue");
+        db.add_to_failover_queue("codex", "tray-route-a").unwrap();
+        db.set_auto_failover_flag("codex", true).unwrap();
+        let router = ProviderRouter::new(db.clone());
+        assert_eq!(
+            router.select_providers("codex").await.unwrap()[0].id,
+            "tray-route-a"
+        );
+
+        db.conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER reject_tray_selection BEFORE UPDATE OF is_current ON providers
+             WHEN NEW.id = 'tray-route-b' AND NEW.is_current = 1
+             BEGIN SELECT RAISE(ABORT, 'forced tray selection failure'); END;",
+            )
+            .unwrap();
+        let error = switch_tray_provider_state(&state, AppType::Codex, "tray-route-b".to_owned())
+            .await
+            .expect_err("the failed write should roll back the tray selection");
+        assert!(error.contains("forced tray selection failure"), "{error}");
+        assert_eq!(db.get_proxy_flags_sync("codex"), (true, true));
+        assert_eq!(
+            router.select_providers("codex").await.unwrap()[0].id,
+            "tray-route-a"
+        );
+        db.conn
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_tray_selection")
+            .unwrap();
+
+        switch_tray_provider_state(&state, AppType::Codex, "tray-route-b".to_owned())
+            .await
+            .expect("pin the selected provider");
+        assert_eq!(db.get_proxy_flags_sync("codex"), (true, false));
+        let queue = db.get_failover_queue("codex").unwrap();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].provider_id, "tray-route-a");
+
+        // Simulate an earlier request completing after the manual selection.
+        assert!(!state
+            .proxy_service
+            .finish_failover_switch("codex", "tray-route-a")
+            .await
+            .unwrap());
+        let selected = router.select_providers("codex").await.unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, "tray-route-b");
+        state
+            .proxy_service
+            .stop()
+            .await
+            .expect("stop the test proxy");
     }
 
     #[test]

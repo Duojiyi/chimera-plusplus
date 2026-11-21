@@ -20,6 +20,8 @@ fn merge_settings_for_save(
     incoming.settings_migration_version = existing
         .settings_migration_version
         .max(incoming.settings_migration_version);
+    // This device-local path is changed by the Codex runtime folder selector.
+    incoming.codex_external_portable_root = existing.codex_external_portable_root.clone();
     match (&mut incoming.webdav_sync, &existing.webdav_sync) {
         // incoming 没有 webdav → 保留现有
         (None, _) => {

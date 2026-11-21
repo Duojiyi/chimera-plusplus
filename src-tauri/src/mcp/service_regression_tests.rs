@@ -9,6 +9,12 @@ use std::sync::Arc;
 struct Targets;
 impl Targets {
     fn new(paths: HashMap<AppType, PathBuf>) -> Self {
+        // The Codex live writer verifies that the snapshot belongs to its config path.
+        let codex_config_dir = paths
+            .get(&AppType::Codex)
+            .and_then(|path| path.parent())
+            .map(PathBuf::from);
+        crate::codex_config::TEST_CODEX_CONFIG_DIR.with(|dir| *dir.borrow_mut() = codex_config_dir);
         mcp::projection::TEST_TARGETS.with(|target| *target.borrow_mut() = Some(paths));
         Self
     }
@@ -16,6 +22,7 @@ impl Targets {
 impl Drop for Targets {
     fn drop(&mut self) {
         mcp::projection::TEST_TARGETS.with(|target| *target.borrow_mut() = None);
+        crate::codex_config::TEST_CODEX_CONFIG_DIR.with(|dir| *dir.borrow_mut() = None);
     }
 }
 fn state() -> AppState {
@@ -106,6 +113,222 @@ fn failed_update_and_delete_restore_previous_version_and_ledger() {
         state.db.get_setting(mcp::projection::LEDGER_KEY).unwrap(),
         ledger
     );
+}
+
+#[test]
+fn failed_mcp_delete_restores_client_bytes_and_keeps_database_notes() {
+    for fail_projection in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path().join("claude.json");
+        let gemini = dir.path().join("gemini.json");
+        let _targets = Targets::new(HashMap::from([
+            (AppType::Claude, claude.clone()),
+            (AppType::Gemini, gemini.clone()),
+        ]));
+        let state = state();
+        let initial = server("foo", "original", clients());
+        McpService::upsert_server(&state, initial.clone()).unwrap();
+        state
+            .db
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE mcp_servers SET notes = 'keep these notes' WHERE id = 'foo'",
+                [],
+            )
+            .unwrap();
+        if fail_projection {
+            std::fs::write(&gemini, b"{broken").unwrap();
+        } else {
+            state
+                .db
+                .conn
+                .lock()
+                .unwrap()
+                .execute_batch(
+                    "CREATE TRIGGER fail_mcp_delete BEFORE DELETE ON mcp_servers
+                 BEGIN SELECT RAISE(ABORT, 'blocked delete'); END;",
+                )
+                .unwrap();
+        }
+        let before = [
+            std::fs::read(&claude).unwrap(),
+            std::fs::read(&gemini).unwrap(),
+        ];
+        let ledger = state.db.get_setting(mcp::projection::LEDGER_KEY).unwrap();
+
+        assert!(McpService::delete_server(&state, "foo").is_err());
+        assert_eq!(
+            [
+                std::fs::read(&claude).unwrap(),
+                std::fs::read(&gemini).unwrap()
+            ],
+            before
+        );
+        assert_eq!(
+            state.db.get_setting(mcp::projection::LEDGER_KEY).unwrap(),
+            ledger
+        );
+        assert_eq!(
+            state.db.get_mcp_server("foo").unwrap().unwrap().server,
+            initial.server
+        );
+        let notes: String = state
+            .db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT notes FROM mcp_servers WHERE id = 'foo'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(notes, "keep these notes");
+    }
+}
+
+#[test]
+fn mcp_toggle_ignores_unrelated_corruption_and_keeps_codex_disabling_semantics() {
+    for shared in [false, true] {
+        for compatibility_entry in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let codex = dir.path().join("config.toml");
+            let claude = dir.path().join("claude.json");
+            let _targets = Targets::new(HashMap::from([
+                (AppType::Codex, codex.clone()),
+                (AppType::Claude, claude.clone()),
+            ]));
+            let state = state();
+            let initial = server(
+                "foo",
+                "run",
+                McpApps {
+                    codex: true,
+                    claude: shared,
+                    ..Default::default()
+                },
+            );
+            McpService::upsert_server(&state, initial.clone()).unwrap();
+            state
+                .db
+                .conn
+                .lock()
+                .unwrap()
+                .execute_batch(
+                    "INSERT INTO mcp_servers (id, name, server_config, tags) VALUES
+                 ('bad_config', 'Bad', 'private-invalid-config', '[]'),
+                 ('bad_tags', 'Bad', '{}', 'null');",
+                )
+                .unwrap();
+            assert_eq!(state.db.get_all_mcp_servers().unwrap().len(), 1);
+            assert!(state.db.get_mcp_server("missing").unwrap().is_none());
+            for id in ["bad_config", "bad_tags"] {
+                let error = McpService::toggle_app(&state, id, AppType::Codex, true)
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    error.contains(id) && !error.contains("private-invalid-config"),
+                    "{error}"
+                );
+            }
+            let claude_before = std::fs::read(&claude).ok();
+            let toggle = |enabled| {
+                if compatibility_entry {
+                    assert!(McpService::set_codex_enabled(&state, "foo", enabled).unwrap());
+                } else {
+                    McpService::toggle_app(&state, "foo", AppType::Codex, enabled).unwrap();
+                }
+            };
+            toggle(false);
+            let disabled = state.db.get_mcp_server("foo").unwrap().unwrap();
+            assert!(!is_codex_enabled(&disabled));
+            assert_eq!(disabled.apps.codex, !shared);
+            let config: toml::Value =
+                toml::from_str(&std::fs::read_to_string(&codex).unwrap()).unwrap();
+            let projected = config
+                .get("mcp_servers")
+                .and_then(|servers| servers.get("foo"));
+            if shared {
+                assert!(projected.is_none());
+            } else {
+                let projected = projected.unwrap();
+                assert_eq!(projected["command"].as_str(), Some("run"));
+                assert_eq!(projected["enabled"].as_bool(), Some(false));
+            }
+            toggle(true);
+            assert_eq!(state.db.get_mcp_server("foo").unwrap(), Some(initial));
+            assert_eq!(std::fs::read(&claude).ok(), claude_before);
+            let raw: String = state
+                .db
+                .conn
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT server_config FROM mcp_servers WHERE id = 'bad_config'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(raw, "private-invalid-config");
+        }
+    }
+}
+
+#[test]
+fn mcp_toggle_database_failure_restores_exact_client_bytes_and_ownership() {
+    for app in [AppType::Codex, AppType::Claude] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(if app == AppType::Codex {
+            "config.toml"
+        } else {
+            "claude.json"
+        });
+        let _targets = Targets::new(HashMap::from([(app.clone(), path.clone())]));
+        let state = state();
+        let mut apps = McpApps::default();
+        apps.set_enabled_for(&app, true);
+        let initial = server("foo", "run", apps);
+        McpService::upsert_server(&state, initial.clone()).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let keys = [
+            mcp::CODEX_MCP_PROJECTION_LEDGER_KEY,
+            mcp::projection::LEDGER_KEY,
+        ];
+        let ledgers_before = keys.map(|key| state.db.get_setting(key).unwrap());
+        state
+            .db
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER reject_toggle BEFORE UPDATE ON mcp_servers
+             WHEN OLD.id = 'foo' BEGIN SELECT RAISE(ABORT, 'blocked toggle'); END;",
+            )
+            .unwrap();
+
+        let error = McpService::toggle_app(&state, "foo", app.clone(), false)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("blocked toggle"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(state.db.get_mcp_server("foo").unwrap(), Some(initial));
+        assert_eq!(
+            keys.map(|key| state.db.get_setting(key).unwrap()),
+            ledgers_before
+        );
+
+        state
+            .db
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_toggle")
+            .unwrap();
+        McpService::toggle_app(&state, "foo", app, false).unwrap();
+        assert_ne!(std::fs::read(&path).unwrap(), bytes);
+    }
 }
 
 #[test]

@@ -195,6 +195,12 @@ fn plan_toggles(
 
 pub struct ProfileService;
 
+pub(crate) struct ProfileApplyOutcome {
+    pub warnings: Vec<String>,
+    pub should_stop_proxy: bool,
+    pub bound: bool,
+}
+
 impl ProfileService {
     /// 抓取分组内应用的当前配置状态生成快照（组外槽位保持默认值）
     pub fn snapshot_current(
@@ -336,11 +342,18 @@ impl ProfileService {
         profile_id: &str,
         scope: ProfileScope,
     ) -> Result<(Vec<String>, bool), AppError> {
-        // Hold one shared guard for the complete transaction. Per-app provider
-        // locks are intentionally acquired later by the routing primitive, so
-        // lock order remains profile -> lifecycle -> app and cannot interleave
-        // two profiles into a mixed final state.
         let _profile_guard = state.profile_apply_lock.lock().await;
+        let outcome = Self::apply_profile_lock_held(state, profile_id, scope).await?;
+        Ok((outcome.warnings, outcome.should_stop_proxy))
+    }
+
+    /// The caller holds `profile_apply_lock` through this transaction and the
+    /// publication of its result. Provider locks come later in the lock order.
+    pub(crate) async fn apply_profile_lock_held(
+        state: &AppState,
+        profile_id: &str,
+        scope: ProfileScope,
+    ) -> Result<ProfileApplyOutcome, AppError> {
         let mut warnings = Vec::new();
 
         // Resolve the target before autosaving or changing the current binding.
@@ -504,7 +517,8 @@ impl ProfileService {
         // The uncaptured-scope hint and a previous profile's autosave warning
         // do not mean the target failed. Only warnings from applying it block
         // binding, keeping its intended snapshot available for a later retry.
-        if warnings.len() == apply_warning_count {
+        let bound = warnings.len() == apply_warning_count;
+        if bound {
             state
                 .db
                 .set_current_profile_id(scope.as_str(), Some(profile_id))?;
@@ -513,7 +527,11 @@ impl ProfileService {
         // 当前分组内所有接管已关闭；若其它应用也无接管，可停止代理服务。
         let should_stop_proxy = !state.db.is_live_takeover_active_sync();
 
-        Ok((warnings, should_stop_proxy))
+        Ok(ProfileApplyOutcome {
+            warnings,
+            should_stop_proxy,
+            bound,
+        })
     }
 }
 

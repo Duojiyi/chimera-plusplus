@@ -7,6 +7,7 @@
     "commands": 5,
     "provider_dto": 5,
     "tray": 5,
+    "tray_panel": 5,
     "lightweight": 5,
     "auto_launch": 5,
     "init_status": 5,

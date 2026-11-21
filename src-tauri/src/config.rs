@@ -36,17 +36,20 @@ pub mod cas;
 /// 为了让 Windows CI/本地测试能稳定隔离真实用户数据，可通过 `CC_SWITCH_TEST_HOME`
 /// 显式覆盖 home dir（仅用于测试/调试场景）。
 pub fn get_home_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("CC_SWITCH_TEST_HOME") {
-        let trimmed = home.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
-        }
+    if let Some(path) = test_home_override() {
+        return path;
     }
 
     dirs::home_dir().unwrap_or_else(|| {
         log::warn!("无法获取用户主目录，回退到当前目录");
         PathBuf::from(".")
     })
+}
+
+pub(crate) fn test_home_override() -> Option<PathBuf> {
+    let value = std::env::var("CC_SWITCH_TEST_HOME").ok()?;
+    let path = value.trim();
+    (!path.is_empty()).then(|| PathBuf::from(path))
 }
 
 /// 获取 Claude Code 配置目录路径

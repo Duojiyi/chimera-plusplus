@@ -675,6 +675,9 @@ fn append_responses_input_as_chat_messages(
         .collect::<Result<Vec<_>, _>>()?;
     for item in &items {
         let item: &Value = item;
+        if empty_responses_user_message(item) {
+            continue;
+        }
         if is_responses_tool_result_item(item) {
             let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
             if !call_id.is_empty() && answered_tool_call_ids.contains(call_id) {
@@ -757,6 +760,32 @@ fn append_responses_input_as_chat_messages(
     answer_unanswered_tool_calls(messages);
     backfill_tool_call_reasoning_placeholders(messages);
     Ok(())
+}
+
+/// Adapted from CC Switch f7002d1e2853 (MIT). Skip before pairing tools:
+/// an empty user must not break a run of results for parallel calls.
+fn empty_responses_user_message(item: &Value) -> bool {
+    let item_type = item.get("type").and_then(Value::as_str);
+    let explicit_role = item.get("role").and_then(Value::as_str);
+    let role = explicit_role
+        .map(responses_role_to_chat_role)
+        .unwrap_or("user");
+    if role != "user" {
+        return false;
+    }
+    let content = match item_type {
+        Some("input_text" | "input_image" | "input_file" | "input_audio") => {
+            responses_content_to_chat_content(role, &Value::Array(vec![item.clone()]))
+        }
+        None | Some("message") => match item.get("content") {
+            Some(content) => responses_content_to_chat_content(role, content),
+            None => return explicit_role.is_some(),
+        },
+        _ => return false,
+    };
+    content.is_null()
+        || content.as_str() == Some("")
+        || content.as_array().is_some_and(Vec::is_empty)
 }
 
 /// The Chat system message for a text-only `system`/`developer` message item,
@@ -3065,6 +3094,56 @@ mod tests {
         // 既补上 include_usage，又保留客户端原有的 stream_options 字段。
         assert_eq!(result["stream_options"]["include_usage"], true);
         assert_eq!(result["stream_options"]["continuous_usage_stats"], true);
+    }
+
+    #[test]
+    fn empty_user_between_parallel_results_does_not_break_pairing() {
+        let request = json!({"model": "test", "input": [
+            {"type":"function_call","call_id":"one","name":"search","arguments":"{}"},
+            {"type":"function_call","call_id":"two","name":"search","arguments":"{}"},
+            {"type":"function_call_output","call_id":"one","output":"first"},
+            {"type":"message","role":"user","content":[{"type":"input_text","text":""}]},
+            {"type":"function_call_output","call_id":"two","output":"second"}
+        ]});
+        let converted = responses_to_chat_completions(request).unwrap();
+        let messages = converted["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[1]["content"], "first");
+        assert_eq!(messages[2]["tool_call_id"], "two");
+        assert_eq!(messages[2]["content"], "second");
+    }
+
+    #[test]
+    fn responses_request_drops_empty_users_and_keeps_media_text_and_order() {
+        let input = json!({"model": "chat-model", "input": [
+            {"role": "user", "content": "first"},
+            {"role": "user", "content": ""},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": []},
+            {"role": "developer", "content": "instructions"},
+            {"role": "user", "content": [{"type": "input_text", "text": ""}]},
+            {"role": "user", "content": [{"type": "input_image", "image_url": "https://example.invalid/image.png"}]},
+            {"role": "user", "content": "last"}
+        ]});
+        let expected = json!([
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "system", "content": "instructions"},
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "https://example.invalid/image.png"}}]},
+            {"role": "user", "content": "last"}
+        ]);
+        let normal = responses_to_chat_completions(input.clone()).unwrap();
+        assert_eq!(normal["messages"], expected);
+        let minimax = responses_to_chat_completions_with_reasoning_for_upstream(
+            input,
+            None,
+            "https://api.minimax.io/v1",
+        )
+        .unwrap();
+        let mut reordered = expected.as_array().unwrap().clone();
+        let system = reordered.remove(2);
+        reordered.insert(0, system);
+        assert_eq!(minimax["messages"], json!(reordered));
     }
 
     #[test]

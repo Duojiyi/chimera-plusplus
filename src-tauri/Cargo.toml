@@ -1,6 +1,6 @@
 [package]
 name = "chimera-plus-plus"
-version = "2.9.1"
+version = "2.9.2"
 description = "Clean Codex provider switcher and desktop runtime manager"
 authors = ["Duojiyi", "CC Switch contributors"]
 license = "MIT AND AGPL-3.0-only"
@@ -117,7 +117,7 @@ webkit2gtk = { version = "2.0.1", features = ["v2_16"] }
 # Already built for rustls; used to open Claude Desktop's Chromium token cache (AES-256-GCM).
 ring = "0.17"
 winreg = "0.52"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem"] }
 
 [target.'cfg(all(target_os = "windows", target_arch = "aarch64"))'.dependencies]
 rquickjs = { version = "0.8", features = ["bindgen"] }

@@ -18,6 +18,7 @@ import {
   vi,
 } from "vitest";
 import { SessionManagerPage } from "@/components/sessions/SessionManagerPage";
+import { DELETE_BACKUPS_QUERY_KEY } from "@/components/sessions/SessionDeleteBackupsDialog";
 import {
   sessionsApi,
   type SessionListEntry,
@@ -632,7 +633,7 @@ describe("SessionManagerPage", () => {
       .spyOn(sessionsApi, "clearDeleteBackups")
       .mockResolvedValue({ removedBackups: 2, freedBytes: 2148 });
     try {
-      renderPage("all");
+      const { client } = renderPage("all");
       await screen.findByRole("heading", { name: "Claude Session" });
       fireEvent.click(screen.getByRole("button", { name: "已删除的会话" }));
       const dialog = await screen.findByRole("dialog", {
@@ -669,10 +670,20 @@ describe("SessionManagerPage", () => {
       });
       fireEvent.click(clearButton);
       expect(clear).not.toHaveBeenCalled();
+      list.mockResolvedValue([
+        { ...backups[0], id: "claude/new", title: "New backup" },
+        ...backups,
+      ]);
+      await act(async () => {
+        await client.invalidateQueries({ queryKey: DELETE_BACKUPS_QUERY_KEY });
+      });
+      expect(await within(dialog).findByText("New backup")).toBeInTheDocument();
       fireEvent.click(
         within(dialog).getByRole("button", { name: "确认清空 2 份备份" }),
       );
-      await waitFor(() => expect(clear).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(clear).toHaveBeenCalledWith(backups.map(({ id }) => id)),
+      );
     } finally {
       list.mockRestore();
       restore.mockRestore();
@@ -709,6 +720,50 @@ describe("SessionManagerPage", () => {
     expect(items[0]).toHaveTextContent("已归档");
     expect(items[1]).not.toHaveTextContent("已归档");
     expect(dialog).toHaveTextContent("另有 3 条");
+  });
+
+  it("retries only the confirmed pending clear", async () => {
+    const pendingId = "codex/.pending-clear-20261001_a";
+    const list = vi.spyOn(sessionsApi, "listDeleteBackups").mockResolvedValue([
+      {
+        id: pendingId,
+        providerId: "codex",
+        sessionIds: [],
+        fileCount: 0,
+        totalBytes: 30,
+        restorableFiles: 0,
+        pendingClear: true,
+      },
+      {
+        id: "claude/20261002_b",
+        providerId: "claude",
+        sessionIds: ["newer"],
+        fileCount: 1,
+        totalBytes: 40,
+        restorableFiles: 1,
+      },
+    ]);
+    const clear = vi
+      .spyOn(sessionsApi, "clearDeleteBackups")
+      .mockResolvedValue({ removedBackups: 1, freedBytes: 30 });
+    try {
+      renderPage();
+      fireEvent.click(
+        await screen.findByRole("button", { name: "已删除的会话" }),
+      );
+      const dialog = within(
+        await screen.findByRole("dialog", { name: /已删除的会话/ }),
+      );
+      fireEvent.click(await dialog.findByRole("button", { name: "重试清理" }));
+      expect(clear).not.toHaveBeenCalled();
+      fireEvent.click(
+        dialog.getByRole("button", { name: "确认清空 1 份备份" }),
+      );
+      await waitFor(() => expect(clear).toHaveBeenCalledWith([pendingId]));
+    } finally {
+      clear.mockRestore();
+      list.mockRestore();
+    }
   });
 
   it("does not offer a retry when the delete request was refused as a whole", async () => {
@@ -886,27 +941,285 @@ describe("SessionManagerPage", () => {
     expect(toastSuccessMock).toHaveBeenCalled();
   });
 
-  it("keeps a single partial deletion retryable after its source disappears from the list", async () => {
+  it.each([true, false])(
+    "keeps a partial delete retryable after its source disappears (journal saved: %s)",
+    async (journalSaved) => {
+      const session: SessionListEntry = {
+        providerId: "codex",
+        sessionId: "partial",
+        title: "Partial Session",
+        sourcePath: "/mock/codex/partial.jsonl",
+      };
+      setSessionFixtures([session], {});
+      let pending: SessionListEntry[] = [];
+      const listPending = vi
+        .spyOn(sessionsApi, "listPendingDeletes")
+        .mockImplementation(async () => ({ sessions: pending, warnings: [] }));
+      const deleteMany = vi
+        .spyOn(sessionsApi, "deleteMany")
+        .mockImplementationOnce(async (items) => {
+          pending = journalSaved ? [session] : [];
+          setSessionFixtures([], {});
+          return items.map((item) => ({
+            ...item,
+            success: false,
+            sourceDeleted: true,
+            cleanupPending: true,
+            ...(journalSaved ? {} : { cleanupUnjournaled: true }),
+            error: journalSaved ? "index locked" : "journal unavailable",
+          }));
+        })
+        .mockImplementationOnce(async (items) => {
+          pending = [];
+          return items.map((item) => ({
+            ...item,
+            success: true,
+            sourceDeleted: true,
+            cleanupPending: false,
+          }));
+        });
+      const { client } = renderPage();
+      try {
+        await screen.findByRole("heading", { name: "Partial Session" });
+        fireEvent.click(screen.getByRole("button", { name: /删除会话/i }));
+        await confirmDelete(/删除会话/);
+        const retry = await screen.findByRole("button", {
+          name: "重试未完成的删除",
+        });
+        await waitFor(() => expect(retry).toBeEnabled());
+        expect(screen.getByRole("alert")).toHaveTextContent(
+          "1 个会话的内容已删除，但索引清理未完成",
+        );
+        expect(toastSuccessMock).not.toHaveBeenCalled();
+        expect(toastWarningMock).toHaveBeenCalledWith(
+          expect.stringContaining("索引清理未完成"),
+        );
+        expect(client.getQueryData(["sessions"])).toEqual([]);
+        expect(
+          client.getQueryData([
+            "sessionMessages",
+            session.providerId,
+            session.sourcePath,
+          ]),
+        ).toBeUndefined();
+        fireEvent.click(retry);
+        // Only cleanup is left, and the dialog says so.
+        expect(
+          await screen.findByRole("dialog", { name: /完成删除/ }),
+        ).toHaveTextContent("内容已经删除");
+        await confirmDelete(/完成清理/);
+        await waitFor(() =>
+          expect(
+            screen.queryByRole("button", { name: "重试未完成的删除" }),
+          ).not.toBeInTheDocument(),
+        );
+        expect(deleteMany).toHaveBeenCalledTimes(2);
+        expect(deleteMany.mock.calls[1][0]).toEqual([
+          { ...deleteMany.mock.calls[0][0][0], cleanupOnly: true },
+        ]);
+        expect(toastSuccessMock).toHaveBeenCalledTimes(1);
+      } finally {
+        deleteMany.mockRestore();
+        listPending.mockRestore();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "keeps an unjournaled cleanup across page changes and transient failures (restored: %s)",
+    async (restored) => {
+      const session: SessionListEntry = {
+        providerId: "codex",
+        sessionId: "only-local-retry",
+        title: "Retryable Session",
+        sourcePath: "/mock/codex/only-local-retry.jsonl",
+      };
+      setSessionFixtures([session], {});
+      const listPending = vi
+        .spyOn(sessionsApi, "listPendingDeletes")
+        .mockResolvedValue({ sessions: [], warnings: [] });
+      const deleteMany = vi
+        .spyOn(sessionsApi, "deleteMany")
+        .mockImplementationOnce(async (items) => {
+          setSessionFixtures([], {});
+          return items.map((item) => ({
+            ...item,
+            success: false,
+            sourceDeleted: true,
+            cleanupPending: true,
+            cleanupUnjournaled: true,
+          }));
+        })
+        .mockImplementationOnce(async (items) =>
+          items.map((item) => ({
+            ...item,
+            success: false,
+            sourceDeleted: false,
+            cleanupPending: false,
+            error: "sessions root temporarily unavailable",
+          })),
+        )
+        .mockImplementationOnce(async (items) =>
+          items.map((item) => ({
+            ...item,
+            success: !restored,
+            sourceDeleted: !restored,
+            cleanupPending: false,
+            ...(restored ? { cleanupCancelled: true, error: "restored" } : {}),
+          })),
+        );
+      const retryName = "重试未完成的删除";
+      try {
+        const { client, rerender } = renderPage();
+        await screen.findByRole("heading", { name: "Retryable Session" });
+        fireEvent.click(screen.getByRole("button", { name: /删除会话/i }));
+        await confirmDelete(/删除会话/);
+        const initialRetry = await screen.findByRole("button", {
+          name: retryName,
+        });
+        await waitFor(() => expect(initialRetry).toBeEnabled());
+        rerender(
+          <QueryClientProvider client={client}>
+            <p>Other page</p>
+          </QueryClientProvider>,
+        );
+        expect(
+          screen.queryByRole("button", { name: retryName }),
+        ).not.toBeInTheDocument();
+        rerender(
+          <QueryClientProvider client={client}>
+            <SessionManagerPage appId="codex" />
+          </QueryClientProvider>,
+        );
+        fireEvent.click(await screen.findByRole("button", { name: retryName }));
+        await confirmDelete(/完成清理/);
+        await waitFor(() =>
+          expect(toastErrorMock).toHaveBeenCalledWith(expect.any(String), {
+            description: "sessions root temporarily unavailable",
+          }),
+        );
+        expect(screen.getByRole("button", { name: retryName })).toBeEnabled();
+        fireEvent.click(screen.getByRole("button", { name: retryName }));
+        await confirmDelete(/完成清理/);
+        await waitFor(() =>
+          expect(
+            screen.queryByRole("button", { name: retryName }),
+          ).not.toBeInTheDocument(),
+        );
+        for (const [items] of deleteMany.mock.calls.slice(1)) {
+          expect(items).toEqual([
+            { ...deleteMany.mock.calls[0][0][0], cleanupOnly: true },
+          ]);
+        }
+        expect(deleteMany).toHaveBeenCalledTimes(3);
+      } finally {
+        deleteMany.mockRestore();
+        listPending.mockRestore();
+      }
+    },
+  );
+
+  it("refreshes cancelled cleanup after a partial restore leaves the parent missing", async () => {
     const session: SessionListEntry = {
       providerId: "codex",
-      sessionId: "partial",
-      title: "Partial Session",
-      sourcePath: "/mock/codex/partial.jsonl",
+      sessionId: "parent",
+      title: "Parent Session",
+      sourcePath: "/mock/codex/parent.jsonl",
     };
+    const backupId = "codex/20261121_100000_parent";
+    let pending: SessionListEntry[] = [];
+    let restorableFiles = 2;
     setSessionFixtures([session], {});
+    const listPending = vi
+      .spyOn(sessionsApi, "listPendingDeletes")
+      .mockImplementation(async () => ({ sessions: pending, warnings: [] }));
     const deleteMany = vi
       .spyOn(sessionsApi, "deleteMany")
-      .mockImplementationOnce(async (items) => {
+      .mockImplementation(async (items) => {
         setSessionFixtures([], {});
+        pending = [session];
         return items.map((item) => ({
           ...item,
           success: false,
           sourceDeleted: true,
           cleanupPending: true,
-          error: "index locked",
         }));
+      });
+    const listBackups = vi
+      .spyOn(sessionsApi, "listDeleteBackups")
+      .mockImplementation(async () => [
+        {
+          id: backupId,
+          providerId: "codex",
+          sessionIds: ["parent", "child"],
+          title: session.title,
+          fileCount: 2,
+          totalBytes: 2048,
+          restorableFiles,
+        },
+      ]);
+    const restore = vi
+      .spyOn(sessionsApi, "restoreDeleteBackup")
+      .mockImplementation(async () => {
+        pending = [];
+        restorableFiles = 1;
+        throw new Error("恢复父会话失败");
+      });
+    try {
+      renderPage();
+      await screen.findByRole("heading", { name: "Parent Session" });
+      fireEvent.click(screen.getByRole("button", { name: /删除会话/i }));
+      await confirmDelete(/删除会话/);
+      await screen.findByRole("button", { name: "重试未完成的删除" });
+
+      fireEvent.click(screen.getByRole("button", { name: "已删除的会话" }));
+      const dialog = await screen.findByRole("dialog", {
+        name: /已删除的会话/,
+      });
+      fireEvent.click(
+        await within(dialog).findByRole("button", {
+          name: "恢复 Parent Session",
+        }),
+      );
+      await waitFor(() => {
+        expect(restore).toHaveBeenCalledWith(backupId);
+        expect(toastErrorMock).toHaveBeenCalledWith("恢复父会话失败");
+        expect(listBackups).toHaveBeenCalledTimes(2);
+      });
+      fireEvent.click(within(dialog).getByRole("button", { name: "关闭" }));
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("button", { name: "重试未完成的删除" }),
+        ).not.toBeInTheDocument(),
+      );
+      expect(screen.queryByText("Parent Session")).not.toBeInTheDocument();
+      expect(deleteMany).toHaveBeenCalledTimes(1);
+    } finally {
+      restore.mockRestore();
+      listBackups.mockRestore();
+      deleteMany.mockRestore();
+      listPending.mockRestore();
+    }
+  });
+
+  it("offers readable persisted cleanup when another receipt store is unavailable", async () => {
+    setSessionFixtures([], {});
+    const session = {
+      providerId: "codex",
+      sessionId: "pending",
+      title: "Persisted session",
+      sourcePath: "C:/Users/user/.codex/sessions/pending.jsonl",
+    };
+    const pending = vi
+      .spyOn(sessionsApi, "listPendingDeletes")
+      .mockResolvedValueOnce({
+        sessions: [session],
+        warnings: ["primary receipts inaccessible"],
       })
-      .mockImplementationOnce(async (items) =>
+      .mockResolvedValue({ sessions: [], warnings: [] });
+    const deletes = vi
+      .spyOn(sessionsApi, "deleteMany")
+      .mockImplementation(async (items) =>
         items.map((item) => ({
           ...item,
           success: true,
@@ -914,46 +1227,33 @@ describe("SessionManagerPage", () => {
           cleanupPending: false,
         })),
       );
-    const { client } = renderPage();
     try {
-      await screen.findByRole("heading", { name: "Partial Session" });
-      fireEvent.click(screen.getByRole("button", { name: /删除会话/i }));
-      await confirmDelete(/删除会话/);
+      renderPage();
       const retry = await screen.findByRole("button", {
         name: "重试未完成的删除",
       });
-      await waitFor(() => expect(retry).toBeEnabled());
-      expect(screen.getByRole("alert")).toHaveTextContent(
-        "1 个会话的内容已删除，但索引清理未完成",
-      );
-      expect(toastSuccessMock).not.toHaveBeenCalled();
-      expect(toastWarningMock).toHaveBeenCalledWith(
-        expect.stringContaining("索引清理未完成"),
-      );
-      expect(client.getQueryData(["sessions"])).toEqual([]);
-      expect(
-        client.getQueryData([
-          "sessionMessages",
-          session.providerId,
-          session.sourcePath,
-        ]),
-      ).toBeUndefined();
+      expect(deletes).not.toHaveBeenCalled();
+      const warning = screen.getByText("部分待清理的会话暂时无法读取。");
+      expect(warning).toHaveAttribute("title", "primary receipts inaccessible");
+      expect(screen.getByRole("button", { name: "重试读取" })).toBeEnabled();
       fireEvent.click(retry);
-      // Only cleanup is left, and the dialog says so.
       expect(
-        await screen.findByRole("dialog", { name: /完成删除/ }),
-      ).toHaveTextContent("内容已经删除");
+        await screen.findByRole("dialog", { name: "完成删除" }),
+      ).toHaveTextContent(session.title);
+      expect(deletes).not.toHaveBeenCalled();
       await confirmDelete(/完成清理/);
-      await waitFor(() =>
-        expect(
-          screen.queryByRole("button", { name: "重试未完成的删除" }),
-        ).not.toBeInTheDocument(),
-      );
-      expect(deleteMany).toHaveBeenCalledTimes(2);
-      expect(deleteMany.mock.calls[1][0]).toEqual(deleteMany.mock.calls[0][0]);
-      expect(toastSuccessMock).toHaveBeenCalledTimes(1);
+      expect(deletes).toHaveBeenCalledWith([
+        {
+          providerId: session.providerId,
+          sessionId: session.sessionId,
+          sourcePath: session.sourcePath,
+          cleanupOnly: true,
+        },
+      ]);
+      await waitFor(() => expect(retry).not.toBeInTheDocument());
     } finally {
-      deleteMany.mockRestore();
+      pending.mockRestore();
+      deletes.mockRestore();
     }
   });
 
@@ -967,9 +1267,14 @@ describe("SessionManagerPage", () => {
       }),
     );
     setSessionFixtures(sessions, {});
+    let pending: SessionListEntry[] = [];
+    const listPending = vi
+      .spyOn(sessionsApi, "listPendingDeletes")
+      .mockImplementation(async () => ({ sessions: pending, warnings: [] }));
     const deleteMany = vi
       .spyOn(sessionsApi, "deleteMany")
       .mockImplementationOnce(async (items) => {
+        pending = [sessions[1]];
         setSessionFixtures([sessions[2]], {});
         return items.map((item) => ({
           ...item,
@@ -981,6 +1286,7 @@ describe("SessionManagerPage", () => {
         }));
       })
       .mockImplementationOnce(async (items) => {
+        pending = [];
         setSessionFixtures([], {});
         return items.map((item) => ({
           ...item,
@@ -1022,6 +1328,7 @@ describe("SessionManagerPage", () => {
       );
     } finally {
       deleteMany.mockRestore();
+      listPending.mockRestore();
     }
   });
 

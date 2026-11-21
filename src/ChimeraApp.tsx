@@ -310,6 +310,8 @@ export type RuntimeStatus = {
   version?: string | null;
   installMode?: string | null;
   installPath?: string | null;
+  externalPortableRoot?: string | null;
+  portablePathError?: string | null;
   canRepair: boolean;
   canRollback: boolean;
   canUninstall: boolean;
@@ -2513,6 +2515,13 @@ export default function ChimeraApp({
     return Boolean(refreshedRelease);
   };
 
+  const refreshAfterPortableSelection = async () => {
+    ++runtimeCheckSeqRef.current;
+    setRelease(null);
+    setRuntimeReceipt(null);
+    await Promise.all([loadRuntime(), loadCodexProcess()]);
+  };
+
   // 设置页挂载后才监听 hashchange，等“代理与故障转移”分区出现再跳过去。
   const openProxySettings = () => {
     setView("settings");
@@ -3197,6 +3206,7 @@ export default function ChimeraApp({
                 onOperationFinished={() => setDownloadProgress(null)}
                 onRetryRuntime={() => void loadRuntime()}
                 onRefreshStatus={loadRuntime}
+                onPortableRootChanged={refreshAfterPortableSelection}
                 onReceipt={setRuntimeReceipt}
                 onOpenProxySettings={openProxySettings}
               />
@@ -3586,7 +3596,10 @@ export default function ChimeraApp({
               : undefined
           }
           onInstall={
-            runtime && !runtime.installed && runtime.supported
+            runtime &&
+            !runtime.installed &&
+            runtime.supported &&
+            !runtime.externalPortableRoot
               ? () => {
                   setDiagnostics(null);
                   setPendingAction({ action: "update" });

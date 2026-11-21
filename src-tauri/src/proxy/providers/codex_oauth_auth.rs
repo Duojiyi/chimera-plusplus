@@ -56,6 +56,11 @@ const POLLING_SAFETY_MARGIN_SECS: u64 = 3;
 /// User-Agent
 const CODEX_USER_AGENT: &str = "cc-switch-codex-oauth";
 
+// The catalog gate can exceed model metadata. Share identity with generation,
+// following CC Switch db54a77510cf (MIT). Model availability remains account-driven.
+pub(crate) const CODEX_OAUTH_CLIENT_VERSION: &str = "0.169.0";
+pub(crate) const CODEX_OAUTH_ORIGINATOR: &str = "codex_cli_rs";
+
 /// Codex OAuth 错误
 #[derive(Debug, thiserror::Error)]
 pub enum CodexOAuthError {

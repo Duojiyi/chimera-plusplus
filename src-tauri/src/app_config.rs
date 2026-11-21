@@ -223,7 +223,7 @@ pub struct UnmanagedSkill {
 }
 
 /// MCP 服务器定义（v3.7.0 统一结构）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpServer {
     pub id: String,
     pub name: String,

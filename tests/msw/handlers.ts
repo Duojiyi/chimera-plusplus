@@ -140,6 +140,9 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/open_external`, () => success(true)),
 
   http.post(`${TAURI_ENDPOINT}/list_sessions`, () => success(listSessions())),
+  http.post(`${TAURI_ENDPOINT}/list_pending_session_deletes`, () =>
+    success({ sessions: [], warnings: [] }),
+  ),
 
   http.post(`${TAURI_ENDPOINT}/reclaim_codex_history_sessions`, () =>
     success({

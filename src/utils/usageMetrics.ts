@@ -19,6 +19,11 @@ export function usageWindow(range: UsageRange, now = new Date()) {
   };
 }
 
+/** Match the backend's elapsed-time threshold, including long DST days. */
+export function usageTrendsAreHourly(start: number, end: number): boolean {
+  return end - start <= 86400;
+}
+
 export function totalDailyTokens(day: DailyStats): number {
   return (
     day.totalInputTokens +

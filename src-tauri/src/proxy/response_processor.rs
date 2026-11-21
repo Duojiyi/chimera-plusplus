@@ -1150,7 +1150,7 @@ pub(crate) mod tests {
             gemini_shadow: Arc::new(GeminiShadowStore::default()),
             codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
             app_handle: None,
-            failover_manager: Arc::new(FailoverSwitchManager::new(db)),
+            failover_manager: Arc::new(FailoverSwitchManager::new()),
             codex_wire_api_auto: Arc::new(RwLock::new(HashMap::new())),
         }
     }

@@ -8,6 +8,7 @@
 //! - 支持嵌套对象和数组的深度过滤
 //! - JSON Schema 的 properties / patternProperties / definitions / $defs 名称
 //!   是用户定义的字段名，不按私有参数过滤
+//! - 已知协议位置上的工具调用参数是用户数据，原样透传
 //!
 //! ## 使用场景
 //! - `_internal_id`: 内部追踪 ID
@@ -65,56 +66,105 @@ pub fn filter_private_params(body: Value) -> Value {
 /// let output = filter_private_params_with_whitelist(input, &["_metadata"]);
 /// // output 包含 _metadata，不包含 _internal_id
 /// ```
-pub fn filter_private_params_with_whitelist(body: Value, whitelist: &[String]) -> Value {
+pub fn filter_private_params_with_whitelist(mut body: Value, whitelist: &[String]) -> Value {
     let whitelist_set: HashSet<&str> = whitelist.iter().map(|s| s.as_str()).collect();
-    filter_recursive_with_whitelist(body, &mut Vec::new(), &mut Vec::new(), &whitelist_set)
+    let mut removed_keys = Vec::new();
+    filter_recursive(
+        &mut body,
+        &mut Vec::new(),
+        &mut removed_keys,
+        &whitelist_set,
+    );
+    if !removed_keys.is_empty() {
+        log::debug!("[BodyFilter] 过滤私有参数: {removed_keys:?}");
+    }
+    body
 }
 
-/// 递归过滤实现（支持白名单）
-fn filter_recursive_with_whitelist(
-    value: Value,
-    path: &mut Vec<String>,
+// `None` marks an array element, so an object with similar field names cannot
+// opt out of filtering outside the protocol's actual argument positions.
+fn filter_recursive(
+    value: &mut Value,
+    path: &mut Vec<Option<String>>,
     removed_keys: &mut Vec<String>,
     whitelist: &HashSet<&str>,
-) -> Value {
+) {
     match value {
         Value::Object(map) => {
-            let is_schema_name_map = path.last().is_some_and(|key| matches_schema_name_map(key));
-            let filtered: serde_json::Map<String, Value> = map
-                .into_iter()
-                .filter_map(|(key, val)| {
-                    // 以 _ 开头且不在白名单中的字段被过滤
-                    if key.starts_with('_')
-                        && !whitelist.contains(key.as_str())
-                        && !is_schema_name_map
-                    {
-                        removed_keys.push(key);
-                        None
-                    } else {
-                        path.push(key.clone());
-                        let filtered_value =
-                            filter_recursive_with_whitelist(val, path, removed_keys, whitelist);
-                        path.pop();
-                        Some((key, filtered_value))
+            let is_schema_name_map = path
+                .iter()
+                .rev()
+                .find_map(Option::as_deref)
+                .is_some_and(matches_schema_name_map);
+            let argument_field = tool_argument_field(path, map);
+            map.retain(|key, val| {
+                if key.starts_with('_') && !whitelist.contains(key.as_str()) && !is_schema_name_map
+                {
+                    if log::log_enabled!(log::Level::Debug) {
+                        removed_keys.push(key.clone());
                     }
-                })
-                .collect();
-
-            // 仅在有过滤时记录日志（避免每次请求都打印）
-            if !removed_keys.is_empty() {
-                log::debug!("[BodyFilter] 过滤私有参数: {removed_keys:?}");
-                removed_keys.clear();
-            }
-
-            Value::Object(filtered)
+                    return false;
+                }
+                if argument_field != Some(key.as_str()) {
+                    path.push(Some(key.clone()));
+                    filter_recursive(val, path, removed_keys, whitelist);
+                    path.pop();
+                }
+                true
+            });
         }
-        Value::Array(arr) => Value::Array(
-            arr.into_iter()
-                .map(|v| filter_recursive_with_whitelist(v, path, removed_keys, whitelist))
-                .collect(),
-        ),
-        other => other,
+        Value::Array(items) => {
+            path.push(None);
+            for item in items {
+                filter_recursive(item, path, removed_keys, whitelist);
+            }
+            path.pop();
+        }
+        _ => {}
     }
+}
+
+// Adapted from CC Switch 3c9d7765bb3d (MIT). Match explicit protocol
+// positions and types before treating the argument subtree as opaque data.
+fn tool_argument_field(
+    path: &[Option<String>],
+    object: &serde_json::Map<String, Value>,
+) -> Option<&'static str> {
+    let at = |expected: &[Option<&str>]| {
+        path.iter()
+            .map(Option::as_deref)
+            .eq(expected.iter().copied())
+    };
+    let kind = object.get("type").and_then(Value::as_str);
+    if matches!(kind, Some("tool_use" | "server_tool_use" | "mcp_tool_use"))
+        && at(&[Some("messages"), None, Some("content"), None])
+    {
+        return Some("input");
+    }
+    if kind == Some("function_call") && at(&[Some("input"), None]) {
+        return Some("arguments");
+    }
+    object.get("name").and_then(Value::as_str)?;
+    if at(&[
+        Some("contents"),
+        None,
+        Some("parts"),
+        None,
+        Some("functionCall"),
+    ]) {
+        return Some("args");
+    }
+    if at(&[
+        Some("messages"),
+        None,
+        Some("tool_calls"),
+        None,
+        Some("function"),
+    ]) || at(&[Some("messages"), None, Some("function_call")])
+    {
+        return Some("arguments");
+    }
+    None
 }
 
 fn matches_schema_name_map(key: &str) -> bool {
@@ -322,6 +372,45 @@ mod tests {
         assert!(schema["properties"].get("_meta").is_some());
         assert!(schema["properties"]["_id"].get("_internal_note").is_none());
         assert!(schema.get("_private_schema_note").is_none());
+    }
+
+    #[test]
+    fn preserves_arguments_only_at_recognized_protocol_positions() {
+        let arguments = json!({"_id": "a", "items": [{"__typename": "Record", "_extra": [1]}]});
+        let body = json!({
+            "messages": [{
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "input": arguments, "_debug": true},
+                    {"type": "server_tool_use", "input": arguments},
+                    {"type": "mcp_tool_use", "input": arguments},
+                    {"type": "unknown_tool_use", "input": {"_secret": 1}},
+                    {"type": "text", "input": {"_secret": 1}}
+                ],
+                "tool_calls": [{"type": "function", "function": {"name": "f", "arguments": arguments, "_debug": true}}]
+            }],
+            "contents": [{"parts": [{"functionCall": {"name": "f", "args": arguments, "_debug": true}}]}],
+            "input": [{"type": "function_call", "name": "f", "arguments": arguments, "_debug": true}],
+            "metadata": {
+                "type": "tool_use",
+                "input": {"_secret": 1},
+                "functionCall": {"name": "f", "args": {"_secret": 1}},
+                "contents": {"parts": {"functionCall": {"name": "f", "args": {"_secret": 1}}}}
+            }
+        });
+        let output = filter_private_params(body);
+        for pointer in [
+            "/messages/0/content/0/input",
+            "/messages/0/content/1/input",
+            "/messages/0/content/2/input",
+            "/messages/0/tool_calls/0/function/arguments",
+            "/contents/0/parts/0/functionCall/args",
+            "/input/0/arguments",
+        ] {
+            assert_eq!(output.pointer(pointer), Some(&arguments), "{pointer}");
+        }
+        assert!(!output.to_string().contains("_secret"));
+        assert!(!output.to_string().contains("_debug"));
     }
 
     #[test]

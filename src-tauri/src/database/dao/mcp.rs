@@ -2,68 +2,116 @@
 //!
 //! 提供 MCP 服务器的 CRUD 操作。
 
-use crate::app_config::{McpApps, McpServer};
+use crate::app_config::{AppType, McpApps, McpServer};
 use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use indexmap::IndexMap;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
+
+const MCP_COLUMNS: &str = "id, name, server_config, description, homepage, docs, tags,
+    enabled_claude, enabled_codex, enabled_gemini, enabled_grokbuild, enabled_opencode";
+
+fn decode_server(row: &rusqlite::Row<'_>, id: &str) -> Result<McpServer, AppError> {
+    let decode_error =
+        |field: &str| AppError::Database(format!("MCP 服务器 {id} 的 {field} 无法读取"));
+    let server: serde_json::Value = serde_json::from_str(
+        row.get_ref(2)?
+            .as_str()
+            .map_err(|_| decode_error("server_config"))?,
+    )
+    .map_err(|_| decode_error("server_config"))?;
+    if !server.is_object() {
+        return Err(decode_error("server_config"));
+    }
+    let tags = serde_json::from_str(row.get_ref(6)?.as_str().map_err(|_| decode_error("tags"))?)
+        .map_err(|_| decode_error("tags"))?;
+    Ok(McpServer {
+        id: id.to_string(),
+        name: row.get(1)?,
+        server,
+        apps: McpApps {
+            claude: row.get(7)?,
+            codex: row.get(8)?,
+            gemini: row.get(9)?,
+            grokbuild: row.get(10)?,
+            opencode: row.get(11)?,
+        },
+        description: row.get(3)?,
+        homepage: row.get(4)?,
+        docs: row.get(5)?,
+        tags,
+    })
+}
 
 impl Database {
-    /// 获取所有 MCP 服务器
+    /// Unreadable rows are reported individually and left in place.
     pub fn get_all_mcp_servers(&self) -> Result<IndexMap<String, McpServer>, AppError> {
         let conn = lock_conn!(self.conn);
-        let mut stmt = conn.prepare(
-            "SELECT id, name, server_config, description, homepage, docs, tags, enabled_claude, enabled_codex, enabled_gemini, enabled_grokbuild, enabled_opencode
-             FROM mcp_servers
-             ORDER BY name ASC, id ASC"
-        ).map_err(|e| AppError::Database(e.to_string()))?;
-
-        let server_iter = stmt
-            .query_map([], |row| {
-                let id: String = row.get(0)?;
-                let name: String = row.get(1)?;
-                let server_config_str: String = row.get(2)?;
-                let description: Option<String> = row.get(3)?;
-                let homepage: Option<String> = row.get(4)?;
-                let docs: Option<String> = row.get(5)?;
-                let tags_str: String = row.get(6)?;
-                let enabled_claude: bool = row.get(7)?;
-                let enabled_codex: bool = row.get(8)?;
-                let enabled_gemini: bool = row.get(9)?;
-                let enabled_grokbuild: bool = row.get(10)?;
-                let enabled_opencode: bool = row.get(11)?;
-
-                let server = serde_json::from_str(&server_config_str).unwrap_or_default();
-                let tags = serde_json::from_str(&tags_str).unwrap_or_default();
-
-                Ok((
-                    id.clone(),
-                    McpServer {
-                        id,
-                        name,
-                        server,
-                        apps: McpApps {
-                            claude: enabled_claude,
-                            codex: enabled_codex,
-                            gemini: enabled_gemini,
-                            grokbuild: enabled_grokbuild,
-                            opencode: enabled_opencode,
-                        },
-                        description,
-                        homepage,
-                        docs,
-                        tags,
-                    },
-                ))
-            })
-            .map_err(|e| AppError::Database(e.to_string()))?;
-
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {MCP_COLUMNS} FROM mcp_servers ORDER BY name ASC, id ASC"
+        ))?;
+        let mut rows = stmt.query([])?;
         let mut servers = IndexMap::new();
-        for server_res in server_iter {
-            let (id, server) = server_res.map_err(|e| AppError::Database(e.to_string()))?;
-            servers.insert(id, server);
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            match decode_server(row, &id) {
+                Ok(server) => {
+                    servers.insert(id, server);
+                }
+                Err(error) => log::warn!("跳过无法读取的 MCP 服务器 {id}: {error}"),
+            }
         }
         Ok(servers)
+    }
+
+    /// A targeted edit must distinguish an unreadable row from a missing row.
+    pub(crate) fn get_mcp_server(&self, id: &str) -> Result<Option<McpServer>, AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.query_row(
+            &format!("SELECT {MCP_COLUMNS} FROM mcp_servers WHERE id = ?1"),
+            [id],
+            |row| Ok(decode_server(row, id)),
+        )
+        .optional()?
+        .transpose()
+    }
+
+    /// Update just this app's switch and, for Codex, its optional soft-disable flag.
+    pub(crate) fn update_mcp_toggle(
+        &self,
+        before: &McpServer,
+        after: &McpServer,
+        app: &AppType,
+    ) -> Result<(), AppError> {
+        let column = match app {
+            AppType::Claude => "enabled_claude",
+            AppType::Codex => "enabled_codex",
+            AppType::Gemini => "enabled_gemini",
+            AppType::GrokBuild => "enabled_grokbuild",
+            AppType::OpenCode => "enabled_opencode",
+            AppType::Pi | AppType::ClaudeDesktop => {
+                return Err(AppError::InvalidInput(format!(
+                    "{} does not use the shared MCP registry",
+                    app.as_str()
+                )));
+            }
+        };
+        let config = (before.server != after.server)
+            .then(|| serde_json::to_string(&after.server))
+            .transpose()
+            .map_err(|source| AppError::JsonSerialize { source })?;
+        let conn = lock_conn!(self.conn);
+        let updated = conn.execute(
+            &format!("UPDATE mcp_servers SET {column} = ?2, server_config = COALESCE(?3, server_config) WHERE id = ?1"),
+            params![before.id, after.apps.is_enabled_for(app), config],
+        )?;
+        if updated == 0 {
+            return Err(AppError::Conflict(format!(
+                "MCP 服务器 {} 已被删除",
+                before.id
+            )));
+        }
+        Ok(())
     }
 
     /// 保存 MCP 服务器

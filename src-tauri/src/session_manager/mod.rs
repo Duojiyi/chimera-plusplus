@@ -51,6 +51,8 @@ pub struct DeleteSessionRequest {
     pub provider_id: String,
     pub session_id: String,
     pub source_path: String,
+    #[serde(default)]
+    pub cleanup_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -63,6 +65,13 @@ pub struct DeleteSessionOutcome {
     /// The rollout/content is gone even when index cleanup needs a retry.
     pub source_deleted: bool,
     pub cleanup_pending: bool,
+    /// A restore superseded this cleanup request.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cleanup_cancelled: bool,
+    /// The retry is only recoverable in the current UI because the first
+    /// persistent cleanup record could not be written.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cleanup_unjournaled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     /// Records the delete left behind on purpose because no retry can clean
@@ -77,6 +86,8 @@ pub struct DeleteSessionOutcome {
 pub(super) struct SessionDeleteResult {
     pub source_deleted: bool,
     pub cleanup_pending: bool,
+    pub cleanup_cancelled: bool,
+    pub cleanup_unjournaled: bool,
     pub error: Option<String>,
     /// See [`DeleteSessionOutcome::cleanup_note`]. Never makes a delete pending.
     pub cleanup_note: Option<String>,
@@ -87,8 +98,18 @@ impl SessionDeleteResult {
         Self {
             source_deleted: deleted,
             cleanup_pending: false,
+            cleanup_cancelled: false,
+            cleanup_unjournaled: false,
             error: None,
             cleanup_note: None,
+        }
+    }
+
+    fn cleanup_cancelled() -> Self {
+        Self {
+            cleanup_cancelled: true,
+            error: Some("此会话的清理已因恢复操作取消，请从会话列表中重新确认删除".into()),
+            ..Self::complete(false)
         }
     }
 
@@ -172,21 +193,31 @@ pub fn delete_session(
     session_id: &str,
     source_path: &str,
 ) -> Result<bool, String> {
-    delete_session_result(provider_id, session_id, source_path)?.into_legacy_result()
+    delete_session_result(provider_id, session_id, source_path, false)?.into_legacy_result()
 }
 
 fn delete_session_result(
     provider_id: &str,
     session_id: &str,
     source_path: &str,
+    cleanup_only: bool,
 ) -> Result<SessionDeleteResult, String> {
+    if cleanup_only && provider_id != "codex" {
+        return Err("只有 Codex 会话支持重试索引清理".into());
+    }
     // SQLite sessions bypass the file-based deletion path
     if provider_id == "opencode" && source_path.starts_with("sqlite:") {
         return opencode::delete_session_sqlite(session_id, source_path)
             .map(SessionDeleteResult::complete);
     }
     let roots = provider_roots(provider_id)?;
-    delete_session_with_roots(provider_id, session_id, Path::new(source_path), &roots)
+    delete_session_with_roots(
+        provider_id,
+        session_id,
+        Path::new(source_path),
+        &roots,
+        cleanup_only,
+    )
 }
 
 pub fn delete_sessions(requests: &[DeleteSessionRequest]) -> Vec<DeleteSessionOutcome> {
@@ -195,6 +226,7 @@ pub fn delete_sessions(requests: &[DeleteSessionRequest]) -> Vec<DeleteSessionOu
             &request.provider_id,
             &request.session_id,
             &request.source_path,
+            request.cleanup_only,
         )
     })
 }
@@ -204,6 +236,7 @@ fn delete_session_with_roots(
     session_id: &str,
     source_path: &Path,
     roots: &[PathBuf],
+    cleanup_only: bool,
 ) -> Result<SessionDeleteResult, String> {
     let mut saw_existing_root = false;
     for root in roots {
@@ -217,6 +250,9 @@ fn delete_session_with_roots(
             .map_err(|e| format!("Failed to resolve session root {}: {e}", root.display()))?;
         match crate::security_limits::canonicalize_within_root(source_path, root) {
             Ok(validated_source) => {
+                if cleanup_only {
+                    return Ok(SessionDeleteResult::cleanup_cancelled());
+                }
                 return match provider_id {
                     "codex" => {
                         codex::delete_session(&validated_root, &validated_source, session_id)
@@ -258,7 +294,16 @@ fn delete_session_with_roots(
                     continue;
                 }
                 if provider_id == "codex" {
-                    return codex::delete_session_records(&validated_root, session_id);
+                    let validated_source = validated_root.join(relative);
+                    return if cleanup_only {
+                        codex::cleanup_deleted_session(
+                            &validated_root,
+                            &validated_source,
+                            session_id,
+                        )
+                    } else {
+                        codex::delete_session(&validated_root, &validated_source, session_id)
+                    };
                 }
                 return Err(format!(
                     "session source not found: {}",
@@ -321,6 +366,8 @@ where
                 Err(error) => SessionDeleteResult {
                     source_deleted: false,
                     cleanup_pending: false,
+                    cleanup_cancelled: false,
+                    cleanup_unjournaled: false,
                     error: Some(error),
                     cleanup_note: None,
                 },
@@ -334,6 +381,8 @@ where
                 success,
                 source_deleted: result.source_deleted,
                 cleanup_pending: result.cleanup_pending,
+                cleanup_cancelled: result.cleanup_cancelled,
+                cleanup_unjournaled: result.cleanup_unjournaled,
                 error: result
                     .error
                     .or_else(|| (!success).then(|| "Session was not deleted".to_string())),
@@ -410,6 +459,7 @@ mod tests {
             "archived-session",
             &source,
             &[active_root, archived_root],
+            false,
         )
         .expect("delete archived session");
 
@@ -424,9 +474,14 @@ mod tests {
         let source = outside.path().join("session.jsonl");
         std::fs::write(&source, "{}").expect("write source");
 
-        let err =
-            delete_session_with_roots("codex", "session-1", &source, &[root.path().to_path_buf()])
-                .expect_err("expected outside-root path to be rejected");
+        let err = delete_session_with_roots(
+            "codex",
+            "session-1",
+            &source,
+            &[root.path().to_path_buf()],
+            false,
+        )
+        .expect_err("expected outside-root path to be rejected");
 
         assert!(err.contains("outside provider roots"));
     }
@@ -443,7 +498,7 @@ mod tests {
         .unwrap();
         let missing = root.join("missing.jsonl");
 
-        let deleted = delete_session_with_roots("codex", "session-1", &missing, &[root])
+        let deleted = delete_session_with_roots("codex", "session-1", &missing, &[root], false)
             .expect("validated missing rollout is a deletable zombie session");
 
         assert!(deleted.source_deleted && !deleted.cleanup_pending);
@@ -456,16 +511,19 @@ mod tests {
                 provider_id: "codex".to_string(),
                 session_id: "s1".to_string(),
                 source_path: "/tmp/s1".to_string(),
+                cleanup_only: false,
             },
             DeleteSessionRequest {
                 provider_id: "claude".to_string(),
                 session_id: "s2".to_string(),
                 source_path: "/tmp/s2".to_string(),
+                cleanup_only: false,
             },
             DeleteSessionRequest {
                 provider_id: "gemini".to_string(),
                 session_id: "s3".to_string(),
                 source_path: "/tmp/s3".to_string(),
+                cleanup_only: false,
             },
         ];
 
@@ -495,11 +553,14 @@ mod tests {
             provider_id: "codex".into(),
             session_id: "s1".into(),
             source_path: "/sessions/missing.jsonl".into(),
+            cleanup_only: false,
         }];
         let outcomes = collect_delete_session_outcomes(&requests, |_| {
             Ok(SessionDeleteResult {
                 source_deleted: true,
                 cleanup_pending: true,
+                cleanup_cancelled: false,
+                cleanup_unjournaled: false,
                 error: Some("Content deleted; retry index cleanup".into()),
                 cleanup_note: None,
             })
@@ -514,6 +575,8 @@ mod tests {
         assert!(SessionDeleteResult {
             source_deleted: true,
             cleanup_pending: true,
+            cleanup_cancelled: false,
+            cleanup_unjournaled: false,
             error: Some("retry cleanup".into()),
             cleanup_note: None,
         }
@@ -522,16 +585,45 @@ mod tests {
     }
 
     #[test]
+    fn restore_cancellation_is_distinct_from_a_transient_error_on_the_wire() {
+        let request = DeleteSessionRequest {
+            provider_id: "codex".into(),
+            session_id: "s1".into(),
+            source_path: "/sessions/missing.jsonl".into(),
+            cleanup_only: true,
+        };
+        let outcomes = collect_delete_session_outcomes(std::slice::from_ref(&request), |_| {
+            Ok(SessionDeleteResult::cleanup_cancelled())
+        });
+        assert!(
+            !outcomes[0].success && !outcomes[0].source_deleted && !outcomes[0].cleanup_pending
+        );
+        assert_eq!(
+            serde_json::to_value(&outcomes[0]).unwrap()["cleanupCancelled"],
+            true
+        );
+        let outcomes =
+            collect_delete_session_outcomes(&[request], |_| Err("sessions root offline".into()));
+        assert!(serde_json::to_value(&outcomes[0])
+            .unwrap()
+            .get("cleanupCancelled")
+            .is_none());
+    }
+
+    #[test]
     fn a_cleanup_note_finishes_the_delete_without_offering_a_retry() {
         let requests = [DeleteSessionRequest {
             provider_id: "codex".into(),
             session_id: "s1".into(),
             source_path: "/sessions/s1.jsonl".into(),
+            cleanup_only: false,
         }];
         let outcomes = collect_delete_session_outcomes(&requests, |_| {
             Ok(SessionDeleteResult {
                 source_deleted: true,
                 cleanup_pending: false,
+                cleanup_cancelled: false,
+                cleanup_unjournaled: false,
                 error: None,
                 cleanup_note: Some("newer store left alone".into()),
             })
@@ -563,12 +655,52 @@ mod tests {
             temp.path().join("missing.jsonl"),
             root.join("../missing.jsonl"),
         ] {
-            assert!(
-                delete_session_with_roots("codex", "s1", &path, std::slice::from_ref(&root))
-                    .is_err()
-            );
+            assert!(delete_session_with_roots(
+                "codex",
+                "s1",
+                &path,
+                std::slice::from_ref(&root),
+                false
+            )
+            .is_err());
             assert_eq!(std::fs::read_to_string(&index).unwrap(), content);
         }
+    }
+
+    #[test]
+    fn pending_single_session_is_discoverable_and_a_restored_rollout_is_not_deleted() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("sessions");
+        std::fs::create_dir(&root).unwrap();
+        let roots = std::slice::from_ref(&root);
+        let path = root.join("session.jsonl");
+        write_codex_session(&path, "pending-session");
+        let blocked_index = temp.path().join("session_index.jsonl");
+        std::fs::create_dir(&blocked_index).unwrap();
+        let result =
+            delete_session_with_roots("codex", "pending-session", &path, roots, false).unwrap();
+        assert!(result.source_deleted && result.cleanup_pending);
+        let listed = codex::list_pending_deletes(roots).sessions;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].source_path.as_deref(), path.to_str());
+        assert!(!path.exists(), "listing must not write or rerun the delete");
+
+        write_codex_session(&path, "pending-session");
+        assert!(codex::list_pending_deletes(roots).sessions.is_empty());
+        let cancelled = delete_session_with_roots("codex", "pending-session", &path, roots, true)
+            .expect("a restored source cancels the retry");
+        assert!(cancelled.cleanup_cancelled && !cancelled.source_deleted);
+        assert!(path.is_file());
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&blocked_index).unwrap();
+        let result =
+            delete_session_with_roots("codex", "pending-session", &path, roots, true).unwrap();
+        assert!(
+            result.source_deleted && !result.cleanup_pending,
+            "{result:?}"
+        );
+        assert!(codex::list_pending_deletes(roots).sessions.is_empty());
     }
 
     #[test]
@@ -589,7 +721,7 @@ mod tests {
             std::fs::write(config_dir.join("session_index.jsonl"), "{\"id\":\"s1\"}\n").unwrap();
         }
         let missing = roots[1].join("2026/missing.jsonl");
-        let result = delete_session_with_roots("codex", "s1", &missing, &roots).unwrap();
+        let result = delete_session_with_roots("codex", "s1", &missing, &roots, false).unwrap();
         assert!(result.source_deleted && !result.cleanup_pending);
         assert!(
             std::fs::read_to_string(roots[0].parent().unwrap().join("session_index.jsonl"))

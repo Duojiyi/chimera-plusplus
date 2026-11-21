@@ -1,108 +1,144 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 static LIGHTWEIGHT_MODE: AtomicBool = AtomicBool::new(false);
 
-pub fn hide_main_window(app: &tauri::AppHandle) -> Result<(), String> {
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CloseRequest {
+    from_tray: bool,
+    main_activation: u64,
+}
+
+pub(crate) fn main_activation() -> u64 {
+    #[cfg(target_os = "windows")]
+    return crate::tray_panel::main_activation();
+
+    #[cfg(not(target_os = "windows"))]
+    0
+}
+
+pub(crate) fn request_close(app: &tauri::AppHandle, from_tray: bool) -> Result<(), String> {
+    app.emit(
+        "request-lightweight-close",
+        CloseRequest {
+            from_tray,
+            main_activation: main_activation(),
+        },
+    )
+    .map_err(|error| error.to_string())
+}
+
+pub fn hide_main_window(app: &tauri::AppHandle, main_activation: u64) -> Result<(), String> {
+    if main_activation != self::main_activation() {
+        return Ok(());
+    }
     if let Some(window) = app.get_webview_window("main") {
         window.hide().map_err(|e| e.to_string())?;
         #[cfg(target_os = "windows")]
-        window.set_skip_taskbar(true).map_err(|e| e.to_string())?;
+        {
+            crate::tray_panel::finish_main_close(main_activation);
+            window.set_skip_taskbar(true).map_err(|e| e.to_string())?;
+        }
         #[cfg(target_os = "macos")]
         crate::tray::apply_tray_policy(app, false);
     }
     Ok(())
 }
 
-pub fn enter_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
+/// On Windows this must run on a worker so it can wait for window destruction.
+pub fn enter_lightweight_mode(app: &tauri::AppHandle, main_activation: u64) -> Result<(), String> {
     #[cfg(target_os = "windows")]
-    {
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.set_skip_taskbar(true);
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        crate::tray::apply_tray_policy(app, false);
-    }
+    return crate::tray_panel::enter_lightweight_from_worker(app, main_activation);
 
-    if let Some(window) = app.get_webview_window("main") {
-        crate::save_window_state_before_exit(app);
-        window
-            .destroy()
-            .map_err(|e| format!("销毁主窗口失败: {e}"))?;
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = main_activation;
+        enter_lightweight_with(app, |window| {
+            window
+                .destroy()
+                .map_err(|error| format!("销毁主窗口失败: {error}"))
+        })
+        .map(|_| ())
     }
-    // else: already in lightweight mode or window not found, just set the flag
+}
+
+/// Returns whether there was a main window to destroy.
+pub(crate) fn enter_lightweight_with(
+    app: &tauri::AppHandle,
+    destroy: impl FnOnce(&tauri::WebviewWindow) -> Result<(), String>,
+) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    crate::tray::apply_tray_policy(app, false);
+
+    let window = app.get_webview_window("main");
+    if let Some(window) = &window {
+        crate::save_window_state_before_exit(app);
+        destroy(window)?;
+    }
 
     LIGHTWEIGHT_MODE.store(true, Ordering::Release);
     crate::tray::refresh_tray_menu(app);
     log::info!("进入轻量模式");
-    Ok(())
+    Ok(window.is_some())
 }
 
-pub fn exit_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
-    use tauri::WebviewWindowBuilder;
+/// Reveal the existing main window or recreate it when lightweight mode
+/// destroyed its webview. Call from a worker when invoked by a Windows tray
+/// event, so WebView2 can initialize on the main thread.
+pub fn show_main_window(app: &tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    return crate::tray_panel::restore_main_from_worker(app);
 
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-        #[cfg(target_os = "linux")]
-        {
-            crate::linux_fix::nudge_main_window(window.clone());
-        }
-        #[cfg(target_os = "windows")]
-        {
-            let _ = window.set_skip_taskbar(false);
-        }
-        #[cfg(target_os = "macos")]
-        {
-            crate::tray::apply_tray_policy(app, true);
-        }
-        LIGHTWEIGHT_MODE.store(false, Ordering::Release);
-        crate::tray::refresh_tray_menu(app);
-        log::info!("退出轻量模式");
-        return Ok(());
+    #[cfg(not(target_os = "windows"))]
+    {
+        let window = match app.get_webview_window("main") {
+            Some(window) => window,
+            None => create_main_window(app)?,
+        };
+        activate_main_window(app, &window)
     }
+}
 
-    let window_config = app
+pub(crate) fn create_main_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    let config = app
         .config()
         .app
         .windows
         .iter()
-        .find(|w| w.label == "main")
+        .find(|window| window.label == "main")
         .ok_or("主窗口配置未找到")?;
-
-    WebviewWindowBuilder::from_config(app, window_config)
-        .map_err(|e| format!("加载主窗口配置失败: {e}"))?
+    tauri::WebviewWindowBuilder::from_config(app, config)
+        .map_err(|error| format!("加载主窗口配置失败: {error}"))?
+        .visible(false)
+        .focused(false)
         .build()
-        .map_err(|e| format!("创建主窗口失败: {e}"))?;
+        .map_err(|error| format!("创建主窗口失败: {error}"))
+}
 
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-        #[cfg(target_os = "linux")]
-        {
-            crate::linux_fix::nudge_main_window(window.clone());
-        }
-    }
-
+pub(crate) fn activate_main_window(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+) -> Result<(), String> {
     #[cfg(target_os = "windows")]
-    {
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.set_skip_taskbar(false);
-        }
-    }
+    window
+        .set_skip_taskbar(false)
+        .map_err(|error| format!("恢复任务栏图标失败: {error}"))?;
+    window
+        .unminimize()
+        .and_then(|()| window.show())
+        .and_then(|()| window.set_focus())
+        .map_err(|error| format!("打开主窗口失败: {error}"))?;
+    #[cfg(target_os = "linux")]
+    crate::linux_fix::nudge_main_window(window.clone());
     #[cfg(target_os = "macos")]
-    {
-        crate::tray::apply_tray_policy(app, true);
-    }
+    crate::tray::apply_tray_policy(app, true);
 
-    LIGHTWEIGHT_MODE.store(false, Ordering::Release);
-    crate::tray::refresh_tray_menu(app);
-    log::info!("退出轻量模式");
+    if LIGHTWEIGHT_MODE.swap(false, Ordering::AcqRel) {
+        crate::tray::refresh_tray_menu(app);
+        log::info!("退出轻量模式");
+    }
     Ok(())
 }
 

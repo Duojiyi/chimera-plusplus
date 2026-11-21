@@ -5,7 +5,7 @@ import { useSessionSearch } from "@/hooks/useSessionSearch";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { toast } from "sonner";
-import { useQueryClient } from "@tanstack/react-query";
+import { skipToken, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArchiveRestore,
@@ -30,7 +30,10 @@ import {
   X,
 } from "lucide-react";
 import { useSessionMessagesQuery, useSessionsQuery } from "@/lib/query";
-import { sessionsApi } from "@/lib/api";
+import {
+  PENDING_SESSION_DELETES_QUERY_KEY,
+  sessionsApi,
+} from "@/lib/api/sessions";
 import type { SessionMeta } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -221,6 +224,16 @@ const describeUnfinishedDeletes = (targets: SessionDeleteTarget[]) => {
   return `${cleanup} 个会话待完成索引清理，${failed} 个会话删除失败。`;
 };
 
+const LOCAL_DELETE_STATE_QUERY_KEY = ["localSessionDeleteState"] as const;
+interface LocalDeleteState {
+  isDeleting: boolean;
+  targets: SessionDeleteTarget[];
+}
+const INITIAL_LOCAL_DELETE_STATE: LocalDeleteState = {
+  isDeleting: false,
+  targets: [],
+};
+
 export function SessionManagerPage({ appId }: { appId: string }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -236,7 +249,6 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const listScrollRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
-  const deleteInFlightRef = useRef(false);
   const [activeMessageIndex, setActiveMessageIndex] = useState<number | null>(
     null,
   );
@@ -247,10 +259,38 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const [selectedSessionKeys, setSelectedSessionKeys] = useState<Set<string>>(
     () => new Set(),
   );
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [deleteRetryTargets, setDeleteRetryTargets] = useState<
-    SessionDeleteTarget[]
-  >([]);
+  // If the backend could not save a retry, keep it even when this route
+  // unmounts. The shared in-flight state also survives navigation.
+  const { data: localDeleteState = INITIAL_LOCAL_DELETE_STATE } =
+    useQuery<LocalDeleteState>({
+      queryKey: LOCAL_DELETE_STATE_QUERY_KEY,
+      queryFn: skipToken,
+      initialData: INITIAL_LOCAL_DELETE_STATE,
+      gcTime: Infinity,
+    });
+  const { isDeleting, targets: localRetryTargets } = localDeleteState;
+  const pendingDeletes = useQuery({
+    queryKey: PENDING_SESSION_DELETES_QUERY_KEY,
+    queryFn: () => sessionsApi.listPendingDeletes(),
+    enabled: !designPreview,
+  });
+  const deleteRetryTargets = useMemo(() => {
+    const restored = new Set((data ?? []).map(getSessionKey));
+    const targets = new Map<string, SessionDeleteTarget>();
+    for (const target of localRetryTargets) {
+      const key = getSessionKey(target.session);
+      if (!target.contentDeleted || !restored.has(key))
+        targets.set(key, target);
+    }
+    if (pendingDeletes.isSuccess) {
+      for (const session of pendingDeletes.data.sessions) {
+        const key = getSessionKey(session);
+        if (!restored.has(key))
+          targets.set(key, { session, contentDeleted: true });
+      }
+    }
+    return [...targets.values()];
+  }, [data, localRetryTargets, pendingDeletes.data, pendingDeletes.isSuccess]);
   const [selectionMode, setSelectionMode] = useState(false);
   const [isReclaiming, setIsReclaiming] = useState(false);
   const [reclaimConfirmOpen, setReclaimConfirmOpen] = useState(false);
@@ -530,22 +570,31 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   };
 
   const handleDeleteConfirm = async () => {
-    if (!deleteTargets?.length || deleteInFlightRef.current) return;
+    const localState =
+      queryClient.getQueryData<LocalDeleteState>(
+        LOCAL_DELETE_STATE_QUERY_KEY,
+      ) ?? INITIAL_LOCAL_DELETE_STATE;
+    if (!deleteTargets?.length || localState.isDeleting) return;
 
     const targets = deleteTargets.filter(({ session }) => session.sourcePath);
     setDeleteTargets(null);
     if (!targets.length) return;
 
-    deleteInFlightRef.current = true;
-    setIsDeleting(true);
+    queryClient.setQueryData<LocalDeleteState>(LOCAL_DELETE_STATE_QUERY_KEY, {
+      ...localState,
+      isDeleting: true,
+    });
     try {
       // Use the structured contract for single deletes too: the legacy boolean
       // cannot distinguish deleted content from unfinished index cleanup.
       const results = await sessionsApi.deleteMany(
-        targets.map(({ session }) => ({
+        targets.map(({ session, contentDeleted }) => ({
           providerId: session.providerId,
           sessionId: session.sessionId,
           sourcePath: session.sourcePath!,
+          ...(contentDeleted && session.providerId === "codex"
+            ? { cleanupOnly: true }
+            : {}),
         })),
       );
       const outcomes = new Map(
@@ -565,14 +614,34 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       const targetKeys = new Set(
         targets.map(({ session }) => getSessionKey(session)),
       );
-      // Retain identities independently of the scanned list: a deleted source
-      // can disappear while its index cleanup still needs an explicit retry.
-      setDeleteRetryTargets((current) => [
-        ...current.filter(
-          ({ session }) => !targetKeys.has(getSessionKey(session)),
-        ),
-        ...unfinished,
-      ]);
+      queryClient.setQueryData<LocalDeleteState>(
+        LOCAL_DELETE_STATE_QUERY_KEY,
+        (current = INITIAL_LOCAL_DELETE_STATE) => {
+          const localCleanupKeys = new Set(
+            current.targets
+              .filter((target) => target.contentDeleted)
+              .map(({ session }) => getSessionKey(session)),
+          );
+          const nextTargets = [
+            ...current.targets.filter(
+              ({ session }) => !targetKeys.has(getSessionKey(session)),
+            ),
+            ...unfinished.filter(({ session, contentDeleted }) => {
+              const key = getSessionKey(session);
+              const outcome = outcomes.get(key);
+              if (outcome?.cleanupCancelled) return false;
+              if (session.providerId !== "codex" || !contentDeleted)
+                return true;
+              if (outcome?.cleanupPending)
+                return outcome.cleanupUnjournaled === true;
+              // A generic error does not confirm a journal was saved. Preserve
+              // the only retry action until the backend can report its status.
+              return localCleanupKeys.has(key);
+            }),
+          ];
+          return { ...current, targets: nextTargets };
+        },
+      );
 
       const contentDeleted = results.filter(
         (result) => result.success || result.sourceDeleted === true,
@@ -594,7 +663,12 @@ export function SessionManagerPage({ appId }: { appId: string }) {
             new Set([...current].filter((key) => !deletedKeys.has(key))),
         );
       }
-      await queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["sessions"] }),
+        queryClient.invalidateQueries({
+          queryKey: PENDING_SESSION_DELETES_QUERY_KEY,
+        }),
+      ]);
       void queryClient.invalidateQueries({
         queryKey: DELETE_BACKUPS_QUERY_KEY,
       });
@@ -651,8 +725,13 @@ export function SessionManagerPage({ appId }: { appId: string }) {
         extractErrorMessage(error) || "删除请求没有完成，会话均未删除。",
       );
     } finally {
-      deleteInFlightRef.current = false;
-      setIsDeleting(false);
+      queryClient.setQueryData<LocalDeleteState>(
+        LOCAL_DELETE_STATE_QUERY_KEY,
+        (current = INITIAL_LOCAL_DELETE_STATE) => ({
+          ...current,
+          isDeleting: false,
+        }),
+      );
     }
   };
 
@@ -1284,37 +1363,50 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                 : "找回上下文，继续未完成的工作。"}
             </p>
           </div>
-          <Select
-            value={providerFilter}
-            onValueChange={(value) =>
-              setProviderFilter(value as ProviderFilter)
-            }
-          >
-            <SelectTrigger className="session-app-select" aria-label="会话应用">
-              <span className="session-app-label">应用</span>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">
-                <div className="flex items-center gap-2">
-                  <LayoutGrid className="size-3.5" aria-hidden />
-                  <span>全部</span>
-                </div>
-              </SelectItem>
-              {PROVIDER_FILTERS.map((providerId) => (
-                <SelectItem key={providerId} value={providerId}>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setDeleteBackupsOpen(true)}
+            >
+              <History className="size-3.5" aria-hidden />
+              已删除的会话
+            </Button>
+            <Select
+              value={providerFilter}
+              onValueChange={(value) =>
+                setProviderFilter(value as ProviderFilter)
+              }
+            >
+              <SelectTrigger
+                className="session-app-select"
+                aria-label="会话应用"
+              >
+                <span className="session-app-label">应用</span>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">
                   <div className="flex items-center gap-2">
-                    <ProviderIcon
-                      icon={getProviderIconName(providerId)}
-                      name={providerId}
-                      size={14}
-                    />
-                    <span>{getProviderLabel(providerId)}</span>
+                    <LayoutGrid className="size-3.5" aria-hidden />
+                    <span>全部</span>
                   </div>
                 </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+                {PROVIDER_FILTERS.map((providerId) => (
+                  <SelectItem key={providerId} value={providerId}>
+                    <div className="flex items-center gap-2">
+                      <ProviderIcon
+                        icon={getProviderIconName(providerId)}
+                        name={providerId}
+                        size={14}
+                      />
+                      <span>{getProviderLabel(providerId)}</span>
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </header>
         <div className="session-page-body">
           {deleteRetryTargets.length > 0 && (
@@ -1330,6 +1422,27 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                 onClick={() => setDeleteTargets(deleteRetryTargets)}
               >
                 重试未完成的删除
+              </Button>
+            </div>
+          )}
+          {(pendingDeletes.isError ||
+            !!pendingDeletes.data?.warnings.length) && (
+            <div role="alert" className="session-retry-banner">
+              <AlertTriangle className="size-4 shrink-0" aria-hidden />
+              <span
+                className="session-retry-banner-text"
+                title={pendingDeletes.data?.warnings.join("\n") || undefined}
+              >
+                {pendingDeletes.isError
+                  ? "无法读取待清理的会话。"
+                  : "部分待清理的会话暂时无法读取。"}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void pendingDeletes.refetch()}
+              >
+                重试读取
               </Button>
             </div>
           )}
@@ -1562,22 +1675,6 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                           </TooltipContent>
                         </Tooltip>
                       )}
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="size-7"
-                            aria-label="已删除的会话"
-                            onClick={() => setDeleteBackupsOpen(true)}
-                          >
-                            <History className="size-3.5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          已删除的会话（从备份恢复）
-                        </TooltipContent>
-                      </Tooltip>
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <Button

@@ -10,16 +10,29 @@ use std::path::{Path, PathBuf};
 /// builds move it to `%LOCALAPPDATA%\Claude-Data\claude_<publisher>`; the
 /// one whose `config.json` changed last is the one in use.
 pub(crate) fn default_user_data_dir() -> Option<PathBuf> {
+    let isolated_home = crate::config::test_home_override();
+    let roaming = isolated_home
+        .as_ref()
+        .map(|path| {
+            #[cfg(windows)]
+            let folder = "AppData/Roaming";
+            #[cfg(target_os = "macos")]
+            let folder = "Library/Application Support";
+            #[cfg(not(any(windows, target_os = "macos")))]
+            let folder = ".config";
+            path.join(folder)
+        })
+        .or_else(dirs::config_dir);
     let mut candidates = Vec::new();
-    if let Some(roaming) = dirs::config_dir() {
+    if let Some(roaming) = roaming {
         candidates.push(roaming.join("Claude"));
     }
     #[cfg(windows)]
-    if let Some(local) = dirs::data_local_dir() {
+    if let Some(local) = isolated_home
+        .map(|path| path.join("AppData/Local"))
+        .or_else(dirs::data_local_dir)
+    {
         candidates.extend(claude_data_dirs(&local));
-    }
-    #[cfg(windows)]
-    if let Some(local) = dirs::data_local_dir() {
         if let Ok(entries) = crate::security_limits::read_dir_without_links(&local.join("Packages"))
         {
             for entry in entries {

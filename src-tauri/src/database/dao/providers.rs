@@ -22,6 +22,53 @@ pub(crate) struct ProviderUpdateSelection {
     backup: Option<(String, String)>,
 }
 
+fn decode_provider(
+    row: &rusqlite::Row<'_>,
+    app_type: &str,
+    id: &str,
+) -> Result<Provider, AppError> {
+    let decode_error =
+        |field: &str| AppError::Database(format!("{app_type} 线路 {id} 的 {field} 无法读取"));
+    let settings_config = serde_json::from_str(
+        row.get_ref(2)?
+            .as_str()
+            .map_err(|_| decode_error("settings_config"))?,
+    )
+    .map_err(|_| decode_error("settings_config"))?;
+    let meta = serde_json::from_str(
+        row.get_ref(10)?
+            .as_str()
+            .map_err(|_| decode_error("meta"))?,
+    )
+    .map_err(|_| decode_error("meta"))?;
+    Ok(Provider {
+        id: id.to_string(),
+        name: row.get(1)?,
+        settings_config,
+        website_url: row.get(3)?,
+        category: row.get(4)?,
+        created_at: row.get(5)?,
+        sort_index: row.get(6)?,
+        notes: row.get(7)?,
+        icon: row.get(8)?,
+        icon_color: row.get(9)?,
+        meta: Some(meta),
+        in_failover_queue: row.get(11)?,
+    })
+}
+
+fn provider_exists_on_connection(
+    conn: &rusqlite::Connection,
+    app_type: &str,
+    id: &str,
+) -> Result<bool, AppError> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM providers WHERE app_type = ?1 AND id = ?2)",
+        params![app_type, id],
+        |row| row.get(0),
+    )?)
+}
+
 impl Database {
     pub(crate) fn snapshot_provider_update_selection(
         &self,
@@ -133,49 +180,17 @@ impl Database {
              ORDER BY COALESCE(sort_index, 999999), created_at ASC, id ASC"
         ).map_err(|e| AppError::Database(e.to_string()))?;
 
-        let provider_iter = stmt
-            .query_map(params![app_type], |row| {
-                let id: String = row.get(0)?;
-                let name: String = row.get(1)?;
-                let settings_config_str: String = row.get(2)?;
-                let website_url: Option<String> = row.get(3)?;
-                let category: Option<String> = row.get(4)?;
-                let created_at: Option<i64> = row.get(5)?;
-                let sort_index: Option<usize> = row.get(6)?;
-                let notes: Option<String> = row.get(7)?;
-                let icon: Option<String> = row.get(8)?;
-                let icon_color: Option<String> = row.get(9)?;
-                let meta_str: String = row.get(10)?;
-                let in_failover_queue: bool = row.get(11)?;
-
-                let settings_config =
-                    serde_json::from_str(&settings_config_str).unwrap_or(serde_json::Value::Null);
-                let meta: ProviderMeta = serde_json::from_str(&meta_str).unwrap_or_default();
-
-                Ok((
-                    id,
-                    Provider {
-                        id: "".to_string(), // Placeholder, set below
-                        name,
-                        settings_config,
-                        website_url,
-                        category,
-                        created_at,
-                        sort_index,
-                        notes,
-                        meta: Some(meta),
-                        icon,
-                        icon_color,
-                        in_failover_queue,
-                    },
-                ))
-            })
-            .map_err(|e| AppError::Database(e.to_string()))?;
-
+        let mut rows = stmt.query([app_type])?;
         let mut providers = IndexMap::new();
-        for provider_res in provider_iter {
-            let (id, mut provider) = provider_res.map_err(|e| AppError::Database(e.to_string()))?;
-            provider.id = id.clone();
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let mut provider = match decode_provider(row, app_type, &id) {
+                Ok(provider) => provider,
+                Err(error) => {
+                    log::warn!("跳过无法读取的线路 {app_type}/{id}: {error}");
+                    continue;
+                }
+            };
 
             let mut stmt_endpoints = conn.prepare(
                 "SELECT url, added_at FROM provider_endpoints WHERE provider_id = ?1 AND app_type = ?2 ORDER BY added_at ASC, url ASC"
@@ -232,54 +247,91 @@ impl Database {
         }
     }
 
+    /// Selection is about row identity; catalog decoding must not clear it.
+    pub(crate) fn provider_exists(&self, app_type: &str, id: &str) -> Result<bool, AppError> {
+        let conn = lock_conn!(self.conn);
+        provider_exists_on_connection(&conn, app_type, id)
+    }
+
+    /// Adoption owns a new ID only. A damaged row or a concurrently added row
+    /// must never be overwritten while preserving the live configuration.
+    pub(crate) fn insert_adopted_provider(
+        &self,
+        app_type: &str,
+        settings_config: &serde_json::Value,
+    ) -> Result<(), AppError> {
+        let config = serde_json::to_string(settings_config)
+            .map_err(|source| AppError::JsonSerialize { source })?;
+        let mut conn = lock_conn!(self.conn);
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut id = String::from("default");
+        let mut name = id.clone();
+        let mut number = 2;
+        while provider_exists_on_connection(&tx, app_type, &id)? {
+            id = format!("default-{number}");
+            name = format!("default ({number})");
+            number += 1;
+        }
+        tx.execute(
+            "INSERT INTO providers (id, app_type, name, settings_config, category)
+             VALUES (?1, ?2, ?3, ?4, 'custom')",
+            params![id, app_type, name, config],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn get_provider_by_id(
         &self,
         id: &str,
         app_type: &str,
     ) -> Result<Option<Provider>, AppError> {
         let conn = lock_conn!(self.conn);
-        let result = conn.query_row(
-            "SELECT name, settings_config, website_url, category, created_at, sort_index, notes, icon, icon_color, meta, in_failover_queue
-             FROM providers WHERE id = ?1 AND app_type = ?2",
-            params![id, app_type],
-            |row| {
-                let name: String = row.get(0)?;
-                let settings_config_str: String = row.get(1)?;
-                let website_url: Option<String> = row.get(2)?;
-                let category: Option<String> = row.get(3)?;
-                let created_at: Option<i64> = row.get(4)?;
-                let sort_index: Option<usize> = row.get(5)?;
-                let notes: Option<String> = row.get(6)?;
-                let icon: Option<String> = row.get(7)?;
-                let icon_color: Option<String> = row.get(8)?;
-                let meta_str: String = row.get(9)?;
-                let in_failover_queue: bool = row.get(10)?;
+        let provider = conn
+            .query_row(
+                "SELECT id, name, settings_config, website_url, category, created_at, sort_index, notes, icon, icon_color, meta, in_failover_queue
+                 FROM providers WHERE id = ?1 AND app_type = ?2",
+                params![id, app_type],
+                |row| Ok(decode_provider(row, app_type, id)),
+            )
+            .optional()?;
+        provider.transpose()
+    }
 
-                let settings_config = serde_json::from_str(&settings_config_str).unwrap_or(serde_json::Value::Null);
-                let meta: ProviderMeta = serde_json::from_str(&meta_str).unwrap_or_default();
-
-                Ok(Provider {
-                    id: id.to_string(),
-                    name,
-                    settings_config,
-                    website_url,
-                    category,
-                    created_at,
-                    sort_index,
-                    notes,
-                    meta: Some(meta),
-                    icon,
-                    icon_color,
-                    in_failover_queue,
-                })
-            },
-        );
-
-        match result {
-            Ok(provider) => Ok(Some(provider)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(AppError::Database(e.to_string())),
+    /// Credential removal must account for every official line, even one
+    /// that is damaged and therefore missing from the read-only list.
+    pub(crate) fn get_official_codex_providers_strict(&self) -> Result<Vec<Provider>, AppError> {
+        let conn = lock_conn!(self.conn);
+        let mut stmt = conn.prepare(
+            "SELECT id, name, settings_config, website_url, category, created_at, sort_index, notes, icon, icon_color, meta, in_failover_queue
+             FROM providers WHERE app_type = 'codex' AND category = 'official' ORDER BY id",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut providers = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            providers.push(decode_provider(row, "codex", &id)?);
         }
+        Ok(providers)
+    }
+
+    /// Ordering is independent of settings, metadata and endpoint ownership.
+    pub(crate) fn update_provider_sort_indices<'a>(
+        &self,
+        app_type: &str,
+        updates: impl IntoIterator<Item = (&'a str, usize)>,
+    ) -> Result<(), AppError> {
+        let mut conn = lock_conn!(self.conn);
+        let tx = conn.transaction()?;
+        {
+            let mut stmt =
+                tx.prepare("UPDATE providers SET sort_index = ?1 WHERE app_type = ?2 AND id = ?3")?;
+            for (id, sort_index) in updates {
+                stmt.execute(params![sort_index, app_type, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn save_provider(&self, app_type: &str, provider: &Provider) -> Result<(), AppError> {

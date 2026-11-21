@@ -1113,7 +1113,9 @@ fn remove_official_account_from(
     let transaction = codex_accounts::account_mutation()?;
     // Never remove credentials until every binding is detached. A failed DB write
     // leaves the account present; retry only needs to detach the remaining lines.
-    let lines = codex_accounts::official_lines(db)?;
+    let lines = db.get_official_codex_providers_strict().map_err(|error| {
+        AppError::Message(format!("无法检查所有官方线路，账号凭据仍保留：{error}"))
+    })?;
     for mut line in lines {
         if line.official_account_key() == Some(key) {
             codex_accounts::set_pin(&mut line, None);

@@ -343,9 +343,10 @@
   width: auto;
   padding: 0;
   border: 0;
-  white-space: nowrap;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  column-gap: 4px;
+  row-gap: 0;
   margin: 2px 0 0;
   font-size: 11px;
   line-height: 16px;
@@ -367,8 +368,14 @@
 .chimera-shell .usage-heading-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex: none;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.chimera-shell .usage-files-note,
+.chimera-shell .usage-view-seg,
+.chimera-shell .usage-heading-actions button {
+  white-space: nowrap;
 }
 
 /* 范围：分段控件（容器 #0b1c2a0a r9，选中白底 r7） */
@@ -580,7 +587,7 @@
 
 .chimera-shell .usage-totals-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   margin: 0;
   padding: 10px 19px 15px;
 }
@@ -623,12 +630,141 @@
   font-size: 10px;
   line-height: 14px;
   color: #454e58;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 /* 失败只用 bad；没有失败时仍是 mute */
 .chimera-shell .usage-total dd small.is-bad {
   color: #b4342c;
+}
+
+/* ---------- 每日用量日历 ---------- */
+
+.usage-calendar {
+  --calendar-empty: color-mix(in srgb, var(--text-1) 6%, transparent);
+  --calendar-accent: var(--focus-ring);
+  padding: 12px 19px 14px;
+}
+
+.usage-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.usage-calendar-weekday {
+  color: var(--text-3);
+  text-align: center;
+  font-size: 11px;
+  line-height: 20px;
+}
+
+.usage-calendar-cell {
+  display: grid;
+  min-width: 0;
+  min-height: 23px;
+  place-items: center;
+  border-radius: 5px;
+  background: var(--calendar-empty);
+  color: var(--text-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-calendar-cell[data-level="1"] {
+  background: color-mix(in srgb, var(--calendar-accent) 17%, transparent);
+}
+
+.usage-calendar-cell[data-level="2"] {
+  background: color-mix(in srgb, var(--calendar-accent) 33%, transparent);
+  color: var(--text-1);
+}
+
+.usage-calendar-cell[data-level="3"] {
+  background: color-mix(in srgb, var(--calendar-accent) 88%, #fff);
+  color: #fff;
+}
+
+.usage-calendar-cell[data-level="4"] {
+  background: var(--calendar-accent);
+  color: #fff;
+  font-weight: 650;
+}
+
+.usage-calendar-legend,
+.usage-calendar-scale {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.usage-calendar-legend {
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.usage-calendar-scale .usage-calendar-cell {
+  width: 12px;
+  min-height: 12px;
+  border-radius: 3px;
+}
+
+.usage-calendar-empty {
+  padding: 12px 19px 14px;
+  color: var(--text-3);
+}
+
+.usage-inline-details {
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 14px 19px 16px;
+}
+
+.usage-inline-details > h2 {
+  margin: 0 0 4px;
+  color: var(--text-1);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.usage-details-dashboard {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+}
+
+.usage-details-dashboard .usage-detail-tabs {
+  min-height: 36px;
+  height: auto;
+  max-width: 100%;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.usage-detail-filters > [role="group"] {
+  min-width: 0;
+  max-width: 100%;
+}
+
+@media (forced-colors: active) {
+  .usage-calendar-cell {
+    border: 1px solid CanvasText;
+  }
+  .usage-calendar-cell[data-level="1"],
+  .usage-calendar-cell[data-level="2"] {
+    border-style: dashed;
+  }
+  .usage-calendar-cell[data-level="3"],
+  .usage-calendar-cell[data-level="4"] {
+    forced-color-adjust: none;
+    border-color: Highlight;
+    background: Highlight;
+    color: HighlightText;
+  }
 }
 
 /* ---------- 每日词元 ---------- */
@@ -1104,21 +1240,37 @@
   cursor: default;
 }
 
-@media (max-width: 900px) {
+.is-usage-view .chimera-content {
+  container: usage-content / inline-size;
+}
+
+@container usage-content (max-width: 760px) {
   .chimera-shell .usage-design-heading {
     flex-wrap: wrap;
     align-items: flex-start;
+    gap: 10px;
   }
+  .chimera-shell .usage-design-view .usage-heading-text {
+    flex: 1 0 100%;
+  }
+}
+
+@container usage-content (max-width: 640px) {
   .chimera-shell .usage-design-view .usage-breakdown {
     grid-template-columns: minmax(0, 1fr);
   }
   .chimera-shell .usage-totals-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    row-gap: 14px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 12px;
   }
-  .chimera-shell .usage-total:nth-child(4) {
+  .chimera-shell .usage-total:nth-child(odd) {
     padding-left: 0;
     border-left: 0;
+  }
+  .chimera-shell .usage-design-view .usage-chart-card .usage-card-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
   }
 }
 

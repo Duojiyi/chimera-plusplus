@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => {
     error: vi.fn(),
     success: vi.fn(),
     invoke: vi.fn(),
+    open: vi.fn(),
   };
 });
 vi.mock("@/lib/api/settings", () => ({
@@ -32,6 +33,7 @@ vi.mock("@/lib/api/settings", () => ({
   },
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.open }));
 vi.mock("sonner", () => ({
   toast: { success: mocks.success, error: mocks.error },
 }));
@@ -103,6 +105,93 @@ describe("runtime persisted preferences", () => {
       .mockReset()
       .mockImplementation(async (patch) => ({ ...initial, ...patch }));
     mocks.invoke.mockReset().mockResolvedValue([]);
+    mocks.open.mockReset().mockResolvedValue(null);
+    mocks.error.mockClear();
+    mocks.success.mockClear();
+  });
+
+  it("ignores cancellation and refreshes status after saving an external folder", async () => {
+    const onPortableRootChanged = vi.fn().mockResolvedValue(undefined);
+    renderRuntime({ onPortableRootChanged });
+    const choose = screen.getByRole("button", { name: "选择便携版目录" });
+    fireEvent.click(choose);
+    await waitFor(() => expect(choose).toBeEnabled());
+    expect(mocks.open).toHaveBeenCalledWith(
+      expect.objectContaining({ directory: true, multiple: false }),
+    );
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      "set_codex_external_portable_root",
+      expect.anything(),
+    );
+    expect(onPortableRootChanged).not.toHaveBeenCalled();
+
+    const path = String.raw`E:\自备工具\Codex`;
+    mocks.open.mockResolvedValueOnce(path);
+    fireEvent.click(choose);
+    await waitFor(() => expect(onPortableRootChanged).toHaveBeenCalledOnce());
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "set_codex_external_portable_root",
+      { path },
+    );
+    expect(mocks.success).toHaveBeenCalledWith("已选择 Codex 便携版目录");
+  });
+
+  it("displays an unavailable saved folder, gates package operations and can clear the selection", async () => {
+    const path = String.raw`E:\自备工具\Codex`;
+    const onPortableRootChanged = vi.fn().mockResolvedValue(undefined);
+    renderRuntime({
+      onPortableRootChanged,
+      release,
+      runtime: {
+        ...runtime,
+        externalPortableRoot: path,
+        portablePathError: "找不到所选便携版目录",
+        canRepair: false,
+        canRollback: false,
+        canUninstall: false,
+      },
+    });
+    expect(screen.getByText(path)).toBeInTheDocument();
+    expect(screen.getByText(/当前使用自动识别到的安装/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /下载并安装/ }),
+    ).not.toBeInTheDocument();
+    await openPreferences();
+    expect(screen.getByRole("button", { name: "选择版本" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "关闭安装与维护" }));
+    fireEvent.click(screen.getByRole("button", { name: "清除目录选择" }));
+    await waitFor(() => expect(onPortableRootChanged).toHaveBeenCalledOnce());
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "set_codex_external_portable_root",
+      { path: null },
+    );
+    expect(mocks.open).not.toHaveBeenCalled();
+    expect(mocks.success).toHaveBeenCalledWith("已恢复自动识别");
+  });
+
+  it("reports an invalid folder and keeps the previous selection", async () => {
+    const path = String.raw`E:\自备工具\Codex`;
+    const onPortableRootChanged = vi.fn().mockResolvedValue(undefined);
+    mocks.open.mockResolvedValueOnce(String.raw`E:\Other`);
+    mocks.invoke.mockImplementation(async (command) => {
+      if (command === "set_codex_external_portable_root")
+        throw "找不到 Codex 主程序";
+      return [];
+    });
+    renderRuntime({
+      runtime: { ...runtime, externalPortableRoot: path },
+      onPortableRootChanged,
+    });
+    const choose = screen.getByRole("button", { name: "更换便携版目录" });
+    fireEvent.click(choose);
+    await waitFor(() =>
+      expect(mocks.error).toHaveBeenCalledWith("无法使用所选目录", {
+        description: "找不到 Codex 主程序",
+      }),
+    );
+    expect(screen.getByText(path)).toBeInTheDocument();
+    expect(choose).toBeEnabled();
+    expect(onPortableRootChanged).not.toHaveBeenCalled();
   });
 
   it("waits for persisted preferences before manual checks and shows the actual startup setting", async () => {

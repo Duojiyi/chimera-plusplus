@@ -29,12 +29,12 @@ pub async fn get_subscription_quota(
                 "appType": app_type.as_str(),
                 "data": snapshot,
             });
-            if let Err(e) = app.emit("usage-cache-updated", payload) {
-                log::error!("emit usage-cache-updated (subscription) 失败: {e}");
-            }
             state
                 .usage_cache
                 .put_subscription(app_type, snapshot.clone());
+            if let Err(e) = app.emit("usage-cache-updated", payload) {
+                log::error!("emit usage-cache-updated (subscription) 失败: {e}");
+            }
             crate::tray::schedule_tray_refresh(&app);
         }
     }

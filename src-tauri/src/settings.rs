@@ -167,7 +167,7 @@ fn protected_windows_roots() -> Vec<PathBuf> {
     }
 }
 
-fn validate_portable_root_path(path: &Path, strict: bool) -> Result<PathBuf, String> {
+pub(crate) fn validate_portable_root_path(path: &Path, strict: bool) -> Result<PathBuf, String> {
     if path.as_os_str().is_empty() {
         return Err("Codex portable root 不能为空".to_string());
     }
@@ -254,6 +254,19 @@ fn validate_portable_root_path(path: &Path, strict: bool) -> Result<PathBuf, Str
 /// Validate a user-configured portable Codex root before it is persisted.
 pub fn validate_codex_portable_root(raw: &str) -> Result<PathBuf, AppError> {
     validate_portable_root_path(Path::new(raw.trim()), true).map_err(AppError::Config)
+}
+
+/// Identify an existing Windows portable payload without modifying the installation.
+pub(crate) fn detect_codex_external_portable(
+    raw: &str,
+) -> Result<codex_win_engine::InstalledWindowsCodex, String> {
+    let root = validate_portable_root_path(Path::new(raw.trim()), false)?;
+    codex_win_engine::detect_portable_install(&root).ok_or_else(|| {
+        format!(
+            "在 {} 找不到 Codex 便携版。请选择包含 Codex 主程序和资源的目录。",
+            root.display()
+        )
+    })
 }
 
 /// Resolve the effective managed portable root. A configured path is never
@@ -727,6 +740,9 @@ pub struct AppSettings {
     /// Optional path for a manager-owned portable Codex installation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_portable_root: Option<String>,
+    /// User-selected existing installation, separate from the managed install destination.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_external_portable_root: Option<String>,
     /// Whether the UI may request an update check after startup.
     /// The backend itself never performs the network request implicitly.
     #[serde(default = "default_true")]
@@ -852,6 +868,7 @@ impl Default for AppSettings {
             codex_update_source: default_codex_update_source(),
             codex_install_mode: default_codex_install_mode(),
             codex_portable_root: None,
+            codex_external_portable_root: None,
             check_codex_updates_on_start: true,
             check_provider_status_on_start: true,
             gemini_config_dir: None,
@@ -1550,9 +1567,9 @@ pub fn get_effective_current_provider(
     // 1. 从本地 settings 读取
     if let Some(local_id) = get_current_provider(app_type) {
         // 2. 验证该 ID 在数据库中存在
-        let providers = db.get_all_providers(app_type.as_str())?;
-        if providers.contains_key(&local_id) {
-            // 存在，直接返回
+        if db.provider_exists(app_type.as_str(), &local_id)? {
+            // An unreadable row is still selected. Operations requiring its
+            // configuration use the strict targeted read and surface the error.
             return Ok(Some(local_id));
         }
 

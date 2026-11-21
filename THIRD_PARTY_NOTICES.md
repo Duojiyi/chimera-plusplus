@@ -30,6 +30,9 @@ Source: https://github.com/farion1231/cc-switch
 Copyright (c) 2025 Jason Young
 
 Licensed under the MIT License. The full license text is in [LICENSE](LICENSE).
+Chimera++ adapts the Codex OAuth catalog client version (`db54a77510cf`),
+Responses-to-Chat empty-message handling (`f7002d1e2853`), and preservation of
+tool parameters during proxy filtering (`3c9d7765bb3d`).
 
 ## Codex App Manager
 
@@ -167,6 +170,7 @@ Licensed under the Apache License, Version 2.0. Chimera++ does not bundle Codex.
 parts of the thread-deletion and thread-relation logic in
 `src-tauri/src/session_manager/providers/codex.rs` and the state database path handling
 in `src-tauri/src/codex_state_db.rs` are adapted from `codex-rs/state` and
-`codex-rs/thread-store`; the adapted code is modified and each location carries an
-attribution comment. A copy of the Apache-2.0 license is available at
+`codex-rs/thread-store`, including recognition of `session_model_ids` from
+state migration `0063` (`ccf9be8cc458`). The adapted code is modified and each
+location carries an attribution comment. A copy of the Apache-2.0 license is available at
 https://www.apache.org/licenses/LICENSE-2.0.
