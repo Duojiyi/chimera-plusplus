@@ -4671,6 +4671,14 @@ mod tests {
         }
     }
 
+    fn external_portable_test_dir() -> tempfile::TempDir {
+        let parent = std::env::temp_dir();
+        // macOS exposes its temporary directory through the /var symlink.
+        #[cfg(not(windows))]
+        let parent = parent.canonicalize().expect("resolve portable test parent");
+        tempfile::tempdir_in(parent).expect("create portable test directory")
+    }
+
     fn write_external_portable_fixture(
         root: &Path,
         nested: bool,
@@ -4694,7 +4702,7 @@ mod tests {
 
     #[test]
     fn selected_portable_resolves_flat_and_nested_payloads_without_install_writes() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = external_portable_test_dir();
         for (nested, executable) in [(false, "Codex.exe"), (true, "ChatGPT.exe")] {
             // Also exercise selection from a child of a managed install location.
             let root = dir
@@ -4736,7 +4744,7 @@ mod tests {
 
     #[test]
     fn missing_or_foreign_external_portable_can_fall_back_to_registered_install() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = external_portable_test_dir();
         let foreign = dir.path().join("ChatGPT Classic");
         write_external_portable_fixture(&foreign, true, "ChatGPT.exe", "OpenAI.ChatGPT");
         for invalid in [
@@ -4777,7 +4785,7 @@ mod tests {
 
     #[test]
     fn missing_external_portable_can_fall_back_to_a_separate_managed_portable() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = external_portable_test_dir();
         let missing = dir.path().join("Disconnected Codex");
         let managed = dir.path().join("Managed Codex");
         write_external_portable_fixture(&managed, true, "ChatGPT.exe", "OpenAI.Codex");
@@ -4794,14 +4802,15 @@ mod tests {
 
     #[test]
     fn overlapping_external_selection_allows_managed_payload_without_layout_writes() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = external_portable_test_dir();
         let managed = dir.path().join("Managed Codex");
         let exe = write_external_portable_fixture(&managed, false, "Codex.exe", "OpenAI.Codex");
         let external = managed.join("Unavailable external selection");
         assert!(super::detected_external(external.to_str())
             .unwrap()
             .is_err());
-        assert!(super::verify_managed_layout_access(&managed, external.to_str()).is_err());
+        let error = super::verify_managed_layout_access(&managed, external.to_str()).unwrap_err();
+        assert!(error.contains("与自备便携版重叠"), "{error}");
 
         // Probe the actual portable payload independently of any MSIX the test
         // machine happens to have registered.
