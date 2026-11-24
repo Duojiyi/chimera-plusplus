@@ -1066,7 +1066,7 @@ pub(crate) fn forget_account(
 
 /// A Desktop process that serves the default data folder: the app's own
 /// executable and no `--user-data-dir` (Chimera's separate profiles pass one).
-#[cfg(any(windows, test))]
+#[cfg(any(windows, all(test, not(target_os = "macos"))))]
 pub(crate) fn is_main_desktop_process(executable: &str, command_line: &str) -> bool {
     super::is_claude_desktop_image(executable)
         && !command_line

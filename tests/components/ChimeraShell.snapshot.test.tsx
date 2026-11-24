@@ -3,9 +3,24 @@
 // visual change updates the snapshot in the same commit.
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { expect, it } from "vitest";
+import { afterAll, expect, it, vi } from "vitest";
 import ChimeraApp from "@/ChimeraApp";
 import { createTestQueryClient } from "../utils/testQueryClient";
+
+// Drag-region attributes are computed when the shell imports the platform module.
+const { userAgent, platform } = vi.hoisted(() => ({
+  userAgent: vi
+    .spyOn(window.navigator, "userAgent", "get")
+    .mockReturnValue("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"),
+  platform: vi
+    .spyOn(window.navigator, "platform", "get")
+    .mockReturnValue("Win32"),
+}));
+
+afterAll(() => {
+  userAgent.mockRestore();
+  platform.mockRestore();
+});
 
 const sidebar = () => document.querySelector('[data-pencil-name="侧栏"]');
 const titlebar = ({ expectSearch = true } = {}) => {

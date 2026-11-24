@@ -916,6 +916,7 @@ pub async fn switch_claude_desktop_provider(
                         "请先退出 Claude Desktop 后再切换线路。".into(),
                     ));
                 }
+                #[cfg(any(windows, target_os = "macos"))]
                 if desktop_swap::data_locked(&roots.0) || desktop_swap::data_locked(&roots.1) {
                     return Err(AppError::Message(
                         "Claude Desktop 尚未完全退出，已取消切换。".into(),
