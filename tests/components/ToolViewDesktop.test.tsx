@@ -368,6 +368,26 @@ describe("Claude Desktop setup panel", () => {
       screen.getByText("缺少模型路由映射，请检查线路配置。"),
     ).toBeVisible();
   });
+
+  it("hides the add-official button when an official entry exists and reflects official mode", async () => {
+    vi.mocked(providersApi.getClaudeDesktopStatus).mockResolvedValue({
+      ...emptyStatus,
+      configured: true,
+      mode: "direct",
+    });
+    render(
+      <ToolViewDesktop
+        {...props}
+        hasOfficialProvider
+        activeProviderIsOfficial
+      />,
+    );
+    expect(await screen.findByText("官方模式")).toBeVisible();
+    expect(screen.queryByText("已配置第三方")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "添加官方入口" }),
+    ).not.toBeInTheDocument();
+  });
 });
 
 describe("accessible Desktop routing switch", () => {

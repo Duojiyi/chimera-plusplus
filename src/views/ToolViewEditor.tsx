@@ -16,6 +16,11 @@ import {
   ProviderForm,
   type ProviderFormValues,
 } from "@/components/providers/forms/ProviderForm";
+import {
+  GenericToolProviderForm,
+  isGenericToolAppId,
+} from "@/components/providers/forms/GenericToolProviderForm";
+import registry from "@/shared/tool-registry.json";
 import { providersApi } from "@/lib/api/providers";
 import type { Provider } from "@/types";
 import {
@@ -54,11 +59,20 @@ export default function ToolViewEditor({
   const [inUse, setInUse] = useState(false);
   const { connection, test, reset } = useAddressTest();
   const toolName = additionalToolNames[appId];
+  const isAdditive = registry.some(
+    (item) => item.id === appId && item.mode === "additive",
+  );
+  const activateVerb = isAdditive ? "启用" : "切换";
+  const activatePhrase = isAdditive ? "启用" : "切换到";
   useLightweightCloseBlocker(busy || dirty);
   // Saving the line the tool uses also rewrites its live config; the editor
   // says so above the form. Only a notice, so a failed read stays silent.
   useEffect(() => {
     if (!provider) return;
+    if (isAdditive) {
+      setInUse(provider.meta?.liveConfigManaged !== false);
+      return;
+    }
     let active = true;
     providersApi
       .getCurrent(appId)
@@ -69,7 +83,7 @@ export default function ToolViewEditor({
     return () => {
       active = false;
     };
-  }, [appId, provider]);
+  }, [appId, isAdditive, provider]);
   useEffect(() => {
     reset();
   }, [draftUrl, reset]);
@@ -180,10 +194,10 @@ export default function ToolViewEditor({
           <EditorSaveActions
             note={
               !provider
-                ? "仅保存，稍后在列表中切换"
+                ? `仅保存，稍后在列表中${activateVerb}`
                 : inUse
                   ? undefined
-                  : "仅保存，不切换到这条线路"
+                  : `仅保存，不${activatePhrase}这条线路`
             }
             onCancel={requestClose}
             disabled={busy}
@@ -202,26 +216,45 @@ export default function ToolViewEditor({
     >
       {inUse && <EditorInUseNotice appId={appId} toolName={toolName} />}
       <div onChangeCapture={() => setDirty(true)}>
-        <ProviderForm
-          appId={appId}
-          providerId={provider?.id}
-          initialData={provider ?? undefined}
-          submitLabel="保存线路"
-          showButtons={false}
-          onSubmit={save}
-          onCancel={requestClose}
-          onSubmittingChange={setBusy}
-          onDirtyChange={() => setDirty(true)}
-          onNameChange={setDraftName}
-          onBaseUrlChange={setDraftUrl}
-          saveSummaryNote={
-            !provider
-              ? `仅保存到 Chimera++；在列表中切换到这条线路后才写入 ${toolName} 的配置。`
-              : inUse
-                ? `这是正在使用的线路，保存后立即写入 ${toolName} 的配置。`
-                : `仅保存，不切换到这条线路；切换后才写入 ${toolName} 的配置。`
-          }
-        />
+        {isGenericToolAppId(appId) ? (
+          <GenericToolProviderForm
+            appId={appId}
+            initialData={provider ?? undefined}
+            onSubmit={save}
+            onSubmittingChange={setBusy}
+            onDirtyChange={() => setDirty(true)}
+            onNameChange={setDraftName}
+            onBaseUrlChange={setDraftUrl}
+            saveSummaryNote={
+              !provider
+                ? `仅保存到 Chimera++；在列表中${activatePhrase}这条线路后才写入 ${toolName} 的配置。`
+                : inUse
+                  ? `这是正在使用的线路，保存后立即写入 ${toolName} 的配置。`
+                  : `仅保存，不${activatePhrase}这条线路；${activateVerb}后才写入 ${toolName} 的配置。`
+            }
+          />
+        ) : (
+          <ProviderForm
+            appId={appId}
+            providerId={provider?.id}
+            initialData={provider ?? undefined}
+            submitLabel="保存线路"
+            showButtons={false}
+            onSubmit={save}
+            onCancel={requestClose}
+            onSubmittingChange={setBusy}
+            onDirtyChange={() => setDirty(true)}
+            onNameChange={setDraftName}
+            onBaseUrlChange={setDraftUrl}
+            saveSummaryNote={
+              !provider
+                ? `仅保存到 Chimera++；在列表中${activatePhrase}这条线路后才写入 ${toolName} 的配置。`
+                : inUse
+                  ? `这是正在使用的线路，保存后立即写入 ${toolName} 的配置。`
+                  : `仅保存，不${activatePhrase}这条线路；${activateVerb}后才写入 ${toolName} 的配置。`
+            }
+          />
+        )}
       </div>
       {connection.kind === "error" && (
         <p className="editor-feedback" role="alert">

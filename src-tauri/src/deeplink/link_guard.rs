@@ -95,7 +95,7 @@ fn find_expansion(app_type: &AppType, field: Field, value: &str) -> Option<Expan
         return Some(Expansion::ControlCharacter);
     }
     match app_type {
-        AppType::Pi => pi_expansion(field, value),
+        AppType::Pi | AppType::Omp => pi_expansion(field, value),
         AppType::OpenCode => opencode_expansion(value),
         _ => None,
     }
@@ -171,7 +171,17 @@ fn tool_name(app_type: &AppType) -> &'static str {
         AppType::Gemini => "Gemini CLI",
         AppType::GrokBuild => "Grok Build",
         AppType::OpenCode => "OpenCode",
+        AppType::OpenClaw => "OpenClaw",
+        AppType::Hermes => "Hermes",
         AppType::Pi => "Pi",
+        AppType::Omp => "Oh My Pi",
+        AppType::Agy => "Antigravity",
+        AppType::Mcode => "MiniMax Code",
+        AppType::Kimi => "Kimi Code",
+        AppType::Dsh => "DeepSeek Harness",
+        AppType::Copilot => "Copilot CLI",
+        AppType::WorkBuddy => "WorkBuddy",
+        AppType::Codebuddy => "CodeBuddy Code",
     }
 }
 

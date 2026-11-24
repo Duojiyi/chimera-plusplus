@@ -22,6 +22,42 @@ use crate::error::AppError;
 #[allow(dead_code)]
 pub mod cas;
 
+#[cfg(windows)]
+#[allow(dead_code)]
+pub(crate) fn is_wsl_path(path: &Path) -> bool {
+    use std::path::Prefix;
+    if let Some(Component::Prefix(prefix)) = path.components().next() {
+        match prefix.kind() {
+            Prefix::UNC(server, _) | Prefix::VerbatimUNC(server, _) => {
+                let s = server.to_string_lossy();
+                s.eq_ignore_ascii_case("wsl$") || s.eq_ignore_ascii_case("wsl.localhost")
+            }
+            _ => false,
+        }
+    } else {
+        false
+    }
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub(crate) fn is_wsl_path(_path: &Path) -> bool {
+    false
+}
+
+#[cfg(test)]
+pub(crate) fn sqlite_unsupported_in_temp_dir() -> bool {
+    let temp = std::env::temp_dir();
+    let unsupported = is_wsl_path(&temp);
+    if unsupported {
+        eprintln!(
+            "temp dir {} is a WSL share where SQLite cannot lock; skipping",
+            temp.display()
+        );
+    }
+    unsupported
+}
+
 /// 获取用户主目录，带回退和日志
 ///
 /// ## Windows 注意事项
@@ -299,6 +335,19 @@ pub fn write_text_file(path: &Path, data: &str) -> Result<(), AppError> {
     atomic_write(path, data.as_bytes())
 }
 
+/// 同 [`write_text_file`]，用于含凭据的 live 文件（Unix 下 0600）。
+#[allow(dead_code)]
+pub fn write_text_file_private(path: &Path, data: &str) -> Result<(), AppError> {
+    atomic_write_private(path, data.as_bytes())
+}
+
+/// 同 [`write_json_file`]，用于含凭据的 live 文件（Unix 下 0600）。
+#[allow(dead_code)]
+pub fn write_json_file_private<T: Serialize>(path: &Path, data: &T) -> Result<(), AppError> {
+    let json = json_file_text(data)?;
+    atomic_write_private(path, json.as_bytes())
+}
+
 /// 原子写入：写入随机临时文件、刷盘后替换目标，避免半写状态和 symlink 跟随。
 ///
 /// 临时文件必须使用 `create_new`：可预测的临时文件名会让其他进程预先放置
@@ -307,6 +356,164 @@ pub fn write_text_file(path: &Path, data: &str) -> Result<(), AppError> {
 /// 出现可见空窗。
 pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
     atomic_write_checked(path, data, false, || Ok::<(), AppError>(()))
+}
+
+/// 原子写入包含凭据的文件。Unix 上新文件和替换文件始终使用 0600。
+pub fn atomic_write_private(path: &Path, data: &[u8]) -> Result<(), AppError> {
+    atomic_write_checked(path, data, true, || Ok::<(), AppError>(()))
+}
+
+/// 目标是软链接时返回它最终指向的文件（逐跳 `read_link`），否则原样返回。
+#[allow(dead_code)]
+pub(crate) fn resolve_symlink_target(path: &Path) -> PathBuf {
+    const MAX_HOPS: usize = 40;
+    let mut current = path.to_path_buf();
+    for _ in 0..MAX_HOPS {
+        let is_link = fs::symlink_metadata(&current)
+            .map(|meta| meta.file_type().is_symlink())
+            .unwrap_or(false);
+        if !is_link {
+            return current;
+        }
+        let Ok(target) = fs::read_link(&current) else {
+            return current;
+        };
+        current = if target.is_absolute() {
+            target
+        } else {
+            match current.parent() {
+                Some(parent) => parent.join(&target),
+                None => target,
+            }
+        };
+    }
+    path.to_path_buf()
+}
+
+/// 已写好、还没替换目标的临时文件，供 `copilot_config` 等需要 CAS 提交的模块使用。
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(crate) struct StagedWrite {
+    tmp: PathBuf,
+    path: PathBuf,
+}
+
+#[allow(dead_code)]
+impl StagedWrite {
+    pub fn target(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn discard(self) {
+        let _ = fs::remove_file(&self.tmp);
+    }
+
+    pub fn commit(self) -> Result<(), AppError> {
+        let res = (|| -> Result<(), AppError> {
+            #[cfg(windows)]
+            {
+                use windows_sys::Win32::Storage::FileSystem::{
+                    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+                };
+                let source =
+                    windows_replace_path(&self.tmp).map_err(|e| AppError::io(&self.tmp, e))?;
+                let destination =
+                    windows_replace_path(&self.path).map_err(|e| AppError::io(&self.path, e))?;
+                let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
+                retry_transient_replace(
+                    || {
+                        let moved =
+                            unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), flags) };
+                        if moved == 0 {
+                            Err(std::io::Error::last_os_error())
+                        } else {
+                            Ok(())
+                        }
+                    },
+                    std::thread::sleep,
+                )
+                .map_err(|source| AppError::IoContext {
+                    context: format!(
+                        "原子替换失败: {} -> {}",
+                        self.tmp.display(),
+                        self.path.display()
+                    ),
+                    source,
+                })?;
+            }
+            #[cfg(not(windows))]
+            fs::rename(&self.tmp, &self.path).map_err(|e| AppError::IoContext {
+                context: format!(
+                    "原子替换失败: {} -> {}",
+                    self.tmp.display(),
+                    self.path.display()
+                ),
+                source: e,
+            })?;
+            Ok(())
+        })();
+        if res.is_err() {
+            let _ = fs::remove_file(&self.tmp);
+        }
+        res
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn stage_write(
+    path: &Path,
+    data: &[u8],
+    unix_mode: Option<u32>,
+    durable: bool,
+) -> Result<StagedWrite, AppError> {
+    #[cfg(not(unix))]
+    let _ = unix_mode;
+
+    let resolved = resolve_symlink_target(path);
+    let path = resolved.as_path();
+    let parent = path
+        .parent()
+        .ok_or_else(|| AppError::Config("无效的路径".to_string()))?;
+    fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
+
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| AppError::Config("无效的文件名".to_string()))?
+        .to_string_lossy();
+    let tmp = parent.join(format!(".{file_name}.tmp-{}", Uuid::new_v4()));
+
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(unix_mode.unwrap_or(0o600));
+    }
+    let mut file = options.open(&tmp).map_err(|e| AppError::io(&tmp, e))?;
+    let written = file
+        .write_all(data)
+        .and_then(|_| file.flush())
+        .and_then(|_| if durable { file.sync_all() } else { Ok(()) });
+    if let Err(source) = written {
+        drop(file);
+        let _ = fs::remove_file(&tmp);
+        return Err(AppError::io(&tmp, source));
+    }
+    drop(file);
+
+    #[cfg(unix)]
+    if let Some(mode) = unix_mode {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(source) = fs::set_permissions(&tmp, fs::Permissions::from_mode(mode)) {
+            let _ = fs::remove_file(&tmp);
+            return Err(AppError::io(&tmp, source));
+        }
+    }
+
+    Ok(StagedWrite {
+        tmp,
+        path: path.to_path_buf(),
+    })
 }
 
 /// [`atomic_write`] 的底层实现，供 CAS 变更集（[`cas`]）复用。

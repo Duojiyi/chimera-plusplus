@@ -17,6 +17,8 @@
     "services": 4,
     "deeplink": 4,
     "session_manager": 4,
+    "kimi_session": 4,
+    "test_support": 4,
     "config_health": 4,
     "store": 4,
     "usage_script": 4,
@@ -44,6 +46,16 @@
     "grok_config": 2,
     "opencode_config": 2,
     "pi_config": 2,
+    "agy_config": 2,
+    "codebuddy_config": 2,
+    "copilot_config": 2,
+    "dsh_config": 2,
+    "hermes_config": 2,
+    "kimi_config": 2,
+    "mcode_config": 2,
+    "omp_config": 2,
+    "openclaw_config": 2,
+    "workbuddy_config": 2,
     "managed_prompts": 2,
     "prompt_files": 2,
 
@@ -67,6 +79,8 @@
     "usage_events": 0,
     "app_store": 0,
     "proxy_marker": 0,
-    "runtime_messages": 0
+    "runtime_messages": 0,
+    "jsonc_document": 0,
+    "sync_utils": 0
   }
 }

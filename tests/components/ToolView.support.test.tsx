@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ToolView } from "@/views/ToolView";
 import { providersApi } from "@/lib/api/providers";
@@ -184,8 +190,11 @@ describe("additional native tools", () => {
         },
       });
       render(<ToolView toolId={appId} native />);
-      await screen.findByText("Line");
-      const button = screen.getByRole("button", {
+      const lineCell = await screen.findByText("Line");
+      const row =
+        lineCell.closest(".tool-line-row") ??
+        lineCell.parentElement!.parentElement!;
+      const button = within(row as HTMLElement).getByRole("button", {
         name:
           appId === "claude-desktop" || appId === "grokbuild"
             ? "切换"

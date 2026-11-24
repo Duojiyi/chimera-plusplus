@@ -1901,9 +1901,21 @@ fn strip_nested_null_schema_types(schema: &mut Value) {
     if object.get("type").is_some_and(Value::is_null) {
         object.remove("type");
     }
+    // Codex 0.150+ MCP resource tools can emit `required: null`, and strict
+    // OpenAI-compatible gateways require `required` to be an array whenever
+    // `additionalProperties: false` is set.
+    let invalid_required = object
+        .get("required")
+        .is_some_and(|required| !required.is_array());
+    let strict_object_without_required = object.get("required").is_none()
+        && object.get("additionalProperties") == Some(&Value::Bool(false));
+    if invalid_required || strict_object_without_required {
+        object.insert("required".to_string(), json!([]));
+    }
     for (key, value) in object.iter_mut() {
         match key.as_str() {
-            "properties" | "patternProperties" | "$defs" | "definitions" | "dependentSchemas" => {
+            "properties" | "patternProperties" | "$defs" | "definitions" | "dependentSchemas"
+            | "dependencies" => {
                 if let Some(children) = value.as_object_mut() {
                     children
                         .values_mut()
@@ -1922,6 +1934,7 @@ fn strip_nested_null_schema_types(schema: &mut Value) {
             | "unevaluatedItems"
             | "propertyNames"
             | "contains"
+            | "contentSchema"
             | "not"
             | "if"
             | "then"

@@ -800,8 +800,26 @@ impl SkillService {
                     return Ok(custom.join("skills"));
                 }
             }
-
-            AppType::Pi => {}
+            AppType::OpenClaw | AppType::Hermes => {
+                if let Some(custom) = crate::settings::get_override_dir(app) {
+                    return Ok(custom.join("skills"));
+                }
+            }
+            AppType::Pi => {
+                return Ok(crate::pi_config::get_pi_agent_dir()?.join("skills"));
+            }
+            AppType::Omp => {
+                return Ok(crate::omp_config::get_omp_agent_dir()?.join("skills"));
+            }
+            AppType::Agy => {
+                return Ok(crate::agy_config::customizations_dir().join("skills"));
+            }
+            AppType::Mcode
+            | AppType::Kimi
+            | AppType::Dsh
+            | AppType::Copilot
+            | AppType::WorkBuddy
+            | AppType::Codebuddy => {}
         }
 
         // 默认路径：回退到用户主目录下的标准位置。
@@ -816,10 +834,17 @@ impl SkillService {
             AppType::Gemini => home.join(".gemini").join("skills"),
             AppType::GrokBuild => home.join(".grok").join("skills"),
             AppType::OpenCode => home.join(".config").join("opencode").join("skills"),
-
-            // Only ever scanned: Skills are never synced into or removed from
-            // Pi in this release (see `sync_to_app` / `remove_from_app`).
-            AppType::Pi => home.join(".pi").join("agent").join("skills"),
+            AppType::OpenClaw => home.join(".openclaw").join("skills"),
+            AppType::Hermes => crate::hermes_config::get_hermes_dir().join("skills"),
+            AppType::Pi => crate::pi_config::get_pi_agent_dir()?.join("skills"),
+            AppType::Omp => crate::omp_config::get_omp_agent_dir()?.join("skills"),
+            AppType::Agy => crate::agy_config::customizations_dir().join("skills"),
+            AppType::Mcode => crate::mcode_config::data_dir().join("skills"),
+            AppType::Kimi => crate::kimi_config::data_dir().join("skills"),
+            AppType::Dsh => crate::dsh_config::data_dir().join("skills"),
+            AppType::Copilot => crate::copilot_config::skills_dir(),
+            AppType::WorkBuddy => crate::workbuddy_config::data_dir().join("skills"),
+            AppType::Codebuddy => crate::codebuddy_config::data_dir().join("skills"),
         })
     }
 
@@ -1979,7 +2004,10 @@ impl SkillService {
             .get_installed_skill(id)?
             .ok_or_else(|| anyhow!("Skill not found: {id}"))?;
         Self::validate_managed_skill_directory(&skill.directory)?;
-        if matches!(app, AppType::ClaudeDesktop | AppType::Pi) {
+        if matches!(
+            app,
+            AppType::ClaudeDesktop | AppType::OpenClaw | AppType::Pi | AppType::Omp
+        ) {
             return Err(anyhow!("Skill projection is unsupported for {app:?}"));
         }
         let app_dir = Self::get_app_skills_dir(app)?;
@@ -2698,7 +2726,10 @@ impl SkillService {
     }
 
     fn sync_to_app_dir_internal(directory: &str, app: &AppType) -> Result<()> {
-        if matches!(app, AppType::ClaudeDesktop | AppType::Pi) {
+        if matches!(
+            app,
+            AppType::ClaudeDesktop | AppType::OpenClaw | AppType::Pi | AppType::Omp
+        ) {
             return Ok(());
         }
 
@@ -3010,7 +3041,10 @@ impl SkillService {
     }
 
     fn remove_from_app_locked(directory: &str, app: &AppType) -> Result<()> {
-        if matches!(app, AppType::ClaudeDesktop | AppType::Pi) {
+        if matches!(
+            app,
+            AppType::ClaudeDesktop | AppType::OpenClaw | AppType::Pi | AppType::Omp
+        ) {
             return Ok(());
         }
 
@@ -3044,7 +3078,10 @@ impl SkillService {
     }
 
     fn sync_to_app_locked(db: &Arc<Database>, app: &AppType) -> Result<()> {
-        if matches!(app, AppType::ClaudeDesktop | AppType::Pi) {
+        if matches!(
+            app,
+            AppType::ClaudeDesktop | AppType::OpenClaw | AppType::Pi | AppType::Omp
+        ) {
             return Ok(());
         }
 

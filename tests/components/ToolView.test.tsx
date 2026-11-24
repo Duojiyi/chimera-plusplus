@@ -225,7 +225,7 @@ describe("native tool official entry", () => {
     fireEvent.click(screen.getByRole("button", { name: "切换" }));
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith("Claude Code 配置未更新", {
-        description: "请检查本机配置和文件权限后重试。",
+        description: "write denied",
       }),
     );
     expect(

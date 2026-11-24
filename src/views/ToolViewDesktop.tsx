@@ -59,11 +59,15 @@ export default function ToolViewDesktop({
   refreshVersion,
   onChanged,
   onSupported,
+  hasOfficialProvider = false,
+  activeProviderIsOfficial,
 }: {
   native: boolean;
   refreshVersion: number;
   onChanged: () => Promise<void>;
   onSupported: (supported: boolean) => void;
+  hasOfficialProvider?: boolean;
+  activeProviderIsOfficial?: boolean;
 }) {
   const [status, setStatus] = useState<ClaudeDesktopStatus | null>(null);
   const [loading, setLoading] = useState(native);
@@ -199,9 +203,11 @@ export default function ToolViewDesktop({
         ? "状态未知"
         : !status.supported
           ? "平台不支持"
-          : status.configured
-            ? "已配置第三方"
-            : "尚未配置第三方";
+          : activeProviderIsOfficial === true
+            ? "官方模式"
+            : status.configured
+              ? "已配置第三方"
+              : "尚未配置第三方";
 
   return (
     <section
@@ -371,7 +377,11 @@ export default function ToolViewDesktop({
             <span
               className="tool-desktop-badge"
               data-tone={
-                native && !loading && status?.configured ? "success" : undefined
+                native &&
+                !loading &&
+                (activeProviderIsOfficial === true || status?.configured)
+                  ? "success"
+                  : undefined
               }
             >
               {configLabel}
@@ -380,7 +390,9 @@ export default function ToolViewDesktop({
           <p className="tool-desktop-description">
             {status && !status.supported
               ? "当前平台不支持 Desktop 第三方配置，相关操作已禁用。"
-              : "添加官方入口，或导入已保存的 Claude Code 线路。"}
+              : hasOfficialProvider
+                ? "官方入口已默认就绪；可从 Claude Code 导入第三方线路或按需开启本地路由。"
+                : "添加官方入口，或导入已保存的 Claude Code 线路。"}
           </p>
           {native && status?.supported && (
             <div className="tool-desktop-route-control">
@@ -414,14 +426,16 @@ export default function ToolViewDesktop({
               )}
               {busy === "import" ? "正在导入…" : "从 Claude Code 导入"}
             </Button>
-            <Button
-              variant="ghost"
-              disabled={!canConfigure}
-              onClick={() => void act("official")}
-            >
-              <Plus size={15} aria-hidden="true" />
-              {busy === "official" ? "正在添加…" : "添加官方入口"}
-            </Button>
+            {!hasOfficialProvider && (
+              <Button
+                variant="ghost"
+                disabled={!canConfigure}
+                onClick={() => void act("official")}
+              >
+                <Plus size={15} aria-hidden="true" />
+                {busy === "official" ? "正在添加…" : "添加官方入口"}
+              </Button>
+            )}
           </div>
         </section>
       </div>

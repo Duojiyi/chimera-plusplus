@@ -109,23 +109,10 @@ fn parse_provider_deeplink(
         .clone();
     // app-type parsing can start accepting it.
 
-    // Validate app type. Pi links are accepted but always import-only
-    // (see `deeplink_import_may_activate`).
-    if !matches!(
-        app.as_str(),
-        "claude"
-            | "claude-desktop"
-            | "claude_desktop"
-            | "codex"
-            | "gemini"
-            | "grokbuild"
-            | "opencode"
-            | "pi"
-    ) {
-        return Err(AppError::InvalidInput(format!(
-            "Invalid app type: must be 'claude', 'claude-desktop', 'codex', 'gemini', 'grokbuild', 'opencode', or 'pi', got '{app}'"
-        )));
-    }
+    // Validate app type via AppType::parse_id (covers all 17 registered tools).
+    let app_type = AppType::parse_id(&app).map_err(|_| {
+        AppError::InvalidInput(format!("Invalid app type for provider deep link: '{app}'"))
+    })?;
 
     let name = params
         .get("name")
@@ -197,7 +184,6 @@ fn parse_provider_deeplink(
 
     // Values the target tool would expand into a command, an environment
     // variable or a local file are refused before the link is queued.
-    let app_type = AppType::parse_id(&app)?;
 
     let request = DeepLinkImportRequest {
         version,
@@ -248,13 +234,13 @@ fn parse_prompt_deeplink(
         .ok_or_else(|| AppError::InvalidInput("Missing 'app' parameter for prompt".to_string()))?
         .clone();
 
-    // Validate app type
-    if !matches!(
-        app.as_str(),
-        "claude" | "codex" | "gemini" | "grokbuild" | "opencode"
-    ) {
+    // Validate app type (all prompt-capable tools; Claude Desktop has no prompts).
+    let parsed_prompt_app = AppType::parse_id(&app).map_err(|_| {
+        AppError::InvalidInput(format!("Invalid app type for prompt deep link: '{app}'"))
+    })?;
+    if matches!(parsed_prompt_app, AppType::ClaudeDesktop) {
         return Err(AppError::InvalidInput(format!(
-            "Invalid app type: must be 'claude', 'codex', 'gemini', 'grokbuild', 'opencode', got '{app}'"
+            "App '{app}' does not support prompt deep links"
         )));
     }
 
@@ -320,15 +306,15 @@ fn parse_mcp_deeplink(
         .ok_or_else(|| AppError::InvalidInput("Missing 'apps' parameter for MCP".to_string()))?
         .clone();
 
-    // Validate apps format
+    // Validate apps format (all 15 MCP-capable tools).
     for app in apps.split(',') {
         let trimmed = app.trim();
-        if !matches!(
-            trimmed,
-            "claude" | "codex" | "gemini" | "grokbuild" | "grok" | "opencode"
-        ) {
+        let parsed = AppType::parse_id(trimmed).map_err(|_| {
+            AppError::InvalidInput(format!("Invalid app in 'apps': got '{trimmed}'"))
+        })?;
+        if matches!(parsed, AppType::ClaudeDesktop | AppType::OpenClaw) {
             return Err(AppError::InvalidInput(format!(
-                "Invalid app in 'apps': must be 'claude', 'codex', 'gemini', 'grokbuild', 'opencode', got '{trimmed}'"
+                "App '{trimmed}' does not support MCP deep links"
             )));
         }
     }

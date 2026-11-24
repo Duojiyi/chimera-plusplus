@@ -105,6 +105,33 @@
 .v3-tool-bar[data-tool="grokbuild"] {
   background: #7d5738;
 }
+.v3-tool-bar[data-tool="openclaw"] {
+  background: #b93848;
+}
+.v3-tool-bar[data-tool="hermes"] {
+  background: #6c4ea8;
+}
+.v3-tool-bar[data-tool="agy"] {
+  background: #2f78b7;
+}
+.v3-tool-bar[data-tool="mcode"] {
+  background: #c85845;
+}
+.v3-tool-bar[data-tool="kimi"] {
+  background: #2e70c4;
+}
+.v3-tool-bar[data-tool="dsh"] {
+  background: #4059b3;
+}
+.v3-tool-bar[data-tool="copilot"] {
+  background: #4a5568;
+}
+.v3-tool-bar[data-tool="workbuddy"] {
+  background: #1a8a78;
+}
+.v3-tool-bar[data-tool="codebuddy"] {
+  background: #2b65b8;
+}
 
 /* ---------- 3b. 侧栏结构 ---------- */
 

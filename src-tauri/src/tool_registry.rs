@@ -40,9 +40,9 @@ pub struct ToolInfo {
 
 /// Shared with the renderer so browser previews use the same supported-tool
 /// metadata. It contains no installation detection, user preferences or secrets.
-pub static TOOLS: once_cell::sync::Lazy<[ToolInfo; 7]> = once_cell::sync::Lazy::new(|| {
+pub static TOOLS: once_cell::sync::Lazy<[ToolInfo; 17]> = once_cell::sync::Lazy::new(|| {
     serde_json::from_str(include_str!("../../src/shared/tool-registry.json"))
-        .expect("bundled tool registry must contain seven valid tools")
+        .expect("bundled tool registry must contain seventeen valid tools")
 });
 
 #[tauri::command]

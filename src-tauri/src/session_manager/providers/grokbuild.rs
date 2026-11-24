@@ -1,17 +1,21 @@
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::security_limits::{
-    canonicalize_within_root, collect_files_with_extensions, read_to_string_limited,
-    MAX_SESSION_FILE_BYTES, MAX_SESSION_SCAN_DEPTH,
+    canonicalize_within_root, collect_files_with_extensions, open_limited_regular_file,
+    read_to_string_limited, MAX_SESSION_FILE_BYTES, MAX_SESSION_SCAN_DEPTH,
 };
 use crate::session_manager::delete_backup::{backup_root, backup_session_files};
+use crate::session_manager::model::{SessionBlock, ToolStatus};
 use crate::session_manager::{SessionMessage, SessionMeta};
 
+use super::blocks::{assign_turn_ids, openai_tool_calls, tool_result_block};
 use super::utils::{
-    deletion_files, extract_text, parse_timestamp_to_ms, truncate_summary, TITLE_MAX_CHARS,
+    deletion_files, extract_text, parse_timestamp_to_ms, truncate_summary, LineSpans,
+    TITLE_MAX_CHARS,
 };
 
 #[derive(Debug, Deserialize)]
@@ -60,12 +64,16 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
         .parent()
         .ok_or_else(|| format!("Invalid Grok Build session path: {}", path.display()))?;
     let chat_path = session_dir.join("chat_history.jsonl");
-    let content = read_to_string_limited(&chat_path, MAX_SESSION_FILE_BYTES)
+    let file = open_limited_regular_file(&chat_path, MAX_SESSION_FILE_BYTES)
         .map_err(|e| format!("Failed to open Grok Build chat history: {e}"))?;
+    let mut lines = LineSpans::new(BufReader::new(file));
     let mut messages = Vec::new();
 
-    for line in content.lines() {
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
+    while let Ok(Some(line)) = lines.next_line() {
+        if line.bytes.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_slice::<Value>(line.bytes) else {
             continue;
         };
         let kind = value.get("type").and_then(Value::as_str).unwrap_or("");
@@ -75,22 +83,45 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
             // conversation messages shown by Grok's own history view.
             _ => continue,
         };
-        let content = value.get("content").map(extract_text).unwrap_or_default();
-        if content.trim().is_empty() {
-            continue;
-        }
+        let span = line.span;
+        let text = value.get("content").map(extract_text).unwrap_or_default();
+        let blocks = match role {
+            "tool" => vec![tool_result_block(
+                value
+                    .get("tool_call_id")
+                    .or_else(|| value.get("call_id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                ToolStatus::Unknown,
+                &text,
+                || Some(span.content_ref("/content")),
+            )],
+            "assistant" => {
+                let mut blocks = Vec::new();
+                if !text.trim().is_empty() {
+                    blocks.push(SessionBlock::text(text));
+                }
+                blocks.extend(openai_tool_calls(value.get("tool_calls"), |pointer| {
+                    Some(span.content_ref(format!("/tool_calls{pointer}")))
+                }));
+                blocks
+            }
+            _ if text.trim().is_empty() => Vec::new(),
+            _ => vec![SessionBlock::text(text)],
+        };
         let ts = value
             .get("timestamp")
             .or_else(|| value.get("ts"))
             .and_then(parse_timestamp_to_ms);
-        messages.push(SessionMessage {
-            role: role.to_string(),
-            content,
-            ts,
-            truncated: false,
-        });
+        let mut message = SessionMessage::from_blocks(role, ts, blocks);
+        if message.is_empty() {
+            continue;
+        }
+        message.injected = role == "system";
+        messages.push(message);
     }
 
+    assign_turn_ids(&mut messages);
     Ok(messages)
 }
 

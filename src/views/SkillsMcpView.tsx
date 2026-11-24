@@ -22,6 +22,7 @@ import { toast } from "sonner";
 import "./SkillsMcpView.css";
 import "@/theme/v3/skills-mcp.css";
 import { settingsApi } from "@/lib/api/settings";
+import { MCP_APP_IDS } from "@/config/appConfig";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
 import {
@@ -72,15 +73,24 @@ const RESOURCE_TOOLS = [
   { id: "gemini", name: "Gemini CLI" },
   { id: "grokbuild", name: "Grok Build" },
   { id: "opencode", name: "OpenCode" },
+  { id: "hermes", name: "Hermes" },
+  { id: "agy", name: "Antigravity" },
+  { id: "mcode", name: "MiniMax Code" },
+  { id: "kimi", name: "Kimi Code" },
+  { id: "dsh", name: "DeepSeek Harness" },
+  { id: "copilot", name: "Copilot CLI" },
+  { id: "workbuddy", name: "WorkBuddy" },
+  { id: "codebuddy", name: "CodeBuddy Code" },
 ] as const;
 type ResourceApp = (typeof RESOURCE_TOOLS)[number]["id"];
-const MCP_APPS = RESOURCE_TOOLS.map((tool) => tool.id);
 
 /** Where the local scan found a Skill, in words a user recognises. */
 const SOURCE_LABELS: Record<string, string> = {
   ...Object.fromEntries(RESOURCE_TOOLS.map((tool) => [tool.id, tool.name])),
   "claude-desktop": "Claude Desktop",
+  openclaw: "OpenClaw",
   pi: "Pi",
+  omp: "Oh My Pi",
   agents: "通用目录 .agents",
   "cc-switch": "Chimera++ 共享目录",
 };
@@ -88,10 +98,15 @@ const sourceLabel = (id: string) => SOURCE_LABELS[id] ?? id;
 const importKey = (skill: UnmanagedSkill) =>
   JSON.stringify([skill.directory, skill.path, skill.contentHash ?? ""]);
 
+const ALL_KNOWN_MCP_LABELS: ReadonlyArray<{ id: AppId; name: string }> = [
+  ...RESOURCE_TOOLS,
+  { id: "pi", name: "Pi" },
+  { id: "omp", name: "Oh My Pi" },
+];
+
 /** Names of the tools a resource is currently registered with. */
-const enabledToolNames = (
-  apps: Partial<Record<ResourceApp, boolean | undefined>>,
-) => RESOURCE_TOOLS.filter((tool) => apps[tool.id]).map((tool) => tool.name);
+const enabledToolNames = (apps: Partial<Record<AppId, boolean | undefined>>) =>
+  ALL_KNOWN_MCP_LABELS.filter((tool) => apps[tool.id]).map((tool) => tool.name);
 
 /** The folder name a repository Skill installs into, as the backend derives it. */
 const installFolder = (directory: string) =>
@@ -1724,7 +1739,7 @@ export const SkillsMcpView: React.FC<{
                 : "json"
             }
             defaultEnabledApps={[targetApp]}
-            visibleApps={MCP_APPS}
+            visibleApps={MCP_APP_IDS}
             onClose={() => setEditing(null)}
             onSave={async () => {
               setEditing(null);

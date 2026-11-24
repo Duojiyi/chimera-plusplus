@@ -1,0 +1,82 @@
+.app-glyph,
+.app-glyph-plate {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.app-glyph {
+  position: relative;
+}
+
+.app-glyph-corner {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  border-radius: 3.5px;
+  background: rgba(244, 246, 250, 0.96);
+  box-shadow: 0 0 0 1px rgba(17, 19, 24, 0.08);
+  color: var(--text-2);
+}
+
+.app-glyph-plate {
+  border-radius: 9px;
+  background: rgba(17, 19, 24, 0.048);
+  border: 1px solid rgba(17, 19, 24, 0.06);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+}
+
+.route-glyph-official,
+.route-glyph-brand {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: rgba(17, 19, 24, 0.085);
+}
+
+.route-glyph-official {
+  box-shadow:
+    inset 0 1px 0 #fff,
+    0 1px 3px rgba(17, 19, 24, 0.05);
+}
+
+.route-glyph-monogram {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--v5-ink-1, #171a20);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 1px 2px rgba(17, 19, 24, 0.08);
+  color: #fff;
+  font-family: var(--font-latin), var(--font-cjk), sans-serif;
+  font-weight: 650;
+  line-height: 1;
+  user-select: none;
+}
+
+.route-glyph-monogram[data-size="24"] {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.route-glyph-monogram[data-size="28"] {
+  width: 28px;
+  height: 28px;
+  font-size: 13px;
+}
+
+.route-glyph-monogram[data-size="38"] {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: #0c1a24;
+  font-size: 16px;
+}

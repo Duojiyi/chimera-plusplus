@@ -17,6 +17,36 @@ pub(crate) fn lock_operation() -> Result<MutexGuard<'static, ()>, AppError> {
         .map_err(|_| AppError::Message("MCP operation lock poisoned".into()))
 }
 
+impl mcp::McpImportStore for crate::database::Database {
+    fn existing_mcp_rows(&self) -> Result<(IndexMap<String, McpServer>, Vec<String>), AppError> {
+        Ok(self
+            .get_mcp_server_rows()?
+            .into_readable_and_unreadable_ids())
+    }
+
+    fn readable_mcp_servers(&self, context: &str) -> Result<IndexMap<String, McpServer>, AppError> {
+        Ok(self.get_mcp_server_rows()?.into_readable(context))
+    }
+
+    fn save_mcp_server(&self, server: &McpServer) -> Result<(), AppError> {
+        self.save_mcp_server(server)
+    }
+}
+
+impl mcp::McpImportStore for AppState {
+    fn existing_mcp_rows(&self) -> Result<(IndexMap<String, McpServer>, Vec<String>), AppError> {
+        mcp::McpImportStore::existing_mcp_rows(self.db.as_ref())
+    }
+
+    fn readable_mcp_servers(&self, context: &str) -> Result<IndexMap<String, McpServer>, AppError> {
+        mcp::McpImportStore::readable_mcp_servers(self.db.as_ref(), context)
+    }
+
+    fn save_mcp_server(&self, server: &McpServer) -> Result<(), AppError> {
+        mcp::McpImportStore::save_mcp_server(self.db.as_ref(), server)
+    }
+}
+
 pub struct McpService;
 
 impl McpService {
@@ -29,16 +59,7 @@ impl McpService {
     // Provider re-projection already holds its client lock and only takes MCP.
     fn lock_clients(state: &AppState) -> Vec<tokio::sync::OwnedMutexGuard<()>> {
         AppType::all()
-            .filter(|app| {
-                matches!(
-                    app,
-                    AppType::Claude
-                        | AppType::Codex
-                        | AppType::Gemini
-                        | AppType::GrokBuild
-                        | AppType::OpenCode
-                )
-            })
+            .filter(|app| !matches!(app, AppType::ClaudeDesktop | AppType::OpenClaw))
             .map(|app| {
                 futures::executor::block_on(state.proxy_service.lock_switch_for_app(app.as_str()))
             })
@@ -142,7 +163,7 @@ impl McpService {
         Self::with_projection_undo(state, |journal| {
             for app in AppType::all() {
                 if let Some(old) = app_spec(&server, &app) {
-                    Self::project_one(state, &app, id, None, Some(&old), journal)?;
+                    Self::project_one(state, &app, id, None, Some(&old), true, journal)?;
                 }
             }
             // Delete last, so failed projection can never recreate a lossy row.
@@ -190,6 +211,7 @@ impl McpService {
                     id,
                     new_spec.as_ref(),
                     old_spec.as_ref(),
+                    false,
                     journal,
                 )?;
             }
@@ -248,6 +270,7 @@ impl McpService {
                             id,
                             new_spec.as_ref(),
                             old_spec.as_ref(),
+                            false,
                             journal,
                         )?;
                     }
@@ -307,10 +330,58 @@ impl McpService {
         id: &str,
         spec: Option<&serde_json::Value>,
         old: Option<&serde_json::Value>,
+        is_delete: bool,
         journal: &mut Vec<AppliedChangeset>,
     ) -> Result<(), AppError> {
-        if *app != AppType::Codex {
-            return mcp::projection::project(&state.db, app, id, spec, journal, old);
+        match app {
+            AppType::ClaudeDesktop | AppType::OpenClaw => return Ok(()),
+            AppType::Hermes => {
+                return match spec {
+                    Some(spec) => mcp::hermes::sync_single_server_to_hermes(id, spec),
+                    None => mcp::hermes::remove_server_from_hermes(id),
+                };
+            }
+            AppType::Agy => {
+                return if spec.is_none() && is_delete {
+                    mcp::agy::remove(id)
+                } else {
+                    mcp::agy::sync(id, spec)
+                };
+            }
+            AppType::Dsh => return mcp::dsh::sync(id, spec),
+            AppType::Kimi => return mcp::kimi::sync(id, spec),
+            AppType::Copilot => {
+                return if spec.is_none() && is_delete {
+                    mcp::copilot::remove(id)
+                } else {
+                    mcp::copilot::sync(id, spec)
+                };
+            }
+            AppType::WorkBuddy => return mcp::workbuddy::sync(id, spec),
+            AppType::Codebuddy => return mcp::codebuddy::sync(id, spec),
+            AppType::Mcode => return mcp::mcode::sync(id, spec),
+            AppType::Pi => {
+                return if spec.is_none() && is_delete {
+                    mcp::pi::remove(id)
+                } else {
+                    mcp::pi::sync(id, spec)
+                };
+            }
+            AppType::Omp => {
+                let change = match spec {
+                    Some(spec) => mcp::omp::OmpChange::Enable(spec, old.unwrap_or(spec)),
+                    None if is_delete => mcp::omp::OmpChange::Remove(old),
+                    None => match old {
+                        Some(prev) => mcp::omp::OmpChange::Disable(prev, prev),
+                        None => mcp::omp::OmpChange::Remove(None),
+                    },
+                };
+                return mcp::omp::sync_change(id, change);
+            }
+            AppType::Claude | AppType::Gemini | AppType::GrokBuild | AppType::OpenCode => {
+                return mcp::projection::project(&state.db, app, id, spec, journal, old);
+            }
+            AppType::Codex => {}
         }
         let mut ledger = mcp::CodexMcpLedger::load(&state.db)?;
         let result = match spec {
@@ -348,7 +419,7 @@ impl McpService {
         for server in state.db.get_all_mcp_servers()?.values() {
             let spec = server.apps.is_enabled_for(app).then_some(&server.server);
             if let Err(error) = Self::with_projection_undo(state, |journal| {
-                Self::project_one(state, app, &server.id, spec, None, journal)
+                Self::project_one(state, app, &server.id, spec, None, false, journal)
             }) {
                 errors.push(format!("{}: {error}", server.id));
             }
@@ -433,6 +504,18 @@ impl McpService {
     }
 
     fn import_app_locked(state: &AppState, app: &AppType) -> Result<usize, AppError> {
+        match app {
+            AppType::Agy => return mcp::agy::import(state.db.as_ref()),
+            AppType::Dsh => return mcp::dsh::import(state.db.as_ref()),
+            AppType::Kimi => return mcp::kimi::import(state.db.as_ref()),
+            AppType::Copilot => return mcp::copilot::import(state.db.as_ref()),
+            AppType::WorkBuddy => return mcp::workbuddy::import(state.db.as_ref()),
+            AppType::Codebuddy => return mcp::codebuddy::import(state.db.as_ref()),
+            AppType::Mcode => return mcp::mcode::import(state.db.as_ref()),
+            AppType::Pi => return mcp::pi::import(state.db.as_ref()),
+            AppType::Omp => return mcp::omp::import(state.db.as_ref()),
+            _ => {}
+        }
         let mut imported = crate::app_config::MultiAppConfig::default();
         let count = match app {
             AppType::Claude => mcp::import_from_claude(&mut imported)?,
@@ -440,6 +523,7 @@ impl McpService {
             AppType::Gemini => mcp::import_from_gemini(&mut imported)?,
             AppType::GrokBuild => mcp::import_from_grokbuild(&mut imported)?,
             AppType::OpenCode => mcp::import_from_opencode(&mut imported)?,
+            AppType::Hermes => mcp::hermes::import_from_hermes(&mut imported)?,
 
             _ => return Ok(0),
         };
@@ -561,6 +645,16 @@ impl McpService {
             AppType::Gemini,
             AppType::GrokBuild,
             AppType::OpenCode,
+            AppType::Hermes,
+            AppType::Mcode,
+            AppType::Kimi,
+            AppType::Codebuddy,
+            AppType::Dsh,
+            AppType::WorkBuddy,
+            AppType::Agy,
+            AppType::Pi,
+            AppType::Omp,
+            AppType::Copilot,
         ] {
             let result = Self::import_app_locked(state, &app);
             let app = app.as_str();
@@ -586,6 +680,7 @@ impl McpService {
 
 /// Where an imported server lands in the DB (see `save_imported_servers`).
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ImportTarget {
     SameId(McpServer),
     SameContent(String),

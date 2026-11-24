@@ -85,8 +85,17 @@ const PROMPT_TOOLS = [
   { id: "gemini", name: "Gemini CLI", file: "GEMINI.md" },
   { id: "grokbuild", name: "Grok Build", file: "AGENTS.md" },
   { id: "opencode", name: "OpenCode", file: "AGENTS.md" },
+  { id: "openclaw", name: "OpenClaw", file: "AGENTS.md" },
+  { id: "hermes", name: "Hermes", file: "SOUL.md" },
   { id: "pi", name: "Pi", file: "AGENTS.md" },
   { id: "omp", name: "oh-my-pi", file: "AGENTS.md" },
+  { id: "agy", name: "Antigravity", file: "AGENTS.md" },
+  { id: "mcode", name: "MiniMax Code", file: "AGENTS.md" },
+  { id: "kimi", name: "Kimi Code", file: "AGENTS.md" },
+  { id: "dsh", name: "DeepSeek Harness", file: "AGENTS.md" },
+  { id: "copilot", name: "Copilot CLI", file: "copilot-instructions.md" },
+  { id: "workbuddy", name: "WorkBuddy", file: "MEMORY.md" },
+  { id: "codebuddy", name: "CodeBuddy Code", file: "CODEBUDDY.md" },
 ] as const;
 type PromptToolId = (typeof PROMPT_TOOLS)[number]["id"];
 const UNSUPPORTED_PROMPT_TOOLS = "Claude Desktop 暂不支持提示词";

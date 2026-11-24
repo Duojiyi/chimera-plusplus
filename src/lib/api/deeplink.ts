@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { AppId } from "./types";
 
 export type ResourceType = "provider" | "prompt" | "mcp" | "skill";
 
@@ -7,15 +8,7 @@ export interface DeepLinkImportRequest {
   resource: ResourceType;
 
   // Common fields
-  app?:
-    | "claude"
-    | "claude-desktop"
-    | "claude_desktop"
-    | "codex"
-    | "gemini"
-    | "grokbuild"
-    | "opencode"
-    | "pi";
+  app?: AppId | "claude_desktop";
   name?: string;
   /**
    * What the link asks for. For providers the confirm dialog replaces it with

@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { LineBadge } from "./LineBadge";
+import { RouteGlyph } from "./AppGlyph";
 import { CodeBlock } from "./deeplink/CodeBlock";
 import { McpConfirmation } from "./deeplink/McpConfirmation";
 import { PromptConfirmation } from "./deeplink/PromptConfirmation";
@@ -153,7 +153,17 @@ const VISIBLE_APP_KEYS: ReadonlyArray<keyof VisibleApps> = [
   "gemini",
   "grokbuild",
   "opencode",
+  "openclaw",
+  "hermes",
   "pi",
+  "omp",
+  "agy",
+  "mcode",
+  "kimi",
+  "dsh",
+  "copilot",
+  "workbuddy",
+  "codebuddy",
 ];
 
 function visibleAppKey(app?: string): keyof VisibleApps | null {
@@ -732,7 +742,11 @@ export function DeepLinkImportDialog({
                 <span className="dl-plate-band" aria-hidden="true" />
                 <div className="dl-plate-body">
                   <div className="dl-plate-top">
-                    <LineBadge line={{ name: request.name ?? "" }} size="lg" />
+                    <RouteGlyph
+                      appId={request.app ?? "codex"}
+                      line={{ name: request.name ?? "" }}
+                      size={38}
+                    />
                     <div className="dl-plate-title">
                       <span className="dl-plate-eyebrow">新线路</span>
                       <strong id={`${ids}-name`} className="dl-plate-name">

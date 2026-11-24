@@ -1395,6 +1395,36 @@
 .chimera-shell .v3-settings-page .settings-tool-mark[data-tool="pi"] {
   background: #54683f;
 }
+.chimera-shell .v3-settings-page .settings-tool-mark[data-tool="omp"] {
+  background: #7d5570;
+}
+.chimera-shell .v3-settings-page .settings-tool-mark[data-tool="openclaw"] {
+  background: #b93848;
+}
+.chimera-shell .v3-settings-page .settings-tool-mark[data-tool="hermes"] {
+  background: #6c4ea8;
+}
+.chimera-shell .v3-settings-page .settings-tool-mark[data-tool="agy"] {
+  background: #2f78b7;
+}
+.chimera-shell .v3-settings-page .settings-tool-mark[data-tool="mcode"] {
+  background: #c85845;
+}
+.chimera-shell .v3-settings-page .settings-tool-mark[data-tool="kimi"] {
+  background: #2e70c4;
+}
+.chimera-shell .v3-settings-page .settings-tool-mark[data-tool="dsh"] {
+  background: #4059b3;
+}
+.chimera-shell .v3-settings-page .settings-tool-mark[data-tool="copilot"] {
+  background: #4a5568;
+}
+.chimera-shell .v3-settings-page .settings-tool-mark[data-tool="workbuddy"] {
+  background: #1a8a78;
+}
+.chimera-shell .v3-settings-page .settings-tool-mark[data-tool="codebuddy"] {
+  background: #2b65b8;
+}
 
 .chimera-shell .settings-current-language {
   padding: 4px 12px;

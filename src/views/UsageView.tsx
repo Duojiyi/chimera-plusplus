@@ -13,6 +13,7 @@ import {
   CircleAlert,
   DatabaseBackup,
   History,
+  LayoutGrid,
   MoreHorizontal,
   RefreshCw,
   RotateCcw,
@@ -21,6 +22,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -53,14 +55,17 @@ import {
   type UsageRange,
 } from "@/utils/usageMetrics";
 import { usageApi } from "@/lib/api/usage";
-import type {
-  CodexUsageRebuildResult,
-  ConversationUsageReport,
-  DailyStats,
-  ModelStats,
-  ProviderStats,
-  SessionSyncResult,
-  UsageSummary,
+import {
+  KNOWN_APP_TYPES,
+  type AppType,
+  type AppTypeFilter,
+  type CodexUsageRebuildResult,
+  type ConversationUsageReport,
+  type DailyStats,
+  type ModelStats,
+  type ProviderStats,
+  type SessionSyncResult,
+  type UsageSummary,
 } from "@/types/usage";
 import {
   isUsageDesignPreview,
@@ -84,6 +89,40 @@ const usageRangeTitles: Record<UsageRange, string> = {
   "30d": "近 30 天",
 };
 const RANGE_OPTIONS: UsageRange[] = ["today", "7d", "30d"];
+const APP_FILTER_OPTIONS: AppTypeFilter[] = ["all", ...KNOWN_APP_TYPES];
+const APP_FILTER_ICONS: Record<AppType, string> = {
+  claude: "claude",
+  codex: "openai",
+  gemini: "gemini",
+  grokbuild: "grok",
+  opencode: "opencode",
+  pi: "pi",
+  omp: "omp",
+  mcode: "minimax",
+  kimi: "kimi",
+  codebuddy: "codebuddy",
+  dsh: "deepseek",
+  agy: "antigravity",
+  copilot: "githubcopilot",
+  workbuddy: "workbuddy",
+};
+const APP_FILTER_LABELS: Record<AppTypeFilter, string> = {
+  all: "全部应用",
+  claude: "Claude Code",
+  codex: "Codex",
+  gemini: "Gemini CLI",
+  grokbuild: "Grok Build",
+  opencode: "OpenCode",
+  pi: "Pi",
+  omp: "Oh My Pi",
+  mcode: "MiniMax Code",
+  kimi: "Kimi Code",
+  codebuddy: "CodeBuddy Code",
+  dsh: "DeepSeek Harness",
+  agy: "Antigravity",
+  copilot: "Copilot CLI",
+  workbuddy: "WorkBuddy",
+};
 
 /** More buckets than this get thin bars, no value labels and a sparse axis. */
 const DENSE_BUCKETS = 14;
@@ -183,6 +222,7 @@ export function UsageView() {
   // When the numbers on screen were read, not when the page last rendered.
   const [loadedAt, setLoadedAt] = useState<number | null>(null);
   const [range, setRange] = useState<UsageRange>("7d");
+  const [appFilter, setAppFilter] = useState<AppTypeFilter>("codex");
   const [statsError, setStatsError] = useState("");
   const [loadedHourly, setLoadedHourly] = useState(false);
   const [syncing, setSyncing] = useState(runningInTauri);
@@ -221,10 +261,12 @@ export function UsageView() {
     end: number;
   } | null>(null);
   const latestRange = useRef(range);
+  const latestAppFilter = useRef(appFilter);
   const latestConversationQuery = useRef(conversationQuery);
   const fetchedConversationQuery = useRef("");
   const mounted = useRef(true);
   latestRange.current = range;
+  latestAppFilter.current = appFilter;
   latestConversationQuery.current = conversationQuery;
 
   const loadConversations = useCallback(async () => {
@@ -257,19 +299,25 @@ export function UsageView() {
   }, []);
 
   const loadStats = useCallback(
-    async (selectedRange: UsageRange, nextRequestId: number) => {
+    async (
+      selectedRange: UsageRange,
+      nextRequestId: number,
+      selectedAppFilter: AppTypeFilter = latestAppFilter.current,
+    ) => {
       const { start, end } = usageWindow(selectedRange);
+      const selectedApp =
+        selectedAppFilter === "all" ? undefined : selectedAppFilter;
       // Optional rankings should not delay the overview. Publish them only
       // after the required data for this exact query window has committed.
       const nextProviders = Promise.resolve()
-        .then(() => usageApi.getProviderStats(start, end, "codex"))
+        .then(() => usageApi.getProviderStats(start, end, selectedApp))
         .then((rows) => (Array.isArray(rows) ? rows : null))
         .catch(() => null);
       try {
         const [nextSummary, nextTrends, nextModels] = await Promise.all([
-          usageApi.getUsageSummary(start, end, "codex"),
-          usageApi.getUsageTrends(start, end, "codex"),
-          usageApi.getModelStats(start, end, "codex"),
+          usageApi.getUsageSummary(start, end, selectedApp),
+          usageApi.getUsageTrends(start, end, selectedApp),
+          usageApi.getModelStats(start, end, selectedApp),
         ]);
         if (nextRequestId !== requestId.current) return;
         displayedWindow.current = { id: nextRequestId, start, end };
@@ -286,7 +334,9 @@ export function UsageView() {
         void nextProviders.then((rows) => {
           if (displayedWindow.current?.id === nextRequestId) setProviders(rows);
         });
-        void loadConversations();
+        if (selectedAppFilter === "codex") {
+          void loadConversations();
+        }
       } catch (reason) {
         if (nextRequestId === requestId.current) setStatsError(String(reason));
       }
@@ -307,7 +357,11 @@ export function UsageView() {
           if (!result.imported) return;
           const nextId = ++requestId.current;
           setRangeLoading(true);
-          void loadStats(latestRange.current, nextId).finally(() => {
+          void loadStats(
+            latestRange.current,
+            nextId,
+            latestAppFilter.current,
+          ).finally(() => {
             if (nextId === requestId.current) setRangeLoading(false);
           });
         },
@@ -322,17 +376,29 @@ export function UsageView() {
     [loadStats],
   );
 
-  const startSync = useCallback(() => {
-    if (sessionSync.current) return;
-    const promise = Promise.resolve().then(() =>
-      usageApi.syncCodexSessionUsage(),
-    );
-    sessionSync.current = promise;
-    finishSync(promise);
-  }, [finishSync]);
+  const startSync = useCallback(
+    (selectedAppFilter: AppTypeFilter = latestAppFilter.current) => {
+      if (sessionSync.current) return;
+      const syncAll =
+        selectedAppFilter !== "codex" &&
+        typeof usageApi.syncSessionUsage === "function";
+      const promise = Promise.resolve().then(() =>
+        syncAll
+          ? usageApi.syncSessionUsage()
+          : usageApi.syncCodexSessionUsage(),
+      );
+      sessionSync.current = promise;
+      finishSync(promise);
+    },
+    [finishSync],
+  );
 
   const loadUsage = useCallback(
-    async (selectedRange: UsageRange, syncSessions: boolean) => {
+    async (
+      selectedRange: UsageRange,
+      syncSessions: boolean,
+      selectedAppFilter: AppTypeFilter = latestAppFilter.current,
+    ) => {
       const nextId = ++requestId.current;
       if (!runningInTauri) {
         // `?preview=design` shows the §6 baseline so the layout can be
@@ -352,10 +418,10 @@ export function UsageView() {
         return;
       }
       setRangeLoading(true);
-      const stats = loadStats(selectedRange, nextId);
+      const stats = loadStats(selectedRange, nextId, selectedAppFilter);
       if (syncSessions) {
         setSyncing(true);
-        startSync();
+        startSync(selectedAppFilter);
       }
       try {
         await stats;
@@ -376,11 +442,31 @@ export function UsageView() {
     };
   }, []);
 
+  const syncedAllOnce = useRef(false);
+  const pendingAllSync = useRef(false);
   useEffect(() => {
-    const sync = !initialLoad.current;
+    const firstLoad = !initialLoad.current;
     initialLoad.current = true;
-    void loadUsage(range, sync);
-  }, [loadUsage, range]);
+    const shouldSyncForNewApp =
+      !firstLoad && appFilter !== "codex" && !syncedAllOnce.current;
+    if (shouldSyncForNewApp) {
+      if (sessionSync.current) {
+        pendingAllSync.current = true;
+      } else {
+        syncedAllOnce.current = true;
+      }
+    }
+    void loadUsage(range, firstLoad || shouldSyncForNewApp, appFilter);
+  }, [loadUsage, range, appFilter]);
+
+  useEffect(() => {
+    if (!syncing && pendingAllSync.current && !syncedAllOnce.current) {
+      pendingAllSync.current = false;
+      syncedAllOnce.current = true;
+      setSyncing(true);
+      startSync(latestAppFilter.current);
+    }
+  }, [syncing, startSync]);
 
   useEffect(() => {
     const query = conversationQuery.trim();
@@ -486,16 +572,18 @@ export function UsageView() {
           ? `已读取 ${n(sessionFiles)} 个`
           : "等待同步";
 
+  const activeAppLabel =
+    appFilter === "all" ? "本机工具" : APP_FILTER_LABELS[appFilter];
   const emptyTitle = !runningInTauri
     ? "浏览器预览不读取本机会话记录"
     : sessionFiles === 0
-      ? "本机还没有 Codex 会话记录"
-      : `${usageRangeTitles[displayedRange]}没有 Codex 用量记录`;
+      ? `本机还没有 ${activeAppLabel} 会话记录`
+      : `${usageRangeTitles[displayedRange]}没有 ${activeAppLabel} 用量记录`;
   const emptyText = !runningInTauri
     ? "在 Chimera++ 应用里打开用量页，即可查看本机记录。"
     : sessionFiles === 0
-      ? "用量来自 Codex 在本机保存的会话记录。用 Codex 完成一次对话后，点“刷新”即可看到。"
-      : "换个时间范围看看，或用 Codex 完成对话后点“刷新”。";
+      ? `用量来自 ${activeAppLabel} 在本机保存的会话记录。完成一次对话后，点“刷新”即可看到。`
+      : `换个时间范围看看，或在 ${activeAppLabel} 完成对话后点“刷新”。`;
 
   const failureReasons = [...new Set([statsError, syncFailure])].filter(
     Boolean,
@@ -591,7 +679,10 @@ export function UsageView() {
   ];
 
   return (
-    <section className="usage-design-view" aria-label="Codex 用量">
+    <section
+      className="usage-design-view"
+      aria-label={`${activeAppLabel} 用量`}
+    >
       <header className="usage-design-heading">
         <div className="usage-heading-text">
           <h1>用量</h1>
@@ -607,7 +698,7 @@ export function UsageView() {
               align="start"
               className="usage-status-help"
             >
-              统计 Codex
+              统计 {activeAppLabel}
               本机会话记录和经过本地代理的请求；词元含缓存，按本地时间分日。
             </HelpTip>
           </p>
@@ -683,6 +774,41 @@ export function UsageView() {
           </button>
         </div>
       </header>
+
+      <div className="usage-app-filter-bar" role="group" aria-label="应用范围">
+        {APP_FILTER_OPTIONS.map((type) => {
+          const label = APP_FILTER_LABELS[type];
+          const active = appFilter === type;
+          return (
+            <button
+              key={type}
+              type="button"
+              className={`usage-app-filter-btn${active ? " is-active" : ""}`}
+              onClick={() => setAppFilter(type)}
+              disabled={rangeLocked}
+              title={label}
+              aria-label={label}
+              aria-pressed={active}
+            >
+              {type === "all" ? (
+                <>
+                  <LayoutGrid size={14} aria-hidden="true" />
+                  <span>全部</span>
+                </>
+              ) : (
+                <>
+                  <ProviderIcon
+                    icon={APP_FILTER_ICONS[type]}
+                    name={label}
+                    size={15}
+                  />
+                  <span>{label}</span>
+                </>
+              )}
+            </button>
+          );
+        })}
+      </div>
 
       {failureReasons.length > 0 && (
         <div className="usage-notice is-error" role="alert">
@@ -1035,9 +1161,13 @@ export function UsageView() {
           >
             <AdvancedUsageDashboard
               detailsOnly
+              hideAppFilter
+              hideDatePicker
               refreshIntervalMs={0}
               rangePreset={displayedRange}
-              initialAppType="codex"
+              initialAppType={appFilter}
+              appType={appFilter}
+              onAppTypeChange={setAppFilter}
               refreshStamp={loadedAt ?? undefined}
             />
           </Suspense>

@@ -364,8 +364,11 @@ describe("unified prompt library", () => {
     expect(screen.getByRole("status")).toHaveTextContent("正在读取提示词…");
     expect(screen.getAllByText(/正在读取/)).toHaveLength(1);
     expect(
-      screen.queryByRole("option", { name: /MiniMax|Desktop/ }),
+      screen.queryByRole("option", { name: /Desktop/ }),
     ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "MiniMax Code" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "Pi" })).toBeInTheDocument();
     expect(
       screen.getByRole("option", { name: "oh-my-pi" }),

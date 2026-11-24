@@ -47,6 +47,12 @@ const BUILTIN_PRICING_PROMOS: &[BuiltinPricingPromo] = &[
         price: ["4", "20", "0.40", "5"],
         until: (2026, 11, 21),
     },
+    // Google Gemini 4 Argon / Carbon 介绍价至 2026-11-30，挂牌价 4.00/20.00/0.20。
+    BuiltinPricingPromo {
+        model_ids: &["gemini-4-argon", "gemini-4-carbon"],
+        price: ["2.00", "10.00", "0.10", "0"],
+        until: (2026, 11, 30),
+    },
     // Google Gemini 3.6 / 3.7 / 3.8 Flash 介绍价至 2026-12-31，挂牌价 1.50/7.50/0.15。
     BuiltinPricingPromo {
         model_ids: &["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"],
@@ -91,6 +97,37 @@ impl Database {
 
     /// 在指定连接上创建表（供迁移和测试使用）
     pub(crate) fn create_tables_on_conn(conn: &Connection) -> Result<(), AppError> {
+        Self::in_savepoint(conn, "create_tables", || {
+            Self::create_tables_on_conn_unbatched(conn)
+        })
+    }
+
+    /// 在 SAVEPOINT 里执行一组写入：成功 RELEASE，失败 ROLLBACK TO 再 RELEASE。
+    ///
+    /// 自动提交模式下每条语句单独一个事务，都要建 / 删一次日志文件并落盘；建表和
+    /// 二百多条内置定价逐条提交，在 Windows 上新库要多花约 6 秒（首次启动、每个用到
+    /// 数据库的测试都会碰上）。合成一个事务只落一次盘。外面已有事务时 SAVEPOINT 会嵌套。
+    pub(crate) fn in_savepoint<T>(
+        conn: &Connection,
+        name: &str,
+        f: impl FnOnce() -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        conn.execute_batch(&format!("SAVEPOINT {name};"))
+            .map_err(|e| AppError::Database(format!("开启 savepoint {name} 失败: {e}")))?;
+        match f() {
+            Ok(value) => {
+                conn.execute_batch(&format!("RELEASE {name};"))
+                    .map_err(|e| AppError::Database(format!("提交 savepoint {name} 失败: {e}")))?;
+                Ok(value)
+            }
+            Err(err) => {
+                let _ = conn.execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name};"));
+                Err(err)
+            }
+        }
+    }
+
+    fn create_tables_on_conn_unbatched(conn: &Connection) -> Result<(), AppError> {
         // 1. Providers 表
         conn.execute(
             "CREATE TABLE IF NOT EXISTS providers (
@@ -137,6 +174,15 @@ impl Database {
             enabled_gemini BOOLEAN NOT NULL DEFAULT 0, enabled_grokbuild BOOLEAN NOT NULL DEFAULT 0,
             enabled_opencode BOOLEAN NOT NULL DEFAULT 0,
             enabled_hermes BOOLEAN NOT NULL DEFAULT 0,
+            enabled_mcode BOOLEAN NOT NULL DEFAULT 0,
+            enabled_agy BOOLEAN NOT NULL DEFAULT 0,
+            enabled_kimi BOOLEAN NOT NULL DEFAULT 0,
+            enabled_dsh BOOLEAN NOT NULL DEFAULT 0,
+            enabled_copilot BOOLEAN NOT NULL DEFAULT 0,
+            enabled_workbuddy BOOLEAN NOT NULL DEFAULT 0,
+            enabled_codebuddy BOOLEAN NOT NULL DEFAULT 0,
+            enabled_pi BOOLEAN NOT NULL DEFAULT 0,
+            enabled_omp BOOLEAN NOT NULL DEFAULT 0,
             notes TEXT
         )",
             [],
@@ -169,6 +215,13 @@ impl Database {
             enabled_grokbuild BOOLEAN NOT NULL DEFAULT 0,
             enabled_opencode BOOLEAN NOT NULL DEFAULT 0,
             enabled_hermes BOOLEAN NOT NULL DEFAULT 0,
+            enabled_mcode BOOLEAN NOT NULL DEFAULT 0,
+            enabled_agy BOOLEAN NOT NULL DEFAULT 0,
+            enabled_kimi BOOLEAN NOT NULL DEFAULT 0,
+            enabled_dsh BOOLEAN NOT NULL DEFAULT 0,
+            enabled_copilot BOOLEAN NOT NULL DEFAULT 0,
+            enabled_workbuddy BOOLEAN NOT NULL DEFAULT 0,
+            enabled_codebuddy BOOLEAN NOT NULL DEFAULT 0,
             installed_at INTEGER NOT NULL DEFAULT 0,
             content_hash TEXT,
             updated_at INTEGER NOT NULL DEFAULT 0,
@@ -388,13 +441,21 @@ impl Database {
                 file_path TEXT PRIMARY KEY,
                 last_modified INTEGER NOT NULL,
                 last_line_offset INTEGER NOT NULL DEFAULT 0,
-                last_synced_at INTEGER NOT NULL
+                last_synced_at INTEGER NOT NULL,
+                last_byte_offset INTEGER,
+                last_tail_fingerprint INTEGER,
+                parser_state TEXT
             )",
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         Self::add_column_if_missing(conn, "session_log_sync", "last_file_size", "INTEGER")?;
+        Self::add_column_if_missing(conn, "session_log_sync", "last_byte_offset", "INTEGER")?;
+        Self::add_column_if_missing(conn, "session_log_sync", "last_tail_fingerprint", "INTEGER")?;
+        Self::add_column_if_missing(conn, "session_log_sync", "parser_state", "TEXT")?;
+
+        Self::create_session_usage_dedup_table(conn)?;
 
         // 19. Profiles 表（全应用共享的项目实体，payload 按 app 分槽快照
         //     供应商/MCP/Skills/Prompt；各应用分组的 current 标记在 settings 表）
@@ -610,6 +671,13 @@ impl Database {
                         log::info!("迁移数据库从 v17 到 v18（官方账号元数据、分组与配额缓存）");
                         Self::migrate_v17_to_v18(conn)?;
                         Self::set_user_version(conn, 18)?;
+                    }
+                    18 => {
+                        log::info!(
+                            "迁移数据库从 v18 到 v19（全工具 MCP/Skills 启用列与会话用量同步去重表）"
+                        );
+                        Self::migrate_v18_to_v19(conn)?;
+                        Self::set_user_version(conn, 19)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1659,6 +1727,77 @@ impl Database {
         Self::create_official_account_tables(conn)
     }
 
+    fn migrate_v18_to_v19(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "mcp_servers")? {
+            for col in [
+                "enabled_hermes",
+                "enabled_mcode",
+                "enabled_agy",
+                "enabled_kimi",
+                "enabled_dsh",
+                "enabled_copilot",
+                "enabled_workbuddy",
+                "enabled_codebuddy",
+                "enabled_pi",
+                "enabled_omp",
+            ] {
+                Self::add_column_if_missing(
+                    conn,
+                    "mcp_servers",
+                    col,
+                    "BOOLEAN NOT NULL DEFAULT 0",
+                )?;
+            }
+        }
+        if Self::table_exists(conn, "skills")? {
+            for col in [
+                "enabled_hermes",
+                "enabled_mcode",
+                "enabled_agy",
+                "enabled_kimi",
+                "enabled_dsh",
+                "enabled_copilot",
+                "enabled_workbuddy",
+                "enabled_codebuddy",
+            ] {
+                Self::add_column_if_missing(conn, "skills", col, "BOOLEAN NOT NULL DEFAULT 0")?;
+            }
+        }
+        if Self::table_exists(conn, "session_log_sync")? {
+            Self::add_column_if_missing(conn, "session_log_sync", "last_byte_offset", "INTEGER")?;
+            Self::add_column_if_missing(
+                conn,
+                "session_log_sync",
+                "last_tail_fingerprint",
+                "INTEGER",
+            )?;
+            Self::add_column_if_missing(conn, "session_log_sync", "parser_state", "TEXT")?;
+        }
+        Self::create_session_usage_dedup_table(conn)?;
+        Ok(())
+    }
+
+    fn create_session_usage_dedup_table(conn: &Connection) -> Result<(), AppError> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_usage_dedup (
+                data_source TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                semantic_id TEXT NOT NULL,
+                has_entry_id INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (data_source, request_id)
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_usage_dedup_semantic
+             ON session_usage_dedup(data_source, semantic_id, has_entry_id)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     /// v18 tables for Codex official accounts. Kept in one place so the
     /// fresh-install path and the v17 -> v18 migration cannot drift.
     fn create_official_account_tables(conn: &Connection) -> Result<(), AppError> {
@@ -1878,6 +2017,15 @@ impl Database {
     /// 注意: model_id 使用短横线格式（如 claude-haiku-4-5），与 API 返回的模型名称标准化后一致
     fn builtin_model_pricing() -> Vec<BuiltinPricingRow> {
         let pricing_data = [
+            // Claude Fable 5.2（2026-11-11 核对官方标准价；缓存写入为 5 分钟 TTL；fast mode 2x 不入表）
+            (
+                "claude-fable-5-2",
+                "Claude Fable 5.2",
+                "8",
+                "40",
+                "0.20",
+                "10",
+            ),
             // Claude Fable 5.1 / Mythos 5.1（2026-09-01 发布；同 Fable 5 价，
             // 但缓存读为 0.025x = $0.25，非 Fable 5 的 $1）
             (
@@ -1926,6 +2074,24 @@ impl Database {
                 "25",
                 "0.50",
                 "6.25",
+            ),
+            // Claude Sonnet 5.5（2026-09-28 发布；缓存读为 0.05x = $0.10，非 Sonnet 5 的 $0.20）
+            (
+                "claude-sonnet-5-5",
+                "Claude Sonnet 5.5",
+                "2",
+                "10",
+                "0.10",
+                "2.50",
+            ),
+            // Claude Haiku 5.5（2026-10-07 发布；表内只存 10 万 token 以内的标准档）
+            (
+                "claude-haiku-5-5",
+                "Claude Haiku 5.5",
+                "0.10",
+                "0.50",
+                "0.01",
+                "0.125",
             ),
             // Claude Sonnet 5（官方定价页 2026-09 确认：$2/$10 介绍价转为正式价，
             // 原定 09-01 涨至 $3/$15 取消）
@@ -2046,6 +2212,14 @@ impl Database {
                 "0.30",
                 "3.75",
             ),
+            // GPT-6.2 / GPT-6.1 系列（1.05M 窗口；2026-11-24 核对 OpenAI 官方价页 + OpenRouter）
+            // 录入 Standard 短上下文价（<=272K）：cache read 0.05×、cache write (30m) 1.25× 输入价。
+            // >272K 长上下文档（输入与缓存 2×、输出 1.5×）、12h cache write (2.5×)、Batch、Fast/Ultrafast
+            // 本表无法表达，与 gpt-6 系列同样忽略；effort 档 low/medium/high/xhigh 由查价剥后缀回落。
+            ("gpt-6.2-astra", "GPT-6.2 Astra", "8", "40", "0.40", "10"),
+            ("gpt-6.2-sol", "GPT-6.2 Sol", "2", "10", "0.10", "2.50"),
+            ("gpt-6.1-sol", "GPT-6.1 Sol", "2", "10", "0.10", "2.50"),
+            ("gpt-6.1-terra", "GPT-6.1 Terra", "1", "5", "0.05", "1.25"),
             // GPT-6 系列（Astra 2026-09-04 发布，1.05M 窗口；Sol / Luna 2026-09-22 发布）
             // 2026-09-23 核对官方价页 + 模型页 + models.dev：录入 Standard 短上下文价，
             // cache read 0.1×、cache write 1.25× 输入价。>272K 长上下文档（输入与缓存 2×、输出 1.5×）、
@@ -2287,6 +2461,40 @@ impl Database {
             ("gpt-5.2-pro", "GPT-5.2 Pro", "21", "168", "0", "0"),
             ("gpt-4o", "GPT-4o", "2.50", "10", "1.25", "0"),
             ("gpt-4o-mini", "GPT-4o Mini", "0.15", "0.60", "0.075", "0"),
+            // Gemini 4 系列（Neon 全球标准档 3.00/15.00/0.15/0；Argon / Carbon 本表录挂牌价
+            // 4.00/20.00/0.20/0，2026-11-30 前的介绍价 2.00/10.00/0.10/0 由 BUILTIN_PRICING_PROMOS 叠加）
+            (
+                "gemini-4-neon",
+                "Gemini 4 Neon",
+                "3.00",
+                "15.00",
+                "0.15",
+                "0",
+            ),
+            (
+                "gemini-4-argon",
+                "Gemini 4 Argon",
+                "4.00",
+                "20.00",
+                "0.20",
+                "0",
+            ),
+            (
+                "gemini-4-carbon",
+                "Gemini 4 Carbon",
+                "4.00",
+                "20.00",
+                "0.20",
+                "0",
+            ),
+            (
+                "gemini-4-hydrogen",
+                "Gemini 4 Hydrogen",
+                "1.50",
+                "7.50",
+                "0.075",
+                "0",
+            ),
             // Gemini 3.6 / 3.7 / 3.8 Flash：本表录挂牌价 1.50/7.50/0.15（2027-01-01 起生效）；
             // 介绍价 0.75/3.75/0.075（官方公告 + ai.google.dev 价表，至 2026-12-31）由
             // BUILTIN_PRICING_PROMOS 按日期叠加，到期自动回落挂牌价。
@@ -2408,13 +2616,13 @@ impl Database {
                 "0",
             ),
             // StepFun 系列：CNY 按 1 USD ≈ 7.14 CNY 折算，保留两位小数。
-            // Step 5 Preview 官方输入 / 输出 / 缓存读取：7 / 20 / 0.35 元。
+            // Step 5 Preview 官方输入 / 输出 / 缓存读取：7 / 20 / 0.70 元（2026-10-14 起上调）。
             (
                 "step-5-preview",
                 "Step 5 Preview",
                 "0.98",
                 "2.80",
-                "0.05",
+                "0.10",
                 "0",
             ),
             (
@@ -2576,6 +2784,16 @@ impl Database {
                 "0.006",
                 "0",
             ),
+            // 第三方上游（OpenCode Go、OpenRouter 等）使用带版本号的 deepseek-v4.1-flash，
+            // 点号版本既剥不成 deepseek-flash，前缀兜底也只命中更长的行，单列防按 0 计费。
+            (
+                "deepseek-v4.1-flash",
+                "DeepSeek V4.1 Flash",
+                "0.3",
+                "1.2",
+                "0.006",
+                "0",
+            ),
             (
                 "deepseek-v4-flash",
                 "DeepSeek V4 Flash",
@@ -2655,9 +2873,36 @@ impl Database {
                 "0.38",
                 "0",
             ),
-            ("kimi-k3", "Kimi K3", "3.00", "15.00", "0.30", "0"),
+            // 2026-10-19 官方价页：K3 缓存写入按 TTL 计费，默认 5 分钟档 $3（1 小时档 $6，取默认档）
+            ("kimi-k3", "Kimi K3", "3.00", "15.00", "0.30", "3.00"),
             // Kimi For Coding 套餐里 K3 的裸名（无 kimi- 前缀），同标准 list 价
-            ("k3", "Kimi K3", "3.00", "15.00", "0.30", "0"),
+            ("k3", "Kimi K3", "3.00", "15.00", "0.30", "3.00"),
+            // 2026-10-24 官方价页：K3.1 Pro 缓存写入取默认 5 分钟档；HighSpeed 仅输入/输出/缓存写翻倍，缓存读仍 $0.20
+            (
+                "kimi-k3.1-pro",
+                "Kimi K3.1 Pro",
+                "2.00",
+                "10.00",
+                "0.20",
+                "2.00",
+            ),
+            (
+                "kimi-k3.1-pro-highspeed",
+                "Kimi K3.1 Pro HighSpeed",
+                "4.00",
+                "20.00",
+                "0.20",
+                "4.00",
+            ),
+            ("k3.1-pro", "Kimi K3.1 Pro", "2.00", "10.00", "0.20", "2.00"),
+            (
+                "k3.1-pro-highspeed",
+                "Kimi K3.1 Pro HighSpeed",
+                "4.00",
+                "20.00",
+                "0.20",
+                "4.00",
+            ),
             // 腾讯混元 (Tencent Hunyuan)（官方 CNY 1/4/0.25 按 1 USD ≈ 7.14 折算；Hy3 阶梯计价取最低档）
             ("hunyuan-hy3", "Hunyuan Hy3", "0.14", "0.56", "0.035", "0"),
             ("hy3", "Hunyuan Hy3", "0.14", "0.56", "0.035", "0"),
@@ -2768,6 +3013,9 @@ impl Database {
                 "0",
             ),
             // Qwen 系列 (阿里巴巴)
+            // 2026-11-16：https://www.qwencloud.com/models/qwen4-max（新加坡，USD/百万 token）；
+            // 无阶梯，思考/非思考同价；缓存写入取默认 5 分钟档（1 小时档 $3）。
+            ("qwen4-max", "Qwen4 Max", "1.50", "4.50", "0.075", "1.875"),
             ("qwen3.8-max", "Qwen3.8 Max", "2", "6", "0.25", "2.50"),
             // 2026-09-06：阿里国际站价页 0.15/0.47 全区间（0<Token≤1M）平价、无阶梯；
             // 缓存两列官方只注明"非常规比例"未给数字，取 models.dev（与 qwen3.8-max 同口径）
@@ -2792,6 +3040,24 @@ impl Database {
             ("qwen3.8-27b", "Qwen3.8 27B", "0.50", "3", "0.10", "0.625"),
             ("qwen3.7-max", "Qwen3.7 Max", "2.50", "7.50", "0.25", "0"),
             ("qwen3.7-plus", "Qwen3.7 Plus", "0.40", "1.60", "0.08", "0"),
+            // 2026-10-19：阿里国际站（新加坡）价页
+            (
+                "qwen3.7-flash",
+                "Qwen3.7 Flash",
+                "0.03",
+                "0.13",
+                "0.006",
+                "0.0375",
+            ),
+            ("qwen3.6-27b", "Qwen3.6 27B", "0.60", "3.60", "0", "0"),
+            (
+                "qwen3.8-omni-flash",
+                "Qwen3.8 Omni Flash",
+                "0.15",
+                "0.47",
+                "0.016",
+                "0",
+            ),
             (
                 "qwen3.6-plus",
                 "Qwen3.6 Plus",
@@ -2871,6 +3137,16 @@ impl Database {
             // costUsdTicks（1 tick = 1e-10 USD）双轮实测反推：input/output 与
             // grok-4.5 同为 2/6，cache read 同为 0.30
             ("grok-4.5-build", "Grok 4.5 Build", "2", "6", "0.30", "0"),
+            ("grok-4.6-build", "Grok 4.6 Build", "2", "6", "0.50", "0"),
+            ("grok-4.7-build", "Grok 4.7 Build", "2", "6", "0.50", "0"),
+            (
+                "grok-4.7-build-fast",
+                "Grok 4.7 Build Fast",
+                "4",
+                "12",
+                "1",
+                "0",
+            ),
             ("grok-4.3", "Grok 4.3", "1.25", "2.50", "0.20", "0"),
             (
                 "grok-4.20-0309-reasoning",
@@ -3036,6 +3312,43 @@ impl Database {
                 "0.036",
                 "0",
             ),
+            (
+                "claude-sonnet-4",
+                "Claude Sonnet 4",
+                "3",
+                "15",
+                "0.30",
+                "3.75",
+            ),
+            (
+                "claude-opus-4",
+                "Claude Opus 4",
+                "15",
+                "75",
+                "1.50",
+                "18.75",
+            ),
+            ("kimi-k2", "Kimi K2", "0.60", "2.50", "0.15", "0"),
+            (
+                "minimax-m3.1-flash",
+                "MiniMax M3.1 Flash",
+                "0.15",
+                "0.60",
+                "0.015",
+                "0",
+            ),
+            ("deepseek-r1", "DeepSeek R1", "0.55", "2.19", "0.14", "0"),
+            (
+                "deepseek-r1-0528",
+                "DeepSeek R1 (0528)",
+                "0.55",
+                "2.19",
+                "0.14",
+                "0",
+            ),
+            ("codex-mini-latest", "Codex Mini", "1.50", "6", "0.375", "0"),
+            ("gpt-5.3", "GPT-5.3", "1.75", "14", "0.175", "0"),
+            ("gpt-5.4-codex", "GPT-5.4 Codex", "2.50", "15", "0.25", "0"),
         ];
         pricing_data
             .into_iter()
@@ -3712,11 +4025,13 @@ impl Database {
         conn: &Connection,
         today: NaiveDate,
     ) -> Result<(), AppError> {
-        let mut fingerprints = Self::load_model_pricing_fingerprints(conn)?;
-        Self::seed_model_pricing_at(conn, today)?;
-        Self::repair_current_model_pricing(conn, &fingerprints)?;
-        Self::resync_builtin_model_pricing(conn, today, &mut fingerprints)?;
-        Self::store_model_pricing_fingerprints(conn, &fingerprints)
+        Self::in_savepoint(conn, "seed_model_pricing", || {
+            let mut fingerprints = Self::load_model_pricing_fingerprints(conn)?;
+            Self::seed_model_pricing_at(conn, today)?;
+            Self::repair_current_model_pricing(conn, &fingerprints)?;
+            Self::resync_builtin_model_pricing(conn, today, &mut fingerprints)?;
+            Self::store_model_pricing_fingerprints(conn, &fingerprints)
+        })
     }
 
     // --- 辅助方法 ---
@@ -4182,7 +4497,7 @@ mod tests {
 
         Database::apply_schema_migrations_on_conn(&conn)?;
 
-        assert_eq!(Database::get_user_version(&conn)?, 18);
+        assert!(Database::get_user_version(&conn)? >= 18);
         for table in [
             "official_account_meta",
             "official_account_groups",
@@ -4222,9 +4537,65 @@ mod tests {
             vec!["Claude 官方".to_string(), "Codex 官方".to_string()]
         );
 
-        // Running the migration again on a v18 database is a no-op, not an error.
+        // Running the migration again on an already-migrated database is a no-op.
         Database::apply_schema_migrations_on_conn(&conn)?;
-        assert_eq!(Database::get_user_version(&conn)?, 18);
+        assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
+        Ok(())
+    }
+
+    #[test]
+    fn migrate_v18_to_v19_adds_multi_tool_columns_and_usage_dedup_table() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE mcp_servers (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+             CREATE TABLE skills (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+             CREATE TABLE session_log_sync (
+                 file_path TEXT PRIMARY KEY,
+                 last_modified INTEGER NOT NULL,
+                 last_line_offset INTEGER NOT NULL DEFAULT 0,
+                 last_synced_at INTEGER NOT NULL
+             );
+             INSERT INTO mcp_servers (id, name) VALUES ('m1', 'M1');
+             INSERT INTO skills (id, name) VALUES ('s1', 'S1');",
+        )?;
+        Database::set_user_version(&conn, 18)?;
+
+        Database::apply_schema_migrations_on_conn(&conn)?;
+
+        assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
+        for col in [
+            "enabled_hermes",
+            "enabled_mcode",
+            "enabled_agy",
+            "enabled_kimi",
+            "enabled_dsh",
+            "enabled_copilot",
+            "enabled_workbuddy",
+            "enabled_codebuddy",
+            "enabled_pi",
+            "enabled_omp",
+        ] {
+            assert!(Database::has_column(&conn, "mcp_servers", col)?, "{col}");
+        }
+        for col in [
+            "enabled_hermes",
+            "enabled_mcode",
+            "enabled_agy",
+            "enabled_kimi",
+            "enabled_dsh",
+            "enabled_copilot",
+            "enabled_workbuddy",
+            "enabled_codebuddy",
+        ] {
+            assert!(Database::has_column(&conn, "skills", col)?, "{col}");
+        }
+        for col in ["last_byte_offset", "last_tail_fingerprint", "parser_state"] {
+            assert!(
+                Database::has_column(&conn, "session_log_sync", col)?,
+                "{col}"
+            );
+        }
+        assert!(Database::table_exists(&conn, "session_usage_dedup")?);
         Ok(())
     }
 }

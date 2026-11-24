@@ -55,9 +55,89 @@
     "proxy": false
   },
   {
+    "id": "openclaw",
+    "mode": "additive",
+    "liveFiles": ["~/.openclaw/openclaw.json"],
+    "tray": false,
+    "deeplink": "importOnly",
+    "proxy": false
+  },
+  {
+    "id": "hermes",
+    "mode": "additive",
+    "liveFiles": ["~/.hermes/config.yaml"],
+    "tray": false,
+    "deeplink": "importOnly",
+    "proxy": false
+  },
+  {
     "id": "pi",
     "mode": "additive",
     "liveFiles": ["~/.pi/agent/models.json"],
+    "tray": false,
+    "deeplink": "importOnly",
+    "proxy": false
+  },
+  {
+    "id": "omp",
+    "mode": "additive",
+    "liveFiles": ["~/.omp/agent/models.yml"],
+    "tray": false,
+    "deeplink": "importOnly",
+    "proxy": false
+  },
+  {
+    "id": "agy",
+    "mode": "switch",
+    "liveFiles": ["~/.gemini/antigravity-cli/settings.json"],
+    "tray": false,
+    "deeplink": "importOnly",
+    "proxy": false
+  },
+  {
+    "id": "mcode",
+    "mode": "additive",
+    "liveFiles": ["~/.minimax/config.yaml"],
+    "tray": false,
+    "deeplink": "importOnly",
+    "proxy": false
+  },
+  {
+    "id": "kimi",
+    "mode": "additive",
+    "liveFiles": ["~/.kimi-code/config.toml"],
+    "tray": false,
+    "deeplink": "importOnly",
+    "proxy": false
+  },
+  {
+    "id": "dsh",
+    "mode": "additive",
+    "liveFiles": ["~/.dsh/profiles/<profile>/cordis.patch.yml"],
+    "tray": false,
+    "deeplink": "importOnly",
+    "proxy": false
+  },
+  {
+    "id": "copilot",
+    "mode": "additive",
+    "liveFiles": ["~/.copilot/providers.json"],
+    "tray": false,
+    "deeplink": "importOnly",
+    "proxy": false
+  },
+  {
+    "id": "workbuddy",
+    "mode": "additive",
+    "liveFiles": ["~/.workbuddy/models.json"],
+    "tray": false,
+    "deeplink": "importOnly",
+    "proxy": false
+  },
+  {
+    "id": "codebuddy",
+    "mode": "additive",
+    "liveFiles": ["~/.codebuddy/models.json"],
     "tray": false,
     "deeplink": "importOnly",
     "proxy": false

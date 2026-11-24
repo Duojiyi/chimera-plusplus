@@ -51,13 +51,13 @@ use crate::config::get_app_config_dir;
 use crate::error::AppError;
 use rusqlite::{hooks::Action, Connection};
 use serde::Serialize;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 // DAO 方法通过 impl Database 提供，无需额外导出
 
 /// 当前 Schema 版本号
 /// 每次修改表结构时递增，并在 schema.rs 中添加相应的迁移逻辑
-pub(crate) const SCHEMA_VERSION: i32 = 18;
+pub(crate) const SCHEMA_VERSION: i32 = 19;
 
 /// `prompts.origin` of rows owned by the whole-file `AGENTS.md` writer (v17).
 pub(crate) const PROMPT_ORIGIN_LEGACY_WHOLE_FILE: &str = "legacy-whole-file";
@@ -68,17 +68,54 @@ pub(crate) fn to_json_string<T: Serialize>(value: &T) -> Result<String, AppError
         .map_err(|e| AppError::Config(format!("JSON serialization failed: {e}")))
 }
 
-/// 安全地获取 Mutex 锁，避免 unwrap panic
+/// 获取数据库的锁，锁中毒时清理后继续使用，见 [`lock_recovering`]。
 macro_rules! lock_conn {
     ($mutex:expr) => {
-        $mutex
-            .lock()
-            .map_err(|e| AppError::Database(format!("Mutex lock failed: {}", e)))?
+        $crate::database::lock_recovering(&$mutex)?
     };
 }
 
 // 导出宏供子模块使用
 pub(crate) use lock_conn;
+
+/// 持锁的任务 panic 后 `Mutex` 会中毒，之后每次 `lock()` 都失败。整个应用共用一条
+/// 数据库连接，中毒后托盘、供应商切换、退出时写回直连全都失败，只能重启进程。
+/// 这里取回锁内的值，清理成功后清除中毒标记照常返回；清理失败则保持中毒并报错。
+pub(crate) fn lock_recovering<T: RecoverPoisoned>(
+    mutex: &Mutex<T>,
+) -> Result<MutexGuard<'_, T>, AppError> {
+    mutex.lock().or_else(|poisoned| {
+        let mut guard = poisoned.into_inner();
+        guard.recover_poisoned()?;
+        mutex.clear_poison();
+        log::warn!("数据库锁因持锁任务 panic 而中毒，已清理后继续使用");
+        Ok(guard)
+    })
+}
+
+/// 锁中毒后、继续使用锁内的值之前要做的清理。
+pub(crate) trait RecoverPoisoned {
+    fn recover_poisoned(&mut self) -> Result<(), AppError>;
+}
+
+impl RecoverPoisoned for Connection {
+    /// rusqlite 的 `Transaction` 在 panic 展开时会自己回滚；这里兜底手写 `BEGIN` 等还停在
+    /// 事务里的情况，否则之后的写入都会落进一个永远不会提交的事务。
+    fn recover_poisoned(&mut self) -> Result<(), AppError> {
+        if !self.is_autocommit() {
+            if let Err(e) = self.execute_batch("ROLLBACK") {
+                log::error!("数据库锁中毒后回滚未完成的事务失败: {e}");
+            }
+        }
+        if self.is_autocommit() {
+            Ok(())
+        } else {
+            Err(AppError::Database(
+                "Mutex lock failed: connection is still in a transaction after poisoning".into(),
+            ))
+        }
+    }
+}
 
 /// 数据库连接封装
 ///
@@ -102,6 +139,17 @@ fn register_db_change_hook(conn: &mut Connection) -> Result<(), AppError> {
 }
 
 impl Database {
+    pub(crate) fn conn_guard(&self) -> Result<MutexGuard<'_, Connection>, AppError> {
+        lock_recovering(&self.conn)
+    }
+
+    pub(crate) fn with_conn<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        let conn = lock_conn!(self.conn);
+        f(&conn)
+    }
     pub(crate) fn with_connection<T>(
         &self,
         operation: impl FnOnce(&mut Connection) -> Result<T, AppError>,
@@ -200,7 +248,7 @@ impl Database {
         // Reclaim disk space after cleanup
         {
             let conn = lock_conn!(db.conn);
-            if let Err(e) = conn.execute_batch("PRAGMA incremental_vacuum;") {
+            if let Err(e) = Self::incremental_vacuum_on_conn(&conn) {
                 log::warn!("Startup incremental vacuum failed: {e}");
             }
         }
@@ -250,6 +298,23 @@ impl Database {
     pub(crate) fn get_auto_vacuum_mode(conn: &Connection) -> Result<i32, AppError> {
         conn.query_row("PRAGMA auto_vacuum;", [], |row| row.get(0))
             .map_err(|e| AppError::Database(format!("读取 auto_vacuum 失败: {e}")))
+    }
+
+    /// 回收全部空闲页。`PRAGMA incremental_vacuum` 每释放一页产出一行结果，
+    /// 必须把结果读完才会回收完；`execute_batch` 只 step 一次，只能回收 1 页。
+    pub(crate) fn incremental_vacuum_on_conn(conn: &Connection) -> Result<(), AppError> {
+        let mut stmt = conn
+            .prepare("PRAGMA incremental_vacuum;")
+            .map_err(|e| AppError::Database(format!("执行 incremental_vacuum 失败: {e}")))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| AppError::Database(format!("执行 incremental_vacuum 失败: {e}")))?;
+        while rows
+            .next()
+            .map_err(|e| AppError::Database(format!("执行 incremental_vacuum 失败: {e}")))?
+            .is_some()
+        {}
+        Ok(())
     }
 
     fn has_user_tables(conn: &Connection) -> Result<bool, AppError> {

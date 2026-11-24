@@ -3562,8 +3562,9 @@ fn launch_windows_terminal(
     cwd: Option<&Path>,
 ) -> Result<(), String> {
     let bat_file = launch_dir.join("launcher.bat");
-    let launch_dir_for_batch = escape_windows_batch_value(&launch_dir.to_string_lossy());
-    let config_path_for_batch = escape_windows_batch_value(&config_file.to_string_lossy());
+    let launch_dir_quoted = escape_windows_batch_quoted(&launch_dir.to_string_lossy());
+    let config_path_quoted = escape_windows_batch_quoted(&config_file.to_string_lossy());
+    let config_path_echo = escape_windows_batch_value(&config_file.to_string_lossy());
     let cwd_command = build_windows_cwd_command(cwd);
 
     let content = format!(
@@ -3578,10 +3579,10 @@ del \"{}\" >nul 2>&1
 del \"%~f0\" >nul 2>&1
 rmdir \"{}\" >nul 2>&1
 ",
-        config_path_for_batch,
-        config_path_for_batch,
-        config_path_for_batch,
-        launch_dir_for_batch,
+        config_path_echo,
+        config_path_quoted,
+        config_path_quoted,
+        launch_dir_quoted,
         cwd_command = cwd_command,
     );
 
@@ -3635,7 +3636,7 @@ fn is_windows_unc_path(path: &str) -> bool {
 
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn build_windows_cwd_command_str(path: &str) -> String {
-    let escaped = escape_windows_batch_value(path);
+    let escaped = escape_windows_batch_quoted(path);
 
     if is_windows_unc_path(path) {
         // `cmd.exe` cannot make a UNC path current via `cd`; `pushd` maps it first.
@@ -3649,6 +3650,13 @@ fn build_windows_cwd_command_str(path: &str) -> String {
 fn build_windows_cwd_command(cwd: Option<&Path>) -> String {
     cwd.map(|dir| build_windows_cwd_command_str(&dir.to_string_lossy()))
         .unwrap_or_default()
+}
+
+/// Escape a path interpolated inside `"..."` in `cmd.exe`: carets are literal
+/// inside double quotes, so only `%` needs doubling (and quotes/newlines stripped).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn escape_windows_batch_quoted(value: &str) -> String {
+    value.replace(['"', '\r', '\n'], "").replace('%', "%%")
 }
 
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -5845,9 +5853,11 @@ mod tests {
     fn build_windows_cwd_command_str_escapes_batch_metacharacters() {
         let command = build_windows_cwd_command_str(r"\\server\share\100%&(test)");
 
+        // Inside double quotes in cmd.exe batch files, `&`, `(`, `)`, `^` are
+        // literal characters; only `%` must be doubled to `%%`.
         assert_eq!(
             command,
-            "pushd \"\\\\server\\share\\100%%^&^(test^)\" || exit /b 1\r\n"
+            "pushd \"\\\\server\\share\\100%%&(test)\" || exit /b 1\r\n"
         );
     }
 }

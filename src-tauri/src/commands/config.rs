@@ -113,6 +113,85 @@ pub async fn get_config_status(
                 path: dir.to_string_lossy().to_string(),
             })
         }
+        AppType::OpenClaw => {
+            let config_path = crate::openclaw_config::get_openclaw_config_path();
+            let exists = config_path.exists();
+            let path = crate::openclaw_config::get_openclaw_dir()
+                .to_string_lossy()
+                .to_string();
+            Ok(ConfigStatus { exists, path })
+        }
+        AppType::Hermes => {
+            let config_path = crate::hermes_config::get_hermes_config_path();
+            let exists = config_path.exists();
+            let path = crate::hermes_config::get_hermes_dir()
+                .to_string_lossy()
+                .to_string();
+            Ok(ConfigStatus { exists, path })
+        }
+        AppType::Dsh => {
+            let file = crate::dsh_config::config_path();
+            Ok(ConfigStatus {
+                exists: file.exists(),
+                path: file.to_string_lossy().to_string(),
+            })
+        }
+        AppType::Kimi => {
+            let file = crate::kimi_config::config_path();
+            Ok(ConfigStatus {
+                exists: file.exists(),
+                path: file.to_string_lossy().to_string(),
+            })
+        }
+        AppType::Mcode => {
+            let file = crate::mcode_config::config_path();
+            Ok(ConfigStatus {
+                exists: file.exists(),
+                path: file
+                    .parent()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            })
+        }
+        AppType::Agy => {
+            let dir = crate::agy_config::agy_dir();
+            Ok(ConfigStatus {
+                exists: crate::agy_config::settings_path().exists(),
+                path: dir.to_string_lossy().into_owned(),
+            })
+        }
+        AppType::Omp => {
+            let config_path =
+                crate::omp_config::get_omp_models_path().map_err(|e| e.to_string())?;
+            let path = crate::omp_config::get_omp_agent_dir()
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .to_string();
+            Ok(ConfigStatus {
+                exists: config_path.exists(),
+                path,
+            })
+        }
+        AppType::Copilot => {
+            let dir = crate::copilot_config::copilot_dir();
+            Ok(ConfigStatus {
+                exists: dir.exists(),
+                path: dir.to_string_lossy().into_owned(),
+            })
+        }
+        AppType::WorkBuddy => Ok(ConfigStatus {
+            exists: crate::workbuddy_config::config_path().exists(),
+            path: crate::workbuddy_config::data_dir()
+                .to_string_lossy()
+                .into_owned(),
+        }),
+        AppType::Codebuddy => Ok(ConfigStatus {
+            exists: crate::codebuddy_config::config_path().exists()
+                || crate::codebuddy_config::settings_path().exists(),
+            path: crate::codebuddy_config::data_dir()
+                .to_string_lossy()
+                .into_owned(),
+        }),
     }
 }
 
@@ -121,9 +200,8 @@ pub async fn get_claude_code_config_path() -> Result<String, String> {
     Ok(get_claude_settings_path().to_string_lossy().to_string())
 }
 
-#[tauri::command]
-pub async fn get_config_dir(app: String) -> Result<String, String> {
-    let dir = match AppType::from_str(&app).map_err(|e| e.to_string())? {
+fn app_config_dir(app: &str) -> Result<std::path::PathBuf, String> {
+    let dir = match AppType::from_str(app).map_err(|e| e.to_string())? {
         AppType::Claude => config::get_claude_config_dir(),
         AppType::ClaudeDesktop => {
             crate::claude_desktop_config::get_config_library_path().map_err(|e| e.to_string())?
@@ -132,39 +210,32 @@ pub async fn get_config_dir(app: String) -> Result<String, String> {
         AppType::Gemini => crate::gemini_config::get_gemini_dir(),
         AppType::GrokBuild => crate::grok_config::get_grok_config_dir(),
         AppType::OpenCode => crate::opencode_config::get_opencode_dir(),
-
+        AppType::OpenClaw => crate::openclaw_config::get_openclaw_dir(),
+        AppType::Hermes => crate::hermes_config::get_hermes_dir(),
         AppType::Pi => crate::pi_config::get_pi_agent_dir().map_err(|e| e.to_string())?,
+        AppType::Omp => crate::omp_config::get_omp_agent_dir().map_err(|e| e.to_string())?,
+        AppType::Agy => crate::agy_config::agy_dir(),
+        AppType::Mcode => crate::mcode_config::config_path()
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default(),
+        AppType::Kimi => crate::kimi_config::data_dir(),
+        AppType::Dsh => crate::dsh_config::data_dir(),
+        AppType::Copilot => crate::copilot_config::copilot_dir(),
+        AppType::WorkBuddy => crate::workbuddy_config::data_dir(),
+        AppType::Codebuddy => crate::codebuddy_config::data_dir(),
     };
+    Ok(dir)
+}
 
-    Ok(dir.to_string_lossy().to_string())
+#[tauri::command]
+pub async fn get_config_dir(app: String) -> Result<String, String> {
+    Ok(app_config_dir(&app)?.to_string_lossy().to_string())
 }
 
 #[tauri::command]
 pub async fn open_config_folder(handle: AppHandle, app: String) -> Result<bool, String> {
-    // oh-my-pi has no provider lines, only its agent folder (prompts, models).
-    if app.trim().eq_ignore_ascii_case("omp") {
-        crate::product_policy::require(crate::product_policy::Capability::MultiTool)
-            .map_err(|e| e.to_string())?;
-        let dir = crate::pi_config::omp_dir::agent_dir()?;
-        std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
-        handle
-            .opener()
-            .open_path(dir.to_string_lossy().to_string(), None::<String>)
-            .map_err(|e| format!("打开文件夹失败: {e}"))?;
-        return Ok(true);
-    }
-    let config_dir = match AppType::from_str(&app).map_err(|e| e.to_string())? {
-        AppType::Claude => config::get_claude_config_dir(),
-        AppType::ClaudeDesktop => {
-            crate::claude_desktop_config::get_config_library_path().map_err(|e| e.to_string())?
-        }
-        AppType::Codex => codex_config::get_codex_config_dir(),
-        AppType::Gemini => crate::gemini_config::get_gemini_dir(),
-        AppType::GrokBuild => crate::grok_config::get_grok_config_dir(),
-        AppType::OpenCode => crate::opencode_config::get_opencode_dir(),
-
-        AppType::Pi => crate::pi_config::get_pi_agent_dir().map_err(|e| e.to_string())?,
-    };
+    let config_dir = app_config_dir(&app)?;
 
     if !config_dir.exists() {
         std::fs::create_dir_all(&config_dir).map_err(|e| format!("创建目录失败: {e}"))?;

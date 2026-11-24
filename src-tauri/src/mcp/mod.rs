@@ -10,13 +10,23 @@
 //! - `gemini` - Gemini MCP 同步和导入
 //! - `opencode` - OpenCode MCP 同步和导入（含 local/remote 格式转换）
 
+pub(crate) mod agy;
 mod claude;
+pub(crate) mod codebuddy;
 mod codex;
+pub(crate) mod copilot;
+pub(crate) mod dsh;
 mod gemini;
 mod grokbuild;
-
+pub(crate) mod hermes;
+mod json_file;
+pub(crate) mod kimi;
+pub(crate) mod mcode;
+pub(crate) mod omp;
 mod opencode;
+pub(crate) mod pi;
 pub(crate) mod validation;
+pub(crate) mod workbuddy;
 
 // 重新导出公共 API
 pub use claude::{
@@ -41,3 +51,24 @@ pub use opencode::import_from_opencode;
 
 pub(crate) mod projection;
 pub(crate) use codex::{remove_server_from_codex_journal, sync_single_server_to_codex_journal};
+
+/// Abstraction over database MCP storage so `mcp` (rank 2) does not import `store` (rank 4) or `database` (rank 2).
+pub(crate) trait McpImportStore {
+    fn existing_mcp_rows(
+        &self,
+    ) -> Result<
+        (
+            indexmap::IndexMap<String, crate::app_config::McpServer>,
+            Vec<String>,
+        ),
+        crate::error::AppError,
+    >;
+    fn readable_mcp_servers(
+        &self,
+        context: &str,
+    ) -> Result<indexmap::IndexMap<String, crate::app_config::McpServer>, crate::error::AppError>;
+    fn save_mcp_server(
+        &self,
+        server: &crate::app_config::McpServer,
+    ) -> Result<(), crate::error::AppError>;
+}

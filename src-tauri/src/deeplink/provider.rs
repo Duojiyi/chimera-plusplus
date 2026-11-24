@@ -212,7 +212,14 @@ pub async fn import_provider_from_deeplink(
         // ProviderService::add would auto-select the first provider and mutate
         // Live, violating enabled=false and potentially activating before route
         // reconciliation. Always stage it as inactive instead.
-        ProviderService::add_inactive(state, app_type.clone(), provider, true)?;
+        // Run off the Tokio worker thread because Pi/OMP acquire async locks via block_on.
+        let state_owned = state.clone();
+        let app_owned = app_type.clone();
+        tokio::task::spawn_blocking(move || {
+            ProviderService::add_inactive(&state_owned, app_owned, provider, true)
+        })
+        .await
+        .map_err(|e| AppError::Message(format!("Provider deep link task failed: {e}")))??;
     }
 
     Ok(provider_id)
@@ -258,7 +265,21 @@ pub(crate) fn build_provider_from_request(
         AppType::Gemini => (build_gemini_settings(request), None),
         AppType::GrokBuild => build_grokbuild_settings(request)?,
         AppType::OpenCode => (build_opencode_settings(request), None),
-        AppType::Pi => (build_pi_settings(request), None),
+        AppType::Pi | AppType::Omp => (build_pi_settings(request), None),
+        AppType::OpenClaw
+        | AppType::Hermes
+        | AppType::Agy
+        | AppType::Mcode
+        | AppType::Kimi
+        | AppType::Dsh
+        | AppType::Copilot
+        | AppType::WorkBuddy
+        | AppType::Codebuddy => {
+            return Err(AppError::InvalidInput(format!(
+                "Deep link provider import is not supported for app '{}'",
+                app_type.as_str()
+            )));
+        }
     };
 
     // Build usage script configuration if provided

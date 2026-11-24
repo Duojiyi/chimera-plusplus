@@ -35,9 +35,7 @@ impl PromptApp {
             PromptApp::Tool(app) => prompt_file_path(app),
             // oh-my-pi reads AGENTS.md from its profile-scoped agent folder.
             PromptApp::Omp => {
-                let path = crate::pi_config::omp_dir::agent_dir()
-                    .map(|dir| dir.join("AGENTS.md"))
-                    .map_err(AppError::Message)?;
+                let path = crate::omp_config::get_omp_agent_dir()?.join("AGENTS.md");
                 // PI_CODING_AGENT_DIR can point both tools at one folder; two
                 // libraries writing one file would keep undoing each other.
                 if prompt_file_path(&AppType::Pi).is_ok_and(|pi| pi == path) {
@@ -89,9 +87,17 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         AppType::Gemini => get_gemini_dir(),
         AppType::GrokBuild => crate::grok_config::get_grok_config_dir(),
         AppType::OpenCode => get_opencode_dir(),
-        // Pi reads the global AGENTS.md from its agent folder
-        // (~/.pi/agent, or PI_CODING_AGENT_DIR).
+        AppType::OpenClaw => crate::openclaw_config::get_openclaw_dir(),
+        AppType::Hermes => crate::hermes_config::get_hermes_dir(),
         AppType::Pi => crate::pi_config::get_pi_agent_dir()?,
+        AppType::Mcode => crate::mcode_config::data_dir(),
+        AppType::Dsh => crate::dsh_config::data_dir(),
+        AppType::Kimi => crate::kimi_config::data_dir(),
+        AppType::Codebuddy => crate::codebuddy_config::data_dir(),
+        AppType::Agy => crate::agy_config::customizations_dir(),
+        AppType::Omp => crate::omp_config::get_omp_agent_dir()?,
+        AppType::Copilot => crate::copilot_config::copilot_dir(),
+        AppType::WorkBuddy => crate::workbuddy_config::user_data_dir(),
         AppType::ClaudeDesktop => unreachable!("handled above"),
     };
 
@@ -99,8 +105,19 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         AppType::Claude => "CLAUDE.md",
         AppType::Codex => "AGENTS.md",
         AppType::Gemini => "GEMINI.md",
-
-        AppType::GrokBuild | AppType::OpenCode | AppType::Pi => "AGENTS.md",
+        AppType::GrokBuild
+        | AppType::OpenCode
+        | AppType::OpenClaw
+        | AppType::Pi
+        | AppType::Mcode
+        | AppType::Agy
+        | AppType::Kimi
+        | AppType::Dsh
+        | AppType::Omp => "AGENTS.md",
+        AppType::Hermes => "SOUL.md",
+        AppType::Codebuddy => "CODEBUDDY.md",
+        AppType::Copilot => "copilot-instructions.md",
+        AppType::WorkBuddy => "MEMORY.md",
         AppType::ClaudeDesktop => unreachable!("handled above"),
     };
     Ok(base_dir.join(filename))

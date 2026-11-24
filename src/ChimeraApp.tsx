@@ -250,6 +250,7 @@ import {
 import { StationSignboard } from "@/components/StationSignboard";
 import { CommandPalette } from "@/components/CommandPalette";
 import { LineBadge } from "@/components/LineBadge";
+import { AppGlyph } from "@/components/AppGlyph";
 const OfficialAccountsView = lazy(() =>
   import("./views/OfficialAccountsView").then(({ OfficialAccountsView }) => ({
     default: OfficialAccountsView,
@@ -308,10 +309,19 @@ type View =
   | "tool-claude"
   | "tool-gemini"
   | "tool-opencode"
+  | "tool-openclaw"
+  | "tool-hermes"
   | "tool-pi"
   | "tool-omp"
   | "tool-claude-desktop"
   | "tool-grokbuild"
+  | "tool-agy"
+  | "tool-mcode"
+  | "tool-kimi"
+  | "tool-dsh"
+  | "tool-copilot"
+  | "tool-workbuddy"
+  | "tool-codebuddy"
   | "tool-settings";
 export type RuntimeStatus = {
   supported: boolean;
@@ -509,9 +519,18 @@ const nav: Array<[View, string, typeof Command]> = [
   ["tool-claude-desktop", "Claude Desktop", Route],
   ["tool-gemini", "Gemini CLI", Route],
   ["tool-opencode", "OpenCode", Route],
+  ["tool-openclaw", "OpenClaw", Route],
+  ["tool-hermes", "Hermes", Route],
   ["tool-pi", "Pi", Route],
   ["tool-omp", "oh-my-pi", Route],
   ["tool-grokbuild", "Grok Build", Route],
+  ["tool-agy", "Antigravity", Route],
+  ["tool-mcode", "MiniMax Code", Route],
+  ["tool-kimi", "Kimi Code", Route],
+  ["tool-dsh", "DeepSeek Harness", Route],
+  ["tool-copilot", "Copilot CLI", Route],
+  ["tool-workbuddy", "WorkBuddy", Route],
+  ["tool-codebuddy", "CodeBuddy Code", Route],
   ["tool-settings", "管理工具", Settings2],
   ["sessions", "会话", MessagesSquare],
   ["settings", "设置", Settings2],
@@ -527,9 +546,18 @@ const toolViews: Array<[View, string]> = [
   ["tool-claude-desktop", "CD"],
   ["tool-gemini", "Gm"],
   ["tool-opencode", "OC"],
+  ["tool-openclaw", "Cl"],
+  ["tool-hermes", "Hm"],
   ["tool-pi", "Pi"],
   ["tool-omp", "Om"],
   ["tool-grokbuild", "Gk"],
+  ["tool-agy", "Ag"],
+  ["tool-mcode", "Mc"],
+  ["tool-kimi", "Km"],
+  ["tool-dsh", "DS"],
+  ["tool-copilot", "Cp"],
+  ["tool-workbuddy", "WB"],
+  ["tool-codebuddy", "CB"],
 ];
 
 /**
@@ -571,21 +599,7 @@ const navIconFor = (id: View): typeof Command => {
 
 /** Sidebar tool identity: one line-coloured bar per tool, like a transit line. */
 const toolKeyFor = (id: View): string =>
-  id === "tool-claude"
-    ? "claude"
-    : id === "tool-claude-desktop"
-      ? "claude-desktop"
-      : id === "tool-gemini"
-        ? "gemini"
-        : id === "tool-opencode"
-          ? "opencode"
-          : id === "tool-pi"
-            ? "pi"
-            : id === "tool-omp"
-              ? "omp"
-              : id === "tool-grokbuild"
-                ? "grokbuild"
-                : "codex";
+  id.startsWith("tool-") && id !== "tool-settings" ? id.slice(5) : "codex";
 
 /** The ToolView / TOOL_SECTIONS id of each tool view. */
 const toolPageIdFor: Partial<Record<View, string>> = {
@@ -593,25 +607,51 @@ const toolPageIdFor: Partial<Record<View, string>> = {
   "tool-claude-desktop": "claude-desktop",
   "tool-gemini": "gemini-cli",
   "tool-opencode": "opencode",
+  "tool-openclaw": "openclaw",
+  "tool-hermes": "hermes",
   "tool-pi": "pi",
   "tool-omp": "omp",
   "tool-grokbuild": "grokbuild",
+  "tool-agy": "agy",
+  "tool-mcode": "mcode",
+  "tool-kimi": "kimi",
+  "tool-dsh": "dsh",
+  "tool-copilot": "copilot",
+  "tool-workbuddy": "workbuddy",
+  "tool-codebuddy": "codebuddy",
 };
 /** The 提示词 target of each tool whose prompt file this app manages. */
 const toolPromptsAppFor: Partial<Record<View, AppId | "omp">> = {
   "tool-claude": "claude",
   "tool-gemini": "gemini",
   "tool-opencode": "opencode",
+  "tool-openclaw": "openclaw",
+  "tool-hermes": "hermes",
   "tool-grokbuild": "grokbuild",
   "tool-pi": "pi",
   "tool-omp": "omp",
+  "tool-agy": "agy",
+  "tool-mcode": "mcode",
+  "tool-kimi": "kimi",
+  "tool-dsh": "dsh",
+  "tool-copilot": "copilot",
+  "tool-workbuddy": "workbuddy",
+  "tool-codebuddy": "codebuddy",
 };
 /** The Skills 与 MCP target of each tool that has managed resources. */
 const toolResourcesAppFor: Partial<Record<View, AppId>> = {
   "tool-claude": "claude",
   "tool-gemini": "gemini",
   "tool-opencode": "opencode",
+  "tool-hermes": "hermes",
   "tool-grokbuild": "grokbuild",
+  "tool-agy": "agy",
+  "tool-mcode": "mcode",
+  "tool-kimi": "kimi",
+  "tool-dsh": "dsh",
+  "tool-copilot": "copilot",
+  "tool-workbuddy": "workbuddy",
+  "tool-codebuddy": "codebuddy",
 };
 
 export const runtimeText = (mode?: string | null) =>
@@ -3115,11 +3155,7 @@ export default function ChimeraApp({
               >
                 <span className="v3-tool-switch-sub">当前工具</span>
                 <span className="v3-tool-switch-text">
-                  <span
-                    aria-hidden="true"
-                    className="v3-tool-bar"
-                    data-tool={currentToolKey}
-                  />
+                  <AppGlyph app={currentToolKey} size={15} />
                   <span className="v3-tool-switch-name">{currentToolName}</span>
                   <span className="v5-tool-selected" aria-hidden="true">
                     活跃
@@ -3149,11 +3185,7 @@ export default function ChimeraApp({
                   aria-label="Codex"
                   onClick={() => switchTool("providers")}
                 >
-                  <span
-                    aria-hidden="true"
-                    className="v3-tool-bar"
-                    data-tool="codex"
-                  />
+                  <AppGlyph app="codex" size={15} />
                   <span className="v3-tool-menu-name">Codex</span>
                   <span className="v3-tool-menu-kind" title="切换型">
                     CLI
@@ -3183,25 +3215,34 @@ export default function ChimeraApp({
                       }
                       onClick={() => switchTool(id)}
                     >
-                      <span
-                        aria-hidden="true"
-                        className="v3-tool-bar"
-                        data-tool={toolKeyFor(id)}
-                      />
+                      <AppGlyph app={toolKeyFor(id)} size={15} />
                       <span className="v3-tool-menu-name">
                         {viewLabels[id]}
                       </span>
                       <span
                         className="v3-tool-menu-kind"
                         title={
-                          id === "tool-opencode" || id === "tool-pi"
+                          id === "tool-opencode" ||
+                          id === "tool-openclaw" ||
+                          id === "tool-hermes" ||
+                          id === "tool-pi" ||
+                          id === "tool-mcode" ||
+                          id === "tool-kimi" ||
+                          id === "tool-dsh" ||
+                          id === "tool-copilot" ||
+                          id === "tool-workbuddy" ||
+                          id === "tool-codebuddy"
                             ? "累加型"
                             : id === "tool-omp"
                               ? "独立配置"
                               : "切换型"
                         }
                       >
-                        {id === "tool-claude-desktop" ? "App" : "CLI"}
+                        {id === "tool-claude-desktop" ||
+                        id === "tool-agy" ||
+                        id === "tool-workbuddy"
+                          ? "App"
+                          : "CLI"}
                       </span>
                       {toolView === id && (
                         <Check size={13} aria-hidden="true" />
@@ -3515,6 +3556,35 @@ export default function ChimeraApp({
                   onManageResources={manageToolResources}
                 />
               )}
+              {(
+                [
+                  "tool-openclaw",
+                  "tool-hermes",
+                  "tool-agy",
+                  "tool-mcode",
+                  "tool-kimi",
+                  "tool-dsh",
+                  "tool-copilot",
+                  "tool-workbuddy",
+                  "tool-codebuddy",
+                ] as const
+              ).map((toolRoute) => {
+                if (view !== toolRoute) return null;
+                const tid = toolRoute.slice(5);
+                return (
+                  <ToolView
+                    key={toolRoute}
+                    refreshVersion={providerRefreshVersion}
+                    toolId={tid}
+                    section={toolSections[tid]}
+                    onSectionChange={sectionChangeFor(tid)}
+                    native={runningInTauri}
+                    onManageResources={
+                      tid === "openclaw" ? undefined : manageToolResources
+                    }
+                  />
+                );
+              })}
             </Suspense>
             <RetainedToolPage active={view === "tool-omp"}>
               <OmpView

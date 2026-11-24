@@ -364,6 +364,15 @@ export function updateToolProviderConfig(
 export const additionalToolNames = {
   "claude-desktop": "Claude Desktop",
   grokbuild: "Grok Build",
+  openclaw: "OpenClaw",
+  hermes: "Hermes",
+  agy: "Antigravity",
+  mcode: "MiniMax Code",
+  kimi: "Kimi Code",
+  dsh: "DeepSeek Harness",
+  copilot: "Copilot CLI",
+  workbuddy: "WorkBuddy",
+  codebuddy: "CodeBuddy Code",
 } as const;
 export type AdditionalToolAppId = keyof typeof additionalToolNames;
 
@@ -383,5 +392,80 @@ export function toolProviderSummary(
         Object.values(provider.meta?.claudeDesktopModelRoutes ?? {})[0]
           ?.model ?? "",
     };
-  throw new Error(`Unsupported tool: ${appId}`);
+  if (appId === "agy") {
+    const env = object(settings.env);
+    const modelObj = object(object(settings.config).model);
+    return {
+      baseUrl: text(env.GOOGLE_GEMINI_BASE_URL) || text(settings.baseUrl),
+      model:
+        text(modelObj.name) || text(env.GEMINI_MODEL) || text(settings.model),
+    };
+  }
+  if (appId === "openclaw") {
+    const first = object(
+      Array.isArray(settings.models) ? settings.models[0] : undefined,
+    );
+    return {
+      baseUrl: text(settings.baseUrl),
+      model: text(first.id) || text(settings.model),
+    };
+  }
+  if (appId === "hermes") {
+    const firstModel = Array.isArray(settings.models)
+      ? text(object(settings.models[0]).id)
+      : (Object.keys(object(settings.models))[0] ?? "");
+    return {
+      baseUrl: text(settings.base_url) || text(settings.baseUrl),
+      model: firstModel || text(settings.model) || text(settings.default_model),
+    };
+  }
+  if (appId === "mcode" || appId === "dsh") {
+    const options = object(settings.options);
+    return {
+      baseUrl: text(options.baseURL) || text(settings.baseUrl),
+      model: Object.keys(object(settings.models))[0] ?? text(settings.model),
+    };
+  }
+  if (appId === "kimi") {
+    const p = object(settings.provider);
+    return {
+      baseUrl: text(p.base_url) || text(settings.baseUrl),
+      model: Object.keys(object(settings.models))[0] ?? text(settings.model),
+    };
+  }
+  if (appId === "copilot") {
+    const p = object(settings.provider);
+    const first = object(
+      Array.isArray(settings.models) ? settings.models[0] : undefined,
+    );
+    return {
+      baseUrl: text(p.baseUrl) || text(settings.baseUrl),
+      model: text(first.id) || text(settings.model),
+    };
+  }
+  if (appId === "workbuddy") {
+    const first = object(
+      Array.isArray(settings.models) ? settings.models[0] : undefined,
+    );
+    return {
+      baseUrl: text(settings.url) || text(first.url) || text(settings.baseUrl),
+      model: text(first.id) || text(first.model) || text(settings.model),
+    };
+  }
+  if (appId === "codebuddy") {
+    return {
+      baseUrl: text(settings.url) || text(settings.baseUrl),
+      model: text(settings.id) || text(settings.model) || provider.id,
+    };
+  }
+  if (appId === "omp") {
+    const first = object(
+      Array.isArray(settings.models) ? settings.models[0] : undefined,
+    );
+    return {
+      baseUrl: text(first.baseUrl) || text(settings.baseUrl),
+      model: text(first.id),
+    };
+  }
+  return { baseUrl: text(settings.baseUrl), model: text(settings.model) };
 }

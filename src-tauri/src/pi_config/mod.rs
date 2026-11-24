@@ -63,9 +63,36 @@ pub(crate) fn get_pi_models_path() -> Result<PathBuf, AppError> {
     Ok(get_pi_agent_dir()?.join("models.json"))
 }
 
-#[cfg(test)]
 pub(crate) fn get_pi_settings_path() -> Result<PathBuf, AppError> {
     Ok(get_pi_agent_dir()?.join("settings.json"))
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct PiNativeDefaults {
+    #[allow(dead_code)]
+    pub(crate) default_provider: Option<String>,
+    #[allow(dead_code)]
+    pub(crate) default_model: Option<String>,
+    pub(crate) session_dir: Option<String>,
+}
+
+pub(crate) fn read_pi_native_defaults() -> Result<PiNativeDefaults, AppError> {
+    let path = get_pi_settings_path()?;
+    if !path.exists() {
+        return Ok(PiNativeDefaults::default());
+    }
+    let value = read_json5_value(&path, "Pi settings")?;
+    let object = value.as_object().ok_or_else(|| {
+        AppError::Config(format!(
+            "Pi settings root must be an object: {}",
+            path.display()
+        ))
+    })?;
+    Ok(PiNativeDefaults {
+        default_provider: optional_string(object, "defaultProvider", &path)?,
+        default_model: optional_string(object, "defaultModel", &path)?,
+        session_dir: optional_string(object, "sessionDir", &path)?,
+    })
 }
 
 /// Pi's global default provider (`settings.json` `defaultProvider`), read-only.
@@ -291,7 +318,6 @@ fn read_models_document_with_revision(path: &Path) -> Result<(Value, String), Ap
     Ok((document, revision))
 }
 
-#[cfg(test)]
 fn read_json5_value(path: &Path, label: &str) -> Result<Value, AppError> {
     parse_json5_value(path, label, read_file_limited(path, label)?)
 }
@@ -435,7 +461,6 @@ fn ensure_private_models_parent(path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
-#[cfg(test)]
 fn optional_string(
     object: &Map<String, Value>,
     key: &str,
@@ -463,7 +488,7 @@ pub(crate) mod test_support {
 
     /// Points every Pi path at a fresh temporary agent directory until dropped.
     pub(crate) struct TestAgentDir {
-        _dir: tempfile::TempDir,
+        _dir: Option<tempfile::TempDir>,
         previous: Option<PathBuf>,
     }
 
@@ -475,7 +500,18 @@ pub(crate) mod test_support {
                 .expect("lock Pi test directory")
                 .replace(dir.path().join("agent"));
             Self {
-                _dir: dir,
+                _dir: Some(dir),
+                previous,
+            }
+        }
+
+        pub(crate) fn at(path: impl Into<PathBuf>) -> Self {
+            let previous = super::TEST_AGENT_DIR
+                .lock()
+                .expect("lock Pi test directory")
+                .replace(path.into());
+            Self {
+                _dir: None,
                 previous,
             }
         }

@@ -1,13 +1,22 @@
 import React, { useMemo, useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { Save, Plus, AlertCircle, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  Save,
+  Plus,
+  AlertCircle,
+  ChevronDown,
+  ChevronLeft,
+  ChevronUp,
+  Wand2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import JsonEditor from "@/components/JsonEditor";
 import type { AppId } from "@/lib/api/types";
-import { McpServer, McpServerSpec } from "@/types";
+import { McpApps, McpServer, McpServerSpec } from "@/types";
+import { MCP_APP_IDS } from "@/config/appConfig";
 import { mcpPresets, getMcpPresetWithDescription } from "@/config/mcpPresets";
 import McpWizardModal from "./McpWizardModal";
 import {
@@ -24,6 +33,7 @@ import { parseSmartMcpJson } from "@/utils/formatters";
 import { useMcpValidation } from "./useMcpValidation";
 import { useUpsertMcpServer } from "@/hooks/useMcp";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
+import "./McpFormModal.css";
 
 interface McpFormModalProps {
   editingId?: string;
@@ -64,26 +74,42 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
   const [formDocs, setFormDocs] = useState(initialData?.docs || "");
   const [formTags, setFormTags] = useState(initialData?.tags?.join(", ") || "");
 
-  const [enabledApps, setEnabledApps] = useState<{
-    claude: boolean;
-    codex: boolean;
-    gemini: boolean;
-    grokbuild: boolean;
-    opencode: boolean;
-  }>(() => {
-    if (initialData?.apps) {
-      return {
-        ...initialData.apps,
-        grokbuild: initialData.apps.grokbuild ?? false,
-      };
-    }
-    return {
-      claude: defaultEnabledApps.includes("claude"),
-      codex: defaultEnabledApps.includes("codex"),
-      gemini: defaultEnabledApps.includes("gemini"),
-      grokbuild: defaultEnabledApps.includes("grokbuild"),
-      opencode: defaultEnabledApps.includes("opencode"),
+  type McpAppKey = keyof McpApps;
+  const selectableApps = useMemo<McpAppKey[]>(
+    () =>
+      (visibleApps ?? MCP_APP_IDS).filter(
+        (id): id is McpAppKey => id !== "claude-desktop" && id !== "openclaw",
+      ),
+    [visibleApps],
+  );
+
+  const [enabledApps, setEnabledApps] = useState<McpApps>(() => {
+    const initial: McpApps = {
+      claude: false,
+      codex: false,
+      gemini: false,
+      grokbuild: false,
+      opencode: false,
+      hermes: false,
+      pi: false,
+      omp: false,
+      agy: false,
+      mcode: false,
+      kimi: false,
+      dsh: false,
+      copilot: false,
+      workbuddy: false,
+      codebuddy: false,
     };
+    if (initialData?.apps) {
+      return { ...initial, ...initialData.apps };
+    }
+    for (const appId of defaultEnabledApps) {
+      if (appId !== "claude-desktop" && appId !== "openclaw") {
+        initial[appId as McpAppKey] = true;
+      }
+    }
+    return initial;
   });
 
   const isEditing = !!editingId;
@@ -423,39 +449,65 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
         isOpen={true}
         title={getFormTitle()}
         onClose={onClose}
+        editorHeader={
+          <>
+            <button
+              type="button"
+              className="secondary editor-back"
+              aria-label={t("common.back", { defaultValue: "返回" })}
+              onClick={onClose}
+              disabled={saving}
+            >
+              <ChevronLeft size={16} aria-hidden="true" />
+              {t("common.back", { defaultValue: "返回" })}
+            </button>
+            <div className="editor-heading">
+              <h2>{getFormTitle()}</h2>
+              <span>{useToml ? "TOML · MCP" : "JSON · MCP"}</span>
+            </div>
+          </>
+        }
         footer={
-          <Button
-            type="button"
-            onClick={handleSubmit}
-            disabled={saving || (!isEditing && !!idError)}
-            className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isEditing ? <Save size={16} /> : <Plus size={16} />}
-            {saving
-              ? t("common.saving")
-              : isEditing
-                ? t("common.save")
-                : t("common.add")}
-          </Button>
+          <div className="mcp-form-footer-actions">
+            <button
+              type="button"
+              className="secondary"
+              onClick={onClose}
+              disabled={saving}
+            >
+              {t("common.cancel", { defaultValue: "取消" })}
+            </button>
+            <Button
+              type="button"
+              onClick={handleSubmit}
+              disabled={saving || (!isEditing && !!idError)}
+              className="primary inline-flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isEditing ? <Save size={15} /> : <Plus size={15} />}
+              {saving
+                ? t("common.saving")
+                : isEditing
+                  ? t("common.save")
+                  : t("common.add")}
+            </Button>
+          </div>
         }
       >
-        <div className="flex flex-col h-full gap-6">
-          {/* 上半部分：表单字段 */}
-          <div className="glass rounded-xl p-6 border border-white/10 space-y-6 flex-shrink-0">
+        <div className="editor-form mcp-form-stage">
+          {/* 上半部分：基础信息与启用范围 */}
+          <section className="mcp-form-section">
             {/* 预设选择（仅新增时展示） */}
             {!isEditing && (
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-3">
+              <div className="mcp-form-field">
+                <span className="mcp-form-section-title">
                   {t("mcp.presets.title")}
-                </label>
-                <div className="flex flex-wrap gap-2">
+                </span>
+                <div className="mcp-preset-row">
                   <button
                     type="button"
                     onClick={applyCustom}
-                    className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                      selectedPreset === -1
-                        ? "bg-emerald-500 text-white dark:bg-emerald-600"
-                        : "bg-accent text-muted-foreground hover:bg-accent/80"
+                    className={`mcp-preset-pill ${
+                      selectedPreset === -1 ? "is-active" : ""
                     }`}
                   >
                     {t("presetSelector.custom")}
@@ -467,10 +519,8 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
                         key={preset.id}
                         type="button"
                         onClick={() => applyPreset(idx)}
-                        className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                          selectedPreset === idx
-                            ? "bg-emerald-500 text-white dark:bg-emerald-600"
-                            : "bg-accent text-muted-foreground hover:bg-accent/80"
+                        className={`mcp-preset-pill ${
+                          selectedPreset === idx ? "is-active" : ""
                         }`}
                         title={t(descriptionKey)}
                       >
@@ -482,143 +532,77 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
               </div>
             )}
 
-            {/* ID (标题) */}
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <label
-                  htmlFor={`${fieldPrefix}-title`}
-                  className="block text-sm font-medium text-foreground"
-                >
-                  {t("mcp.form.title")} <span className="text-red-500">*</span>
-                </label>
-                {!isEditing && idError && (
-                  <span className="text-xs text-red-500 dark:text-red-400">
-                    {idError}
-                  </span>
-                )}
+            {/* ID (标题) + Name */}
+            <div className="mcp-form-grid">
+              <div className="mcp-form-field">
+                <div className="mcp-form-field-head">
+                  <label
+                    htmlFor={`${fieldPrefix}-title`}
+                    className="mcp-form-label"
+                  >
+                    {t("mcp.form.title")}{" "}
+                    <span className="mcp-form-required">*</span>
+                  </label>
+                  {!isEditing && idError && (
+                    <span className="mcp-form-error-inline">{idError}</span>
+                  )}
+                </div>
+                <Input
+                  id={`${fieldPrefix}-title`}
+                  type="text"
+                  placeholder={t("mcp.form.titlePlaceholder")}
+                  value={formId}
+                  onChange={(e) => handleIdChange(e.target.value)}
+                  disabled={isEditing}
+                />
               </div>
-              <Input
-                id={`${fieldPrefix}-title`}
-                type="text"
-                placeholder={t("mcp.form.titlePlaceholder")}
-                value={formId}
-                onChange={(e) => handleIdChange(e.target.value)}
-                disabled={isEditing}
-              />
-            </div>
 
-            {/* Name */}
-            <div>
-              <label
-                htmlFor={`${fieldPrefix}-name`}
-                className="block text-sm font-medium text-foreground mb-2"
-              >
-                {t("mcp.form.name")}
-              </label>
-              <Input
-                id={`${fieldPrefix}-name`}
-                type="text"
-                placeholder={t("mcp.form.namePlaceholder")}
-                value={formName}
-                onChange={(e) => setFormName(e.target.value)}
-              />
+              <div className="mcp-form-field">
+                <label
+                  htmlFor={`${fieldPrefix}-name`}
+                  className="mcp-form-label"
+                >
+                  {t("mcp.form.name")}
+                </label>
+                <Input
+                  id={`${fieldPrefix}-name`}
+                  type="text"
+                  placeholder={t("mcp.form.namePlaceholder")}
+                  value={formName}
+                  onChange={(e) => setFormName(e.target.value)}
+                />
+              </div>
             </div>
 
             {/* 启用到哪些应用 */}
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-3">
+            <div className="mcp-form-field">
+              <span className="mcp-form-label">
                 {t("mcp.form.enabledApps")}
-              </label>
-              <div className="flex flex-wrap gap-4">
-                {(!visibleApps || visibleApps.includes("claude")) && (
-                  <div className="flex items-center gap-2">
-                    <Checkbox
-                      id="enable-claude"
-                      checked={enabledApps.claude}
-                      onCheckedChange={(checked: boolean) =>
-                        setEnabledApps({ ...enabledApps, claude: checked })
-                      }
-                    />
-                    <label
-                      htmlFor="enable-claude"
-                      className="text-sm text-foreground cursor-pointer select-none"
+              </span>
+              <div className="mcp-apps-grid">
+                {selectableApps.map((appId) => {
+                  const checked = Boolean(enabledApps[appId]);
+                  return (
+                    <div
+                      key={appId}
+                      className={`mcp-app-chip ${checked ? "is-checked" : ""}`}
                     >
-                      {t("mcp.unifiedPanel.apps.claude")}
-                    </label>
-                  </div>
-                )}
-
-                {(!visibleApps || visibleApps.includes("codex")) && (
-                  <div className="flex items-center gap-2">
-                    <Checkbox
-                      id="enable-codex"
-                      checked={enabledApps.codex}
-                      onCheckedChange={(checked: boolean) =>
-                        setEnabledApps({ ...enabledApps, codex: checked })
-                      }
-                    />
-                    <label
-                      htmlFor="enable-codex"
-                      className="text-sm text-foreground cursor-pointer select-none"
-                    >
-                      {t("mcp.unifiedPanel.apps.codex")}
-                    </label>
-                  </div>
-                )}
-
-                {(!visibleApps || visibleApps.includes("gemini")) && (
-                  <div className="flex items-center gap-2">
-                    <Checkbox
-                      id="enable-gemini"
-                      checked={enabledApps.gemini}
-                      onCheckedChange={(checked: boolean) =>
-                        setEnabledApps({ ...enabledApps, gemini: checked })
-                      }
-                    />
-                    <label
-                      htmlFor="enable-gemini"
-                      className="text-sm text-foreground cursor-pointer select-none"
-                    >
-                      {t("mcp.unifiedPanel.apps.gemini")}
-                    </label>
-                  </div>
-                )}
-
-                {(!visibleApps || visibleApps.includes("grokbuild")) && (
-                  <div className="flex items-center gap-2">
-                    <Checkbox
-                      id="enable-grokbuild"
-                      checked={enabledApps.grokbuild}
-                      onCheckedChange={(checked: boolean) =>
-                        setEnabledApps({ ...enabledApps, grokbuild: checked })
-                      }
-                    />
-                    <label
-                      htmlFor="enable-grokbuild"
-                      className="text-sm text-foreground cursor-pointer select-none"
-                    >
-                      {t("mcp.unifiedPanel.apps.grokbuild")}
-                    </label>
-                  </div>
-                )}
-
-                {(!visibleApps || visibleApps.includes("opencode")) && (
-                  <div className="flex items-center gap-2">
-                    <Checkbox
-                      id="enable-opencode"
-                      checked={enabledApps.opencode}
-                      onCheckedChange={(checked: boolean) =>
-                        setEnabledApps({ ...enabledApps, opencode: checked })
-                      }
-                    />
-                    <label
-                      htmlFor="enable-opencode"
-                      className="text-sm text-foreground cursor-pointer select-none"
-                    >
-                      {t("mcp.unifiedPanel.apps.opencode")}
-                    </label>
-                  </div>
-                )}
+                      <Checkbox
+                        id={`enable-${appId}`}
+                        checked={checked}
+                        onCheckedChange={(next: boolean) =>
+                          setEnabledApps((prev) => ({
+                            ...prev,
+                            [appId]: next,
+                          }))
+                        }
+                      />
+                      <label htmlFor={`enable-${appId}`}>
+                        {t(`mcp.unifiedPanel.apps.${appId}`)}
+                      </label>
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
@@ -628,12 +612,12 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
                 type="button"
                 onClick={() => setShowMetadata(!showMetadata)}
                 aria-expanded={showMetadata}
-                className="flex items-center gap-2 rounded-lg border border-border bg-accent/50 px-3 py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="mcp-meta-toggle"
               >
                 {showMetadata ? (
-                  <ChevronUp size={16} />
+                  <ChevronUp size={15} aria-hidden="true" />
                 ) : (
-                  <ChevronDown size={16} />
+                  <ChevronDown size={15} aria-hidden="true" />
                 )}
                 {t("mcp.form.additionalInfo")}
               </button>
@@ -641,11 +625,11 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
 
             {/* 附加信息区域（可折叠） */}
             {showMetadata && (
-              <>
-                <div>
+              <div className="mcp-form-grid">
+                <div className="mcp-form-field">
                   <label
                     htmlFor={`${fieldPrefix}-description`}
-                    className="block text-sm font-medium text-foreground mb-2"
+                    className="mcp-form-label"
                   >
                     {t("mcp.form.description")}
                   </label>
@@ -658,10 +642,10 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
                   />
                 </div>
 
-                <div>
+                <div className="mcp-form-field">
                   <label
                     htmlFor={`${fieldPrefix}-tags`}
-                    className="block text-sm font-medium text-foreground mb-2"
+                    className="mcp-form-label"
                   >
                     {t("mcp.form.tags")}
                   </label>
@@ -674,10 +658,10 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
                   />
                 </div>
 
-                <div>
+                <div className="mcp-form-field">
                   <label
                     htmlFor={`${fieldPrefix}-homepage`}
-                    className="block text-sm font-medium text-foreground mb-2"
+                    className="mcp-form-label"
                   >
                     {t("mcp.form.homepage")}
                   </label>
@@ -690,10 +674,10 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
                   />
                 </div>
 
-                <div>
+                <div className="mcp-form-field">
                   <label
                     htmlFor={`${fieldPrefix}-docs`}
-                    className="block text-sm font-medium text-foreground mb-2"
+                    className="mcp-form-label"
                   >
                     {t("mcp.form.docs")}
                   </label>
@@ -705,51 +689,50 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
                     onChange={(e) => setFormDocs(e.target.value)}
                   />
                 </div>
-              </>
+              </div>
             )}
-          </div>
+          </section>
 
-          {/* 下半部分：JSON 配置编辑器 - 自适应剩余高度 */}
-          <div className="glass rounded-xl p-6 border border-white/10 flex flex-col flex-1 min-h-0">
-            <div className="flex items-center justify-between mb-4 flex-shrink-0">
-              <label className="text-sm font-medium text-foreground">
+          {/* 下半部分：JSON / TOML 配置编辑器 */}
+          <section className="mcp-form-section">
+            <div className="mcp-form-section-head">
+              <span className="mcp-form-section-title">
                 {useToml ? t("mcp.form.tomlConfig") : t("mcp.form.jsonConfig")}
-              </label>
+              </span>
               {(isEditing || selectedPreset === -1) && (
                 <button
                   type="button"
                   onClick={() => setIsWizardOpen(true)}
-                  className="text-sm text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 transition-colors"
+                  className="mcp-wizard-btn"
                 >
+                  <Wand2 size={13} aria-hidden="true" />
                   {t("mcp.form.useWizard")}
                 </button>
               )}
             </div>
-            <div className="flex-1 min-h-0 flex flex-col">
-              <div className="flex-1 min-h-0">
-                <JsonEditor
-                  value={formConfig}
-                  onChange={handleConfigChange}
-                  placeholder={
-                    useToml
-                      ? t("mcp.form.tomlPlaceholder")
-                      : t("mcp.form.jsonPlaceholder")
-                  }
-                  darkMode={isDarkMode}
-                  rows={12}
-                  showValidation={!useToml}
-                  language={useToml ? "javascript" : "json"}
-                  height="100%"
-                />
-              </div>
-              {configError && (
-                <div className="flex items-center gap-2 mt-2 text-red-500 dark:text-red-400 text-sm flex-shrink-0">
-                  <AlertCircle size={16} />
-                  <span>{configError}</span>
-                </div>
-              )}
+            <div className="mcp-editor-frame">
+              <JsonEditor
+                value={formConfig}
+                onChange={handleConfigChange}
+                placeholder={
+                  useToml
+                    ? t("mcp.form.tomlPlaceholder")
+                    : t("mcp.form.jsonPlaceholder")
+                }
+                darkMode={isDarkMode}
+                rows={12}
+                showValidation={!useToml}
+                language={useToml ? "javascript" : "json"}
+                height="260px"
+              />
             </div>
-          </div>
+            {configError && (
+              <div className="mcp-config-error" role="alert">
+                <AlertCircle size={15} aria-hidden="true" />
+                <span>{configError}</span>
+              </div>
+            )}
+          </section>
         </div>
       </FullScreenPanel>
 

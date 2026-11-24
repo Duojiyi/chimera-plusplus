@@ -156,7 +156,7 @@ fn unsupported_reason(app: &AppType, provider: &Provider) -> Option<&'static str
         return Some("目标工具尚未开放");
     }
     // Their membership lives in their own config files, which an import never writes.
-    if matches!(app, AppType::Pi) {
+    if matches!(app, AppType::Pi | AppType::Omp) {
         return Some("该工具暂不支持从文件导入");
     }
     let auth_tokens = provider

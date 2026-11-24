@@ -1361,9 +1361,17 @@ mod tests {
             gemini: true,
             grokbuild: true,
             opencode: true,
-
+            openclaw: true,
+            hermes: true,
             pi: true,
             omp: true,
+            agy: true,
+            mcode: true,
+            kimi: true,
+            dsh: true,
+            copilot: true,
+            workbuddy: true,
+            codebuddy: true,
         };
         let shown: Vec<_> = TRAY_SECTIONS
             .iter()

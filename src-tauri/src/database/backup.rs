@@ -267,6 +267,7 @@ const SYNC_SKIP_TABLES: &[&str] = &[
     "usage_daily_rollups",
     "usage_rollup_dedup",
     "session_log_sync",
+    "session_usage_dedup",
     "official_account_quota",
     // Labels of the logins saved on this machine (v18). The logins themselves
     // never leave it, and 停用 / last used are facts about this machine.
@@ -283,6 +284,7 @@ const SYNC_PRESERVE_TABLES: &[&str] = &[
     "usage_daily_rollups",
     "usage_rollup_dedup",
     "session_log_sync",
+    "session_usage_dedup",
     // Device-local reading of this machine's tokens; a synced import must not
     // wipe it just because the remote SQL never carried it.
     "official_account_quota",
@@ -430,7 +432,7 @@ impl Database {
             fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
         }
 
-        crate::config::atomic_write(target_path, dump.as_bytes())
+        crate::config::atomic_write_private(target_path, dump.as_bytes())
     }
 
     /// 从 SQL 文件导入，返回生成的备份 ID（若无备份则为空字符串）

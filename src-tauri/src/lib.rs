@@ -1,3 +1,4 @@
+mod agy_config;
 mod app_config;
 mod app_store;
 mod auto_launch;
@@ -8,6 +9,7 @@ mod claude_desktop_history;
 mod claude_desktop_paths;
 mod claude_mcp;
 mod claude_plugin;
+mod codebuddy_config;
 mod codex_accounts;
 mod codex_cdp;
 mod codex_common_projection;
@@ -19,26 +21,33 @@ mod codex_state_db;
 mod commands;
 mod config;
 mod config_health;
+mod copilot_config;
 mod database;
 mod deeplink;
+mod dsh_config;
 mod error;
 mod gemini_config;
 mod gemini_mcp;
 mod gemini_session;
 mod grok_config;
-
+mod hermes_config;
 mod init_status;
+mod jsonc_document;
+mod kimi_config;
+mod kimi_session;
 mod lightweight;
 #[cfg(target_os = "linux")]
 mod linux_fix;
 mod managed_prompts;
+mod mcode_config;
 mod proxy_marker;
 
 mod mcp;
 mod model_capabilities;
 mod oauth_callback;
 mod official_account_meta;
-
+mod omp_config;
+mod openclaw_config;
 mod opencode_config;
 mod panic_hook;
 mod pi_config;
@@ -55,7 +64,11 @@ mod services;
 mod session_manager;
 mod settings;
 mod store;
+mod sync_utils;
+#[cfg(test)]
+mod test_support;
 mod tool_registry;
+mod workbuddy_config;
 
 mod tray;
 #[cfg(target_os = "windows")]
@@ -1675,45 +1688,77 @@ pub fn run() {
                     }
                 });
 
-                if product_policy::sync_session_usage_on_startup() {
+                {
+                    // 费用回填只修补本机数据库既有零成本行（不扫描外部会话文件），
+                    // 即使 sync_session_usage_on_startup() 为 false 也要在启动首轮执行，
+                    // 与上游 CC Switch 保持一致。
                     let db_for_session_sync = state.db.clone();
                     tauri::async_runtime::spawn(async move {
-                    const SESSION_SYNC_INTERVAL_SECS: u64 = 60;
+                        const SESSION_SYNC_INTERVAL_SECS: u64 = 60;
 
-                    async fn run_session_sync(db: std::sync::Arc<crate::database::Database>, backfill: bool) {
-                        let task = crate::services::session_usage::run_session_sync_blocking(move || {
-                            if backfill {
-                                if let Err(error) = db.backfill_missing_usage_costs() {
-                                    log::warn!("Usage cost startup backfill failed: {error}");
+                        async fn run_session_sync(
+                            db: std::sync::Arc<crate::database::Database>,
+                            backfill: bool,
+                            sync_sessions: bool,
+                        ) {
+                            let task =
+                                crate::services::session_usage::run_session_sync_blocking(move || {
+                                    if backfill {
+                                        match db.backfill_missing_usage_costs() {
+                                            Ok(updated) if updated > 0 => {
+                                                crate::usage_events::notify_log_recorded();
+                                            }
+                                            Ok(_) => {}
+                                            Err(error) => {
+                                                log::warn!(
+                                                    "Usage cost startup backfill failed: {error}"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    if !sync_sessions {
+                                        return crate::services::session_usage::SessionSyncResult::default();
+                                    }
+                                    crate::services::session_usage::sync_all_unlocked(&db)
+                                });
+                            match task.await {
+                                Ok(result) if !result.errors.is_empty() => {
+                                    log::warn!(
+                                        "Session usage sync completed with {} error(s)",
+                                        result.errors.len()
+                                    );
+                                }
+                                Ok(_) => {}
+                                Err(error) => {
+                                    log::warn!("Session usage blocking task failed: {error}")
                                 }
                             }
-                            crate::services::session_usage::sync_all_unlocked(&db)
-                        });
-                        match task.await {
-                            Ok(result) if !result.errors.is_empty() => {
-                                log::warn!(
-                                    "Session usage sync completed with {} error(s)",
-                                    result.errors.len()
-                                );
-                            }
-                            Ok(_) => {}
-                            Err(error) => log::warn!("Session usage blocking task failed: {error}"),
                         }
-                    }
 
-                    // 首次同步（含费用回填）
-                    run_session_sync(db_for_session_sync.clone(), true).await;
+                        let sync_on_startup = product_policy::sync_session_usage_on_startup();
 
-                    // 定期同步
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
-                        SESSION_SYNC_INTERVAL_SECS,
-                    ));
-                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                    interval.tick().await; // skip immediate first tick
-                    loop {
-                        interval.tick().await;
-                        run_session_sync(db_for_session_sync.clone(), false).await;
-                    }
+                        // 启动首轮始终执行费用回填；仅在策略开启时同步外部会话文件
+                        run_session_sync(db_for_session_sync.clone(), true, sync_on_startup).await;
+                        // 若库里仍有未知模型导致零成本记录，按 6h 节流自动查 models.dev → OpenRouter 兜底补价
+                        crate::commands::sync_missing_model_pricing_if_needed(
+                            db_for_session_sync.clone(),
+                        )
+                        .await;
+
+                        if !sync_on_startup {
+                            return;
+                        }
+
+                        // 定期同步
+                        let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+                            SESSION_SYNC_INTERVAL_SECS,
+                        ));
+                        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                        interval.tick().await; // skip immediate first tick
+                        loop {
+                            interval.tick().await;
+                            run_session_sync(db_for_session_sync.clone(), false, true).await;
+                        }
                     });
                 }
             });
@@ -2993,9 +3038,17 @@ mod tests {",
             gemini: true,
             grokbuild: true,
             opencode: true,
-
+            openclaw: true,
+            hermes: true,
             pi: true,
             omp: true,
+            agy: true,
+            mcode: true,
+            kimi: true,
+            dsh: true,
+            copilot: true,
+            workbuddy: true,
+            codebuddy: true,
         };
         assert_eq!(
             enabled_proxy_apps_on_startup(&db, &everything_visible).await,

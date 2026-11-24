@@ -69,6 +69,42 @@ const TITLE_THEMES: Record<AppType | "all", TitleTheme> = {
     accent: "text-purple-600 dark:text-purple-400",
     iconBg: "bg-purple-500/10",
   },
+  pi: {
+    accent: "text-fuchsia-600 dark:text-fuchsia-400",
+    iconBg: "bg-fuchsia-500/10",
+  },
+  omp: {
+    accent: "text-cyan-600 dark:text-cyan-400",
+    iconBg: "bg-cyan-500/10",
+  },
+  mcode: {
+    accent: "text-orange-600 dark:text-orange-400",
+    iconBg: "bg-orange-500/10",
+  },
+  kimi: {
+    accent: "text-blue-600 dark:text-blue-400",
+    iconBg: "bg-blue-500/10",
+  },
+  codebuddy: {
+    accent: "text-blue-600 dark:text-blue-400",
+    iconBg: "bg-blue-500/10",
+  },
+  dsh: {
+    accent: "text-indigo-600 dark:text-indigo-400",
+    iconBg: "bg-indigo-500/10",
+  },
+  agy: {
+    accent: "text-sky-600 dark:text-sky-400",
+    iconBg: "bg-sky-500/10",
+  },
+  copilot: {
+    accent: "text-slate-600 dark:text-slate-400",
+    iconBg: "bg-slate-500/10",
+  },
+  workbuddy: {
+    accent: "text-teal-600 dark:text-teal-400",
+    iconBg: "bg-teal-500/10",
+  },
 };
 
 /**
@@ -334,7 +370,7 @@ export function UsageHero({
                 icon={<Sparkles className="h-3.5 w-3.5" />}
                 label="缓存命中"
                 value={formatTokensShort(cacheRead, lang)}
-                accent="text-emerald-500"
+                accent="text-primary"
               />
 
               <div className="col-span-2 lg:col-span-1 flex flex-col justify-center rounded-xl border border-border/40 bg-background/40 p-3 shadow-sm">
@@ -342,13 +378,13 @@ export function UsageHero({
                   <span className="text-muted-foreground font-medium">
                     {t("usage.cacheHitRate", "缓存命中率")}
                   </span>
-                  <span className="font-bold text-emerald-500 tabular-nums">
+                  <span className="font-bold text-primary tabular-nums">
                     {hitPercentLabel}%
                   </span>
                 </div>
                 <div className="relative h-1.5 rounded-full bg-muted/60 overflow-hidden">
                   <motion.div
-                    className="absolute inset-y-0 left-0 bg-emerald-500 rounded-full"
+                    className="absolute inset-y-0 left-0 bg-primary rounded-full"
                     initial={{ width: 0 }}
                     animate={{ width: `${hitPercent}%` }}
                     transition={{ duration: 0.8, ease: "easeOut" }}

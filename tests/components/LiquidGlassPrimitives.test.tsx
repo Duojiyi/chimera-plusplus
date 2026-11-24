@@ -465,6 +465,26 @@ describe("liquid glass primitive contracts", () => {
     expect(tooltip.closest(".glass-tooltip")).toHaveClass("glass-ui");
     expect(trigger).toHaveAccessibleDescription("Connection help");
   });
+
+  it("portals tooltip content outside overflow-hidden containers so tooltips are not clipped", async () => {
+    render(
+      <div data-testid="clipped-panel" className="overflow-hidden">
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger>Refresh</TooltipTrigger>
+            <TooltipContent>刷新列表</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      </div>,
+    );
+    const panel = screen.getByTestId("clipped-panel");
+    await userEvent.tab();
+    const tooltip = await screen.findByRole("tooltip");
+    const surface = tooltip.closest(".glass-tooltip");
+    expect(surface).toBeInTheDocument();
+    expect(panel.contains(surface)).toBe(false);
+    expect(document.body.contains(surface)).toBe(true);
+  });
 });
 
 describe("liquid glass stylesheet safeguards", () => {

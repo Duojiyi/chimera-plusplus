@@ -230,11 +230,21 @@ describe("connected Skills/MCP page", () => {
     expect(props.defaultEnabledApps).toEqual(["claude"]);
     expect(props.defaultFormat).toBe("json");
     expect(props.visibleApps).toEqual([
-      "codex",
       "claude",
+      "codex",
       "gemini",
       "grokbuild",
       "opencode",
+      "hermes",
+      "agy",
+      "mcode",
+      "kimi",
+      "dsh",
+      "copilot",
+      "workbuddy",
+      "codebuddy",
+      "pi",
+      "omp",
     ]);
     expect(screen.getByRole("combobox", { name: "目标工具" })).toBeDisabled();
     unmount();

@@ -7,7 +7,7 @@ mod endpoints;
 pub(crate) mod first_write;
 mod gemini_auth;
 mod live;
-
+mod omp;
 mod pi;
 mod update;
 mod usage;
@@ -32,6 +32,8 @@ pub use live::{
 };
 
 // Internal re-exports (pub(crate))
+#[cfg(test)]
+pub(crate) use live::initialize_dsh_profiles;
 pub(crate) use live::{
     build_effective_settings_with_common_config, codex_common_snippet,
     normalize_provider_common_config_for_storage, provider_exists_in_live_config,
@@ -41,7 +43,7 @@ pub(crate) use live::{
 pub(crate) use live::{sanitize_claude_settings_for_live, write_claude_provider_settings};
 
 // Internal re-exports
-use live::{remove_opencode_provider_from_live, write_gemini_live};
+use live::{remove_opencode_provider_from_live, remove_provider_from_live, write_gemini_live};
 use usage::validate_usage_script;
 
 /// Save-time check for a line's custom request headers (CPP-A7), only while
@@ -281,6 +283,44 @@ impl ProviderService {
         base_url.trim().trim_end_matches('/').to_string()
     }
 
+    /// Read native live providers for additive tools that store their catalog
+    /// directly in the tool's own config files.
+    fn read_native_additive_providers(
+        app_type: &AppType,
+    ) -> Result<Option<IndexMap<String, Value>>, AppError> {
+        let native = match app_type {
+            AppType::OpenClaw => crate::openclaw_config::get_providers()?
+                .into_iter()
+                .collect(),
+            AppType::Hermes => crate::hermes_config::get_providers()?.into_iter().collect(),
+            AppType::Mcode => crate::mcode_config::get_providers()?,
+            AppType::Kimi => crate::kimi_config::get_providers()?,
+            AppType::Dsh => crate::dsh_config::get_providers()?,
+            AppType::Copilot => crate::copilot_config::get_providers()?,
+            AppType::WorkBuddy => crate::workbuddy_config::get_providers()?,
+            AppType::Codebuddy => crate::codebuddy_config::get_providers()?,
+            _ => return Ok(None),
+        };
+        Ok(Some(native))
+    }
+
+    fn synthesize_native_provider(app_type: &AppType, id: &str, config: &Value) -> Provider {
+        let name = config
+            .get("name")
+            .and_then(Value::as_str)
+            .or_else(|| config.get("displayName").and_then(Value::as_str))
+            .or_else(|| config.pointer("/provider/name").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(id)
+            .to_string();
+        let mut provider = Provider::with_id(id.to_string(), name, config.clone(), None);
+        provider.category = Some("custom".to_string());
+        provider.icon = Some(app_type.as_str().to_string());
+        Self::set_provider_live_config_managed(&mut provider, true);
+        provider
+    }
+
     /// List all providers for an app type
     pub fn list(
         state: &AppState,
@@ -289,22 +329,71 @@ impl ProviderService {
         if app_type == AppType::Pi {
             return pi::list(state);
         }
+        if app_type == AppType::Omp {
+            return omp::list(state);
+        }
         let mut providers = state.db.get_all_providers(app_type.as_str())?;
-        // Read membership once, without importing native credentials or persisting
-        // the derived flags. An unreadable config must not look enabled by default.
-        let live = match app_type {
-            AppType::OpenCode => crate::opencode_config::get_providers()?,
-
-            _ => return Ok(providers),
-        };
-        for (id, provider) in providers.iter_mut() {
-            // OMO variants use separate plugin files, not OpenCode's provider map.
-            if app_type == AppType::OpenCode
-                && matches!(provider.category.as_deref(), Some("omo" | "omo-slim"))
-            {
-                continue;
+        if app_type == AppType::OpenCode {
+            // Read membership once, without importing native credentials or persisting
+            // the derived flags. An unreadable config must not look enabled by default.
+            let live_keys: std::collections::HashSet<String> =
+                crate::opencode_config::get_providers()?
+                    .into_iter()
+                    .map(|(k, _)| k)
+                    .collect();
+            for (id, provider) in providers.iter_mut() {
+                // OMO variants use separate plugin files, not OpenCode's provider map.
+                if matches!(provider.category.as_deref(), Some("omo" | "omo-slim")) {
+                    continue;
+                }
+                Self::set_provider_live_config_managed(provider, live_keys.contains(id));
             }
-            Self::set_provider_live_config_managed(provider, live.contains_key(id));
+            return Ok(providers);
+        }
+
+        // Merge native live providers in memory (read-only, without persisting
+        // credentials to SQLite on view) so third-party lines already configured
+        // inside tools like DeepSeek Harness, OpenClaw, Hermes, Kimi, etc. appear
+        // immediately in the UI.
+        let Some(native) = Self::read_native_additive_providers(&app_type)? else {
+            return Ok(providers);
+        };
+
+        for (id, config) in &native {
+            match providers.get_mut(id) {
+                Some(provider) => {
+                    if matches!(app_type, AppType::Copilot | AppType::Codebuddy)
+                        && provider.category.as_deref() == Some("official")
+                    {
+                        continue;
+                    }
+                    if app_type == AppType::Copilot {
+                        if let Some(p) = config.get("provider") {
+                            provider.settings_config["provider"] = p.clone();
+                        }
+                        if let Some(models) = config.get("models") {
+                            provider.settings_config["models"] = models.clone();
+                        }
+                    } else {
+                        provider.settings_config = config.clone();
+                    }
+                }
+                None => {
+                    providers.insert(
+                        id.clone(),
+                        Self::synthesize_native_provider(&app_type, id, config),
+                    );
+                }
+            }
+        }
+
+        for (id, provider) in providers.iter_mut() {
+            let is_official = matches!(app_type, AppType::Copilot | AppType::Codebuddy)
+                && provider.category.as_deref() == Some("official");
+            Self::set_provider_live_config_managed(
+                provider,
+                !is_official && native.contains_key(id),
+            );
         }
         Ok(providers)
     }
@@ -340,6 +429,9 @@ impl ProviderService {
         if app_type == AppType::Pi {
             return pi::add(state, provider, false);
         }
+        if app_type == AppType::Omp {
+            return omp::add(state, provider, false);
+        }
         let mut provider = provider;
         Self::normalize_provider_if_claude(&app_type, &mut provider);
         Self::normalize_codex_wire_api(&app_type, &mut provider);
@@ -363,6 +455,9 @@ impl ProviderService {
     ) -> Result<bool, AppError> {
         if app_type == AppType::Pi {
             return pi::add(state, provider, add_to_live);
+        }
+        if app_type == AppType::Omp {
+            return omp::add(state, provider, add_to_live);
         }
         let mut provider = provider;
         // Normalize Claude model keys
@@ -417,7 +512,7 @@ impl ProviderService {
         Ok(true)
     }
 
-    fn lock_app(state: &AppState, app: &AppType) -> tokio::sync::OwnedMutexGuard<()> {
+    pub(super) fn lock_app(state: &AppState, app: &AppType) -> tokio::sync::OwnedMutexGuard<()> {
         futures::executor::block_on(state.proxy_service.lock_switch_for_app(app.as_str()))
     }
 
@@ -462,6 +557,9 @@ impl ProviderService {
     ) -> Result<bool, AppError> {
         if app_type == AppType::Pi {
             return pi::update(state, original_id, provider, app_lock_held);
+        }
+        if app_type == AppType::Omp {
+            return omp::update(state, original_id, provider, app_lock_held);
         }
         let mut provider = provider;
         let original_id = original_id.unwrap_or(provider.id.as_str()).to_string();
@@ -749,6 +847,9 @@ impl ProviderService {
         if app_type == AppType::Pi {
             return pi::delete_locked(state, id);
         }
+        if app_type == AppType::Omp {
+            return omp::delete_locked(state, id);
+        }
         // Additive mode apps - no current provider concept
         if app_type.is_additive_mode() {
             // Single DB read shared across all additive-mode sub-paths below.
@@ -783,12 +884,12 @@ impl ProviderService {
             let live_managed = existing
                 .as_ref()
                 .and_then(Self::provider_live_config_managed);
-            if Self::check_live_config_exists(&app_type, id, live_managed)?
-                && app_type == AppType::OpenCode
-            {
-                remove_opencode_provider_from_live(id)?;
+            if Self::check_live_config_exists(&app_type, id, live_managed)? {
+                remove_provider_from_live(&app_type, id)?;
             }
-            state.db.delete_provider(app_type.as_str(), id)?;
+            if existing.is_some() {
+                state.db.delete_provider(app_type.as_str(), id)?;
+            }
             return Ok(());
         }
 
@@ -819,6 +920,9 @@ impl ProviderService {
         if app_type == AppType::Pi {
             return pi::remove(state, id);
         }
+        if app_type == AppType::Omp {
+            return omp::remove(state, id);
+        }
         match app_type {
             AppType::OpenCode => {
                 let provider_category = state
@@ -848,7 +952,37 @@ impl ProviderService {
                     remove_opencode_provider_from_live(id)?;
                 }
             }
-
+            AppType::OpenClaw
+            | AppType::Hermes
+            | AppType::Mcode
+            | AppType::Kimi
+            | AppType::Dsh
+            | AppType::Copilot
+            | AppType::WorkBuddy
+            | AppType::Codebuddy => {
+                // Capture native config before removing from live so a native-only
+                // provider stays available in Chimera++ as disabled (re-enableable).
+                let native_snapshot = if state
+                    .db
+                    .get_provider_by_id(id, app_type.as_str())?
+                    .is_none()
+                {
+                    Self::read_native_additive_providers(&app_type)?
+                        .and_then(|mut map| map.shift_remove(id))
+                } else {
+                    None
+                };
+                remove_provider_from_live(&app_type, id)?;
+                if let Some(mut provider) = state.db.get_provider_by_id(id, app_type.as_str())? {
+                    Self::set_provider_live_config_managed(&mut provider, false);
+                    state.db.save_provider(app_type.as_str(), &provider)?;
+                } else if let Some(config) = native_snapshot {
+                    let mut provider = Self::synthesize_native_provider(&app_type, id, &config);
+                    Self::set_provider_live_config_managed(&mut provider, false);
+                    state.db.save_provider(app_type.as_str(), &provider)?;
+                }
+                return Ok(());
+            }
             _ => {
                 return Err(AppError::Message(format!(
                     "App {} does not support remove from live config",
@@ -907,9 +1041,12 @@ impl ProviderService {
             None
         };
 
-        // "Switching" a Pi provider adds its models.json entry; nothing else moves.
+        // "Switching" a Pi / Oh My Pi provider adds its models entry; nothing else moves.
         if app_type == AppType::Pi {
             return pi::enable_locked(state, id);
+        }
+        if app_type == AppType::Omp {
+            return omp::enable_locked(state, id);
         }
         // Check if provider exists
         let providers = state.db.get_all_providers(app_type.as_str())?;
@@ -1560,7 +1697,17 @@ impl ProviderService {
             AppType::Gemini => Self::extract_gemini_common_config(&provider.settings_config),
             AppType::GrokBuild => Ok(String::new()),
             AppType::OpenCode => Self::extract_opencode_common_config(&provider.settings_config),
-            AppType::Pi => Ok(String::new()),
+            AppType::Pi
+            | AppType::OpenClaw
+            | AppType::Hermes
+            | AppType::Omp
+            | AppType::Agy
+            | AppType::Mcode
+            | AppType::Kimi
+            | AppType::Dsh
+            | AppType::Copilot
+            | AppType::WorkBuddy
+            | AppType::Codebuddy => Ok(String::new()),
         }
     }
 
@@ -1576,7 +1723,17 @@ impl ProviderService {
             AppType::Gemini => Self::extract_gemini_common_config(settings_config),
             AppType::GrokBuild => Ok(String::new()),
             AppType::OpenCode => Self::extract_opencode_common_config(settings_config),
-            AppType::Pi => Ok(String::new()),
+            AppType::Pi
+            | AppType::OpenClaw
+            | AppType::Hermes
+            | AppType::Omp
+            | AppType::Agy
+            | AppType::Mcode
+            | AppType::Kimi
+            | AppType::Dsh
+            | AppType::Copilot
+            | AppType::WorkBuddy
+            | AppType::Codebuddy => Ok(String::new()),
         }
     }
 
@@ -2059,6 +2216,26 @@ impl ProviderService {
 
             AppType::Pi => {
                 crate::pi_config::validate_provider_node(&provider.id, &provider.settings_config)?;
+            }
+            AppType::Omp => {
+                crate::omp_config::validate_provider(&provider.id, &provider.settings_config)?;
+            }
+            AppType::OpenClaw
+            | AppType::Hermes
+            | AppType::Agy
+            | AppType::Mcode
+            | AppType::Kimi
+            | AppType::Dsh
+            | AppType::Copilot
+            | AppType::WorkBuddy
+            | AppType::Codebuddy => {
+                if !provider.settings_config.is_object() {
+                    return Err(AppError::localized(
+                        "provider.settings.not_object",
+                        format!("{} 配置必须是 JSON 对象", app_type.as_str()),
+                        format!("{} configuration must be a JSON object", app_type.as_str()),
+                    ));
+                }
             }
         }
 

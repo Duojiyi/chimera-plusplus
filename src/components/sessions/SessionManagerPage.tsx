@@ -101,7 +101,23 @@ const SESSION_GROUP_EXPANSION_STORAGE_KEY =
   "cc-switch.sessionManager.groupExpansionState";
 
 type ProviderFilter =
-  "all" | "codex" | "grokbuild" | "claude" | "opencode" | "gemini";
+  | "all"
+  | "codex"
+  | "grokbuild"
+  | "claude"
+  | "opencode"
+  | "gemini"
+  | "openclaw"
+  | "hermes"
+  | "pi"
+  | "omp"
+  | "agy"
+  | "mcode"
+  | "kimi"
+  | "dsh"
+  | "copilot"
+  | "workbuddy"
+  | "codebuddy";
 
 const PROVIDER_FILTERS: ProviderFilter[] = [
   "codex",
@@ -109,6 +125,17 @@ const PROVIDER_FILTERS: ProviderFilter[] = [
   "gemini",
   "opencode",
   "grokbuild",
+  "openclaw",
+  "hermes",
+  "pi",
+  "omp",
+  "agy",
+  "mcode",
+  "kimi",
+  "dsh",
+  "copilot",
+  "workbuddy",
+  "codebuddy",
 ];
 
 type SessionListViewMode = "flat" | "grouped";

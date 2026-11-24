@@ -274,8 +274,7 @@
    button, so their action column only holds the busy spinner, edit and
    delete. */
 .tool-lines {
-  --tool-line-cols: 44px minmax(120px, 1.1fr) minmax(160px, 1.7fr)
-    minmax(100px, 1fr) 136px;
+  --tool-line-cols: minmax(220px, 1.55fr) minmax(140px, 1fr) 156px;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -286,8 +285,7 @@
   background: var(--bg-surface);
 }
 .tool-view[data-kind="accumulate"] .tool-lines {
-  --tool-line-cols: 44px minmax(140px, 1.1fr) minmax(160px, 1.7fr)
-    minmax(100px, 1fr) 80px;
+  --tool-line-cols: minmax(220px, 1.55fr) minmax(140px, 1fr) 72px 84px;
 }
 /* oh-my-pi: line, address, protocol, models, actions (no on/off state). */
 .tool-lines[data-variant="omp"] {

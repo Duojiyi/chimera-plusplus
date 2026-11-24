@@ -384,6 +384,7 @@ command = "say"
                 gemini: false,
                 grokbuild: false,
                 opencode: false,
+                ..Default::default()
             },
             description: None,
             homepage: None,

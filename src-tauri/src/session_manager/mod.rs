@@ -1,11 +1,19 @@
+pub(crate) mod content;
 pub mod delete_backup;
+#[cfg(windows)]
+pub(crate) mod hermes_wsl;
+pub mod model;
 pub mod providers;
 pub mod terminal;
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use providers::{claude, codex, gemini, grokbuild, opencode};
+pub use model::SessionMessage;
+use providers::{
+    agy, claude, codebuddy, codex, copilot, dsh, gemini, grokbuild, hermes, kimi, mcode, omp,
+    openclaw, opencode, pi, workbuddy,
+};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,19 +38,6 @@ pub struct SessionMeta {
     /// marked archived. Omitted when false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub archived: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionMessage {
-    pub role: String,
-    pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ts: Option<i64>,
-    /// The reader shortened this entry, or it stands in for content too large
-    /// to load. Omitted when false.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -122,27 +117,37 @@ impl SessionDeleteResult {
 }
 
 pub fn scan_sessions() -> Vec<SessionMeta> {
-    let (r1, r2, r3, r5, r7) = std::thread::scope(|s| {
-        let h1 = s.spawn(codex::scan_sessions);
-        let h2 = s.spawn(claude::scan_sessions);
-        let h3 = s.spawn(opencode::scan_sessions);
-        let h5 = s.spawn(gemini::scan_sessions);
-        let h7 = s.spawn(grokbuild::scan_sessions);
-        (
-            h1.join().unwrap_or_default(),
-            h2.join().unwrap_or_default(),
-            h3.join().unwrap_or_default(),
-            h5.join().unwrap_or_default(),
-            h7.join().unwrap_or_default(),
-        )
-    });
+    let scanners: [fn() -> Vec<SessionMeta>; 16] = [
+        codex::scan_sessions,
+        claude::scan_sessions,
+        opencode::scan_sessions,
+        openclaw::scan_sessions,
+        gemini::scan_sessions,
+        hermes::scan_sessions,
+        grokbuild::scan_sessions,
+        pi::scan_sessions,
+        omp::scan_sessions,
+        mcode::scan_sessions,
+        copilot::scan_sessions,
+        kimi::scan_sessions,
+        dsh::scan_sessions,
+        agy::scan_sessions,
+        workbuddy::scan_sessions,
+        codebuddy::scan_sessions,
+    ];
 
     let mut sessions = Vec::new();
-    sessions.extend(r1);
-    sessions.extend(r2);
-    sessions.extend(r3);
-    sessions.extend(r5);
-    sessions.extend(r7);
+    std::thread::scope(|s| {
+        let handles: Vec<_> = scanners
+            .into_iter()
+            .map(|scanner| s.spawn(scanner))
+            .collect();
+        for handle in handles {
+            if let Ok(list) = handle.join() {
+                sessions.extend(list);
+            }
+        }
+    });
 
     sessions.sort_by(|a, b| {
         let a_ts = a.last_active_at.or(a.created_at).unwrap_or(0);
@@ -168,22 +173,39 @@ fn resolve_session_source_within_roots(
 }
 
 pub fn load_messages(provider_id: &str, source_path: &str) -> Result<Vec<SessionMessage>, String> {
+    if provider_id == "mcode" {
+        return mcode::load_messages(source_path);
+    }
     // SQLite sessions use a "sqlite:" prefixed source_path
     if provider_id == "opencode" && source_path.starts_with("sqlite:") {
         opencode::ensure_sqlite_source_is_opencode_db(source_path)?;
         return opencode::load_messages_sqlite(source_path);
     }
+    if provider_id == "hermes" && source_path.starts_with("sqlite:") {
+        hermes::ensure_sqlite_source_is_hermes_db(source_path)?;
+        return hermes::load_messages_sqlite(source_path);
+    }
     let roots = provider_roots(provider_id)?;
-    let validated = resolve_session_source_within_roots(Path::new(source_path), &roots)?;
+    let raw_path = Path::new(source_path);
+    let candidate = content::codex_source_or_sibling(provider_id, raw_path);
+    let validated = resolve_session_source_within_roots(candidate.as_ref(), &roots)?;
     let path = validated.as_path();
     match provider_id {
         "codex" => codex::load_messages(path),
         "claude" => claude::load_messages(path),
         "opencode" => opencode::load_messages(path),
-
+        "openclaw" => openclaw::load_messages(path),
         "gemini" => gemini::load_messages(path),
         "grokbuild" => grokbuild::load_messages(path),
-
+        "hermes" => hermes::load_messages(path),
+        "pi" => pi::load_messages(path),
+        "omp" => omp::load_messages(path),
+        "agy" => agy::load_messages(path),
+        "kimi" => kimi::load_messages(path),
+        "dsh" => dsh::load_messages(path),
+        "copilot" => copilot::load_messages(path),
+        "workbuddy" => workbuddy::load_messages(path),
+        "codebuddy" => codebuddy::load_messages(path),
         _ => Err(format!("Unsupported provider: {provider_id}")),
     }
 }
@@ -205,9 +227,42 @@ fn delete_session_result(
     if cleanup_only && provider_id != "codex" {
         return Err("只有 Codex 会话支持重试索引清理".into());
     }
+    if provider_id == "dsh" {
+        return Err(
+            "Delete this session in DeepSeek Harness to keep its native history consistent".into(),
+        );
+    }
+    if provider_id == "copilot" {
+        return Err(
+            "Delete this session in GitHub Copilot CLI to keep its session store and history consistent"
+                .into(),
+        );
+    }
+    if provider_id == "workbuddy" {
+        return Err(
+            "Delete this session in WorkBuddy to keep its session list and history consistent"
+                .into(),
+        );
+    }
+    if provider_id == "codebuddy" {
+        return Err(
+            "Manage this session in CodeBuddy Code: background jobs, teammates and file history refer to its transcript"
+                .into(),
+        );
+    }
+    if provider_id == "mcode" {
+        return Err(
+            "Delete this session in MCode so its runtime state and history are removed together"
+                .into(),
+        );
+    }
     // SQLite sessions bypass the file-based deletion path
     if provider_id == "opencode" && source_path.starts_with("sqlite:") {
         return opencode::delete_session_sqlite(session_id, source_path)
+            .map(SessionDeleteResult::complete);
+    }
+    if provider_id == "hermes" && source_path.starts_with("sqlite:") {
+        return hermes::delete_session_sqlite(session_id, source_path)
             .map(SessionDeleteResult::complete);
     }
     let roots = provider_roots(provider_id)?;
@@ -265,7 +320,10 @@ fn delete_session_with_roots(
                         opencode::delete_session(&validated_root, &validated_source, session_id)
                             .map(SessionDeleteResult::complete)
                     }
-
+                    "openclaw" => {
+                        openclaw::delete_session(&validated_root, &validated_source, session_id)
+                            .map(SessionDeleteResult::complete)
+                    }
                     "gemini" => {
                         gemini::delete_session(&validated_root, &validated_source, session_id)
                             .map(SessionDeleteResult::complete)
@@ -274,6 +332,18 @@ fn delete_session_with_roots(
                         grokbuild::delete_session(&validated_root, &validated_source, session_id)
                             .map(SessionDeleteResult::complete)
                     }
+                    "hermes" => {
+                        hermes::delete_session(&validated_root, &validated_source, session_id)
+                            .map(SessionDeleteResult::complete)
+                    }
+                    "pi" => pi::delete_session(&validated_root, &validated_source, session_id)
+                        .map(SessionDeleteResult::complete),
+                    "omp" => omp::delete_session(&validated_root, &validated_source, session_id)
+                        .map(SessionDeleteResult::complete),
+                    "kimi" => kimi::delete_session(&validated_root, &validated_source, session_id)
+                        .map(SessionDeleteResult::complete),
+                    "agy" => agy::delete_session(&validated_root, &validated_source, session_id)
+                        .map(SessionDeleteResult::complete),
 
                     _ => Err(format!("Unsupported provider: {provider_id}")),
                 };
@@ -341,10 +411,18 @@ fn provider_roots(provider_id: &str) -> Result<Vec<PathBuf>, String> {
         "codex" => codex::session_roots(),
         "claude" => vec![crate::config::get_claude_config_dir().join("projects")],
         "opencode" => vec![opencode::get_opencode_data_dir()],
-
+        "openclaw" => vec![crate::openclaw_config::get_openclaw_dir().join("agents")],
         "gemini" => vec![crate::gemini_config::get_gemini_dir().join("tmp")],
         "grokbuild" => grokbuild::session_roots(),
-
+        "hermes" => vec![crate::hermes_config::get_hermes_dir().join("sessions")],
+        "pi" => pi::session_roots(),
+        "omp" => omp::session_roots(),
+        "agy" => agy::session_roots(),
+        "kimi" => kimi::session_roots(),
+        "dsh" => dsh::session_roots(),
+        "copilot" => copilot::session_roots(),
+        "workbuddy" => workbuddy::session_roots(),
+        "codebuddy" => codebuddy::session_roots(),
         _ => return Err(format!("Unsupported provider: {provider_id}")),
     };
 

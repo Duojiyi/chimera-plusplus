@@ -23,7 +23,7 @@ import { toast } from "sonner";
 import { providerPresets } from "@/config/claudeProviderPresets";
 import { geminiProviderPresets } from "@/config/geminiProviderPresets";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { LineBadge } from "@/components/LineBadge";
+import { RouteGlyph } from "@/components/AppGlyph";
 import { Button } from "@/components/ui/button";
 import { DisabledReason } from "@/components/ui/help-tip";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
@@ -44,6 +44,7 @@ import type { AppId } from "@/lib/api/types";
 import { providersApi } from "@/lib/api/providers";
 import { vscodeApi } from "@/lib/api/vscode";
 import { copyText } from "@/lib/clipboard";
+import { extractErrorMessage } from "@/utils/errorUtils";
 import { ClaudeAccountsCard } from "@/components/claude-accounts/ClaudeAccountsCard";
 import { LocalLoginNotice } from "@/components/claude-accounts/LocalLoginNotice";
 import { ClaudeBindingsCard } from "@/components/claude-accounts/ClaudeBindingsCard";
@@ -89,6 +90,7 @@ const liveConfigImporters: Partial<
   gemini: () => providersApi.importDefault("gemini"),
   grokbuild: () => providersApi.importDefault("grokbuild"),
   opencode: () => providersApi.importOpenCodeFromLive(),
+  agy: () => providersApi.importDefault("agy"),
 };
 
 type ToolMeta = {
@@ -150,6 +152,69 @@ const TOOL_META: Record<string, ToolMeta> = {
     category: "accumulate",
     categoryLabel: "多线路",
     description: "可以同时启用多条线路，默认模型仍在 Pi 中选择。",
+  },
+  openclaw: {
+    appId: "openclaw",
+    name: "OpenClaw",
+    category: "accumulate",
+    categoryLabel: "多线路",
+    description: "累加式配置，可同时在 OpenClaw 配置文件中管理多条模型线路。",
+  },
+  hermes: {
+    appId: "hermes",
+    name: "Hermes",
+    category: "accumulate",
+    categoryLabel: "多线路",
+    description: "管理 Hermes 线路、SOUL.md 提示词与 MCP/Skills。",
+  },
+  agy: {
+    appId: "agy",
+    name: "Antigravity",
+    category: "switch",
+    categoryLabel: "单线路",
+    description: "支持 Antigravity 配置管理、用量统计、会话浏览与 MCP/Skills。",
+  },
+  mcode: {
+    appId: "mcode",
+    name: "MiniMax Code",
+    category: "accumulate",
+    categoryLabel: "多线路",
+    description: "管理 MiniMax Code 自定义模型线路、提示词与 MCP/Skills。",
+  },
+  kimi: {
+    appId: "kimi",
+    name: "Kimi Code",
+    category: "accumulate",
+    categoryLabel: "多线路",
+    description: "管理 Kimi Code 模型线路、提示词、会话与用量统计。",
+  },
+  dsh: {
+    appId: "dsh",
+    name: "DeepSeek Harness",
+    category: "accumulate",
+    categoryLabel: "多线路",
+    description: "管理 DeepSeek Harness 线路、提示词、会话与用量统计。",
+  },
+  copilot: {
+    appId: "copilot",
+    name: "Copilot CLI",
+    category: "accumulate",
+    categoryLabel: "多线路",
+    description: "管理 GitHub Copilot CLI BYOK 线路、提示词、会话与用量统计。",
+  },
+  workbuddy: {
+    appId: "workbuddy",
+    name: "WorkBuddy",
+    category: "accumulate",
+    categoryLabel: "多线路",
+    description: "管理 WorkBuddy 模型线路、MEMORY.md、会话与用量统计。",
+  },
+  codebuddy: {
+    appId: "codebuddy",
+    name: "CodeBuddy Code",
+    category: "accumulate",
+    categoryLabel: "多线路",
+    description: "管理 CodeBuddy Code 模型线路、CODEBUDDY.md、会话与用量统计。",
   },
 };
 
@@ -413,7 +478,20 @@ function KnownToolView({
       ? providerPresets.find((preset) => preset.isOfficial)
       : tool.appId === "gemini"
         ? geminiProviderPresets.find((preset) => preset.category === "official")
-        : undefined;
+        : tool.appId === "claude-desktop"
+          ? {
+              name: "Claude Desktop Official",
+              settingsConfig: {},
+              websiteUrl: "https://claude.ai/download",
+            }
+          : tool.appId === "grokbuild"
+            ? {
+                name: "Grok Official",
+                settingsConfig: { auth: {}, config: "" },
+                websiteUrl: "https://x.ai/grok",
+              }
+            : undefined;
+  const hasOfficialGuide = tool.appId === "claude" || tool.appId === "gemini";
   // Built-in entry is visible even in older databases. Only an explicit switch
   // persists it; rendering this page never writes credentials or live config.
   let officialId = tool.appId + "-official";
@@ -534,11 +612,9 @@ function KnownToolView({
     } catch (cause) {
       if (mutationRequest.current !== request) return;
       setDesktopSwitch(null);
+      const detail = extractErrorMessage(cause);
       toast.error(`${tool.name} 配置未更新`, {
-        description:
-          tool.appId === "claude-desktop"
-            ? String(cause instanceof Error ? cause.message : cause)
-            : "请检查本机配置和文件权限后重试。",
+        description: detail || "请检查本机配置和文件权限后重试。",
       });
     } finally {
       if (mutationRequest.current === request) {
@@ -565,10 +641,11 @@ function KnownToolView({
         toast.success(`已启用「${provider.name}」`);
       }
       await load();
-    } catch {
+    } catch (cause) {
       if (mutationRequest.current !== request) return;
+      const detail = extractErrorMessage(cause);
       toast.error(`${tool.name} 配置未更新`, {
-        description: "请检查本机配置和文件权限后重试。",
+        description: detail || "请检查本机配置和文件权限后重试。",
       });
     } finally {
       if (mutationRequest.current === request) {
@@ -661,7 +738,7 @@ function KnownToolView({
 
   return (
     <div className="tool-view" data-kind={tool.category}>
-      {editing && !isNativeToolAppId(tool.appId) && (
+      {editing && !isNativeToolAppId(tool.appId) && tool.appId !== "omp" && (
         <Suspense fallback={<p role="status">正在打开编辑器…</p>}>
           <ToolProviderEditor
             appId={tool.appId}
@@ -780,6 +857,12 @@ function KnownToolView({
               refreshVersion={refreshVersion + statusRefresh}
               onChanged={load}
               onSupported={setDesktopSupported}
+              hasOfficialProvider={Boolean(officialProvider)}
+              activeProviderIsOfficial={
+                currentProvider
+                  ? currentProvider.category === "official"
+                  : undefined
+              }
             />
           </Suspense>
         ) : null}
@@ -848,7 +931,8 @@ function KnownToolView({
           </section>
         )}
 
-        {officialPreset &&
+        {hasOfficialGuide &&
+          officialPreset &&
           officialProvider &&
           !loading &&
           !error &&
@@ -957,10 +1041,13 @@ function KnownToolView({
         )}
         {!loading && !error && visibleProviders.length === 0 && (
           <div className="tool-empty">
-            <p>
-              还没有 {keepTogether(tool.name)}{" "}
-              线路。添加服务商的地址和密钥后即可在这里切换。
-            </p>
+            <div className="tool-empty-copy">
+              <strong>还没有 {keepTogether(tool.name)} 线路</strong>
+              <p>
+                添加服务商的地址和密钥后即可在这里管理并
+                {tool.category === "accumulate" ? "启用" : "切换"}。
+              </p>
+            </div>
             <button
               type="button"
               className="tool-btn is-primary"
@@ -979,22 +1066,57 @@ function KnownToolView({
           currentProvider &&
           activeSummary && (
             <section className="tool-active-line" aria-label="当前生效线路">
-              <header>
-                <span className="tool-active-flag">当前运行线路</span>
-                {activeHost && (
-                  <code className="tool-active-host">{activeHost}</code>
-                )}
-              </header>
-              <h2>
-                {currentProvider.name}{" "}
-                <span className="sr-only">（当前生效）</span>
-              </h2>
-              <p>
-                {(activeSummary.model ||
-                  currentProvider.category === "official") && (
-                  <span>{activeSummary.model || "官方默认模型"}</span>
-                )}
+              <div className="tool-station-main">
+                <span className="tool-station-mark" aria-hidden="true">
+                  <RouteGlyph
+                    appId={tool.appId}
+                    line={lineIdentity(currentProvider)}
+                    size={38}
+                  />
+                </span>
+                <div className="tool-station-copy">
+                  <div className="tool-station-eyebrow">
+                    <span className="tool-active-flag">当前运行线路</span>
+                    <span className="tool-station-kind">
+                      {currentProvider.category === "official"
+                        ? "官方入口"
+                        : "第三方 · API 密钥"}
+                    </span>
+                  </div>
+                  <div className="tool-station-title-row">
+                    <h2>
+                      {currentProvider.name}{" "}
+                      <span className="sr-only">（当前生效）</span>
+                    </h2>
+                    {activeHost && (
+                      <code className="tool-active-host">{activeHost}</code>
+                    )}
+                  </div>
+                </div>
+                <div className="tool-station-actions">
+                  {providers.some((item) => item.id === currentProvider.id) && (
+                    <button
+                      type="button"
+                      className="tool-btn is-sm"
+                      disabled={!canMutate || busy || designPreview}
+                      onClick={() => editLine(currentProvider.id)}
+                    >
+                      <Pencil size={13} aria-hidden="true" />
+                      编辑
+                    </button>
+                  )}
+                </div>
+              </div>
+              <p className="tool-station-meta">
+                {activeHost && <span>{activeHost}</span>}
+                <span>
+                  {activeSummary.model ||
+                    (currentProvider.category === "official"
+                      ? "官方默认模型"
+                      : "未指定默认模型")}
+                </span>
                 <span>{tool.categoryLabel}</span>
+                <span>已就绪</span>
               </p>
             </section>
           )}
@@ -1005,7 +1127,7 @@ function KnownToolView({
           >
             <div className="tool-lines-caption">
               <strong className="tool-lines-title">
-                {tool.category === "switch" ? "已保存的线路" : "已配置的线路"}
+                {tool.category === "switch" ? "全部线路" : "已配置的线路"}
               </strong>
               {tool.category === "switch" ? (
                 <span
@@ -1029,6 +1151,12 @@ function KnownToolView({
               {tool.appId === "pi" && (
                 <span className="tool-lines-source">来自 Pi 配置文件</span>
               )}
+              {tool.category === "accumulate" &&
+                tool.appId !== "pi" &&
+                tool.appId !== "opencode" &&
+                providers.length > 0 && (
+                  <span className="tool-lines-source">已同步本机配置</span>
+                )}
             </div>
             <div
               className="tool-lines"
@@ -1036,155 +1164,202 @@ function KnownToolView({
               aria-label={`${tool.name} 线路`}
             >
               <div className="tool-line-row tool-line-head" role="row">
-                <span role="columnheader">状态</span>
                 <span role="columnheader">线路</span>
-                <span role="columnheader">请求地址</span>
                 <span role="columnheader">
                   {tool.appId === "claude" || tool.appId === "gemini"
                     ? "默认模型"
                     : "模型"}
                 </span>
+                {tool.category === "accumulate" && (
+                  <span role="columnheader" className="tool-line-status-head">
+                    状态
+                  </span>
+                )}
                 <span role="columnheader" className="tool-line-actions">
                   操作
                 </span>
               </div>
-              {visibleProviders.map((provider) => {
-                const enabled = provider.meta?.liveConfigManaged !== false;
-                const current = provider.id === currentId;
-                const rowBusy = busyId === provider.id;
-                const builtIn =
-                  hasBuiltInEntry && provider.id === officialProvider?.id;
-                const summary = toolProviderSummary(tool.appId, provider);
-                const endpoint = builtIn
-                  ? "内置官方入口（未启用）"
-                  : summary.baseUrl ||
-                    (provider.category === "official" ? "官方默认端点" : "—");
-                const model = summary.model || "—";
-                const protectedCurrent = Boolean(deleteBlockedReason(provider));
-                const deleteButton = (
-                  <button
-                    type="button"
-                    className="tool-provider-delete"
-                    aria-label={`删除${provider.name}`}
-                    title={protectedCurrent ? undefined : "删除线路"}
-                    disabled={!native || !canMutate || busy}
-                    onClick={() => setRemoving(provider)}
-                  >
-                    <Trash2 size={15} aria-hidden="true" />
-                  </button>
-                );
-                return (
-                  <div
-                    key={provider.id}
-                    className="tool-line-row"
-                    role="row"
-                    data-current={
-                      (tool.category === "switch" ? current : enabled) ||
-                      undefined
-                    }
-                  >
-                    <span role="cell" className="tool-line-status">
-                      {tool.category === "accumulate" ? (
-                        <button
-                          type="button"
-                          className="tool-line-toggle"
-                          aria-label={`${enabled ? "停用" : "启用"}${provider.name}`}
-                          aria-pressed={enabled}
-                          onClick={() => void toggleProvider(provider)}
-                          disabled={busy || designPreview}
-                        >
-                          <span aria-hidden="true" />
-                        </button>
-                      ) : (
-                        <span className="tool-line-dot" aria-hidden="true" />
-                      )}
-                    </span>
-                    <span role="cell" className="tool-line-name">
-                      <LineBadge line={lineIdentity(provider)} />
-                      <span title={provider.name}>{provider.name}</span>
-                    </span>
-                    <span
-                      role="cell"
-                      className={
-                        !builtIn && summary.baseUrl
-                          ? "tool-line-mono"
-                          : "tool-line-muted"
-                      }
-                      title={endpoint}
+              {(() => {
+                const officialLines =
+                  tool.category === "switch"
+                    ? visibleProviders.filter((p) => p.category === "official")
+                    : [];
+                const customLines =
+                  tool.category === "switch"
+                    ? visibleProviders.filter((p) => p.category !== "official")
+                    : visibleProviders;
+                const groups =
+                  tool.category === "switch" &&
+                  officialLines.length > 0 &&
+                  customLines.length > 0
+                    ? [
+                        { label: "官方入口", items: officialLines },
+                        { label: "第三方线路", items: customLines },
+                      ]
+                    : [{ label: null, items: visibleProviders }];
+
+                const renderRow = (provider: Provider) => {
+                  const enabled = provider.meta?.liveConfigManaged !== false;
+                  const current = provider.id === currentId;
+                  const rowBusy = busyId === provider.id;
+                  const builtIn =
+                    hasBuiltInEntry && provider.id === officialProvider?.id;
+                  const summary = toolProviderSummary(tool.appId, provider);
+                  const endpoint = builtIn
+                    ? "内置官方入口（未启用）"
+                    : summary.baseUrl ||
+                      (provider.category === "official" ? "官方默认端点" : "—");
+                  const model = summary.model || "—";
+                  const protectedCurrent = Boolean(
+                    deleteBlockedReason(provider),
+                  );
+                  const deleteButton = (
+                    <button
+                      type="button"
+                      className="tool-provider-delete"
+                      aria-label={`删除${provider.name}`}
+                      title={protectedCurrent ? undefined : "删除线路"}
+                      disabled={!native || !canMutate || busy}
+                      onClick={() => setRemoving(provider)}
                     >
-                      {endpoint}
-                    </span>
-                    <span
-                      role="cell"
-                      className={
-                        summary.model ? "tool-line-mono" : "tool-line-muted"
+                      <Trash2 size={15} aria-hidden="true" />
+                    </button>
+                  );
+                  return (
+                    <div
+                      key={provider.id}
+                      className="tool-line-row"
+                      role="row"
+                      data-current={
+                        (tool.category === "switch" ? current : enabled) ||
+                        undefined
                       }
-                      title={model}
                     >
-                      {model}
-                    </span>
-                    <span role="cell" className="tool-line-actions">
-                      {tool.category === "switch" &&
-                        (current ? (
-                          <button
-                            type="button"
-                            className="tool-line-current"
-                            disabled
-                          >
-                            当前线路
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            className="tool-line-switch"
-                            onClick={() => void changeProvider(provider)}
-                            disabled={!canMutate || busy || designPreview}
-                            aria-busy={rowBusy || undefined}
-                          >
-                            {rowBusy ? (
-                              <Loader2
-                                size={14}
-                                className="animate-spin"
-                                aria-label="处理中"
-                              />
-                            ) : (
-                              "切换"
-                            )}
-                          </button>
-                        ))}
-                      {tool.category === "accumulate" && rowBusy && (
-                        <Loader2
-                          size={14}
-                          className="animate-spin tool-line-spinner"
-                          aria-label="处理中"
+                      <span role="cell" className="tool-line-name">
+                        <RouteGlyph
+                          appId={tool.appId}
+                          line={lineIdentity(provider)}
+                          size={28}
                         />
-                      )}
-                      {providers.some((item) => item.id === provider.id) && (
-                        <button
-                          type="button"
-                          className="tool-line-icon"
-                          aria-label={`编辑${provider.name}`}
-                          title="编辑线路"
-                          disabled={!canMutate || busy || designPreview}
-                          onClick={() => editLine(provider.id)}
+                        <span className="tool-line-title" title={provider.name}>
+                          {provider.name}
+                        </span>
+                        <span
+                          className={
+                            !builtIn && summary.baseUrl
+                              ? "tool-line-sub tool-line-mono"
+                              : "tool-line-sub tool-line-muted"
+                          }
+                          title={endpoint}
                         >
-                          <Pencil size={15} aria-hidden="true" />
-                        </button>
-                      )}
-                      {!builtIn &&
-                        (protectedCurrent && native ? (
-                          <DisabledReason
-                            reason={deleteBlockedReason(provider) ?? undefined}
+                          {endpoint}
+                        </span>
+                      </span>
+                      <span
+                        role="cell"
+                        className={
+                          summary.model ? "tool-line-mono" : "tool-line-muted"
+                        }
+                        title={model}
+                      >
+                        {model}
+                      </span>
+                      {tool.category === "accumulate" && (
+                        <span role="cell" className="tool-line-status">
+                          <button
+                            type="button"
+                            className="tool-line-toggle"
+                            aria-label={`${enabled ? "停用" : "启用"}${provider.name}`}
+                            aria-pressed={enabled}
+                            onClick={() => void toggleProvider(provider)}
+                            disabled={busy || designPreview}
                           >
-                            {deleteButton}
-                          </DisabledReason>
-                        ) : (
-                          deleteButton
-                        ))}
-                    </span>
+                            <span aria-hidden="true" />
+                          </button>
+                        </span>
+                      )}
+                      <span role="cell" className="tool-line-actions">
+                        {tool.category === "switch" &&
+                          (current ? (
+                            <button
+                              type="button"
+                              className="tool-line-current"
+                              disabled
+                            >
+                              当前线路
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="tool-line-switch"
+                              onClick={() => void changeProvider(provider)}
+                              disabled={!canMutate || busy || designPreview}
+                              aria-busy={rowBusy || undefined}
+                            >
+                              {rowBusy ? (
+                                <Loader2
+                                  size={14}
+                                  className="animate-spin"
+                                  aria-label="处理中"
+                                />
+                              ) : (
+                                "切换"
+                              )}
+                            </button>
+                          ))}
+                        {tool.category === "accumulate" && rowBusy && (
+                          <Loader2
+                            size={14}
+                            className="animate-spin tool-line-spinner"
+                            aria-label="处理中"
+                          />
+                        )}
+                        {providers.some((item) => item.id === provider.id) && (
+                          <button
+                            type="button"
+                            className="tool-line-icon"
+                            aria-label={`编辑${provider.name}`}
+                            title="编辑线路"
+                            disabled={!canMutate || busy || designPreview}
+                            onClick={() => editLine(provider.id)}
+                          >
+                            <Pencil size={15} aria-hidden="true" />
+                          </button>
+                        )}
+                        {!builtIn &&
+                          (protectedCurrent && native ? (
+                            <DisabledReason
+                              reason={
+                                deleteBlockedReason(provider) ?? undefined
+                              }
+                            >
+                              {deleteButton}
+                            </DisabledReason>
+                          ) : (
+                            deleteButton
+                          ))}
+                      </span>
+                    </div>
+                  );
+                };
+
+                return groups.map((group, idx) => (
+                  <div
+                    key={group.label ?? `group-${idx}`}
+                    className="tool-line-group"
+                  >
+                    {group.label && (
+                      <div className="tool-line-group-head">
+                        <span>{group.label}</span>
+                        <span className="tool-line-group-count">
+                          {group.items.length}
+                        </span>
+                      </div>
+                    )}
+                    {group.items.map(renderRow)}
                   </div>
-                );
-              })}
+                ));
+              })()}
             </div>
           </section>
         )}

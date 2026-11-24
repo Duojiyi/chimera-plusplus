@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { Eye, EyeOff } from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import { Check, Copy, Eye, EyeOff } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { EditorLabel } from "@/components/providers/ProviderEditorFields";
 
@@ -31,7 +31,32 @@ const ApiKeyInput: React.FC<ApiKeyInputProps> = ({
 }) => {
   const { t } = useTranslation();
   const [showKey, setShowKey] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<number | null>(null);
   const hintId = hint ? `${id}-hint` : undefined;
+
+  useEffect(
+    () => () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  const handleCopy = async () => {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+      copyTimerRef.current = window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard unavailable in restricted contexts; ignore silently.
+    }
+  };
 
   return (
     <div className="editor-field">
@@ -53,6 +78,27 @@ const ApiKeyInput: React.FC<ApiKeyInputProps> = ({
           spellCheck={false}
           aria-describedby={hintId}
         />
+        <button
+          type="button"
+          onClick={() => void handleCopy()}
+          disabled={disabled || !value}
+          aria-label={
+            copied
+              ? t("common.copied", { defaultValue: "已复制" })
+              : t("common.copy", { defaultValue: "复制" })
+          }
+          title={
+            copied
+              ? t("common.copied", { defaultValue: "已复制" })
+              : t("common.copy", { defaultValue: "复制" })
+          }
+        >
+          {copied ? (
+            <Check size={16} aria-hidden="true" />
+          ) : (
+            <Copy size={16} aria-hidden="true" />
+          )}
+        </button>
         <button
           type="button"
           onClick={() => setShowKey(!showKey)}

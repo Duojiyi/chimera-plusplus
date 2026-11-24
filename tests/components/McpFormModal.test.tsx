@@ -447,11 +447,22 @@ type = "stdio"
     expect(entry.id).toBe("existing");
     expect(entry.server.command).toBe("updated");
     expect(entry.enabled).toBe(true);
-    expect(entry.apps).toEqual({
+    expect(entry.apps).toMatchObject({
       claude: true,
       codex: false,
       gemini: false,
       grokbuild: false,
+      opencode: false,
+      hermes: false,
+      pi: false,
+      omp: false,
+      agy: false,
+      mcode: false,
+      kimi: false,
+      dsh: false,
+      copilot: false,
+      workbuddy: false,
+      codebuddy: false,
     });
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(onSave).toHaveBeenCalledWith();
@@ -502,6 +513,16 @@ type = "stdio"
       gemini: false,
       grokbuild: false,
       opencode: false,
+      hermes: false,
+      pi: false,
+      omp: false,
+      agy: false,
+      mcode: false,
+      kimi: false,
+      dsh: false,
+      copilot: false,
+      workbuddy: false,
+      codebuddy: false,
     });
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(toastErrorMock).not.toHaveBeenCalled();

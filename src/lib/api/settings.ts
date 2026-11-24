@@ -68,7 +68,17 @@ export type PreferencesPatch = Partial<
 
 export const settingsApi = {
   async patchConfigDirectory(
-    app: "claude" | "codex" | "gemini" | "grokbuild" | "opencode",
+    app:
+      | "claude"
+      | "codex"
+      | "gemini"
+      | "grokbuild"
+      | "opencode"
+      | "openclaw"
+      | "hermes"
+      | "pi"
+      | "omp"
+      | "dsh",
     path: string | null,
   ): Promise<boolean> {
     return invoke("patch_config_directory", { app, path });

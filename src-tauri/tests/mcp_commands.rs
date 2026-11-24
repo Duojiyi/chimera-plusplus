@@ -413,6 +413,7 @@ command = "echo"
                 gemini: false,
                 grokbuild: false,
                 opencode: false,
+                ..Default::default()
             },
             description: None,
             homepage: None,
@@ -557,6 +558,7 @@ fn set_mcp_enabled_for_codex_writes_live_config() {
                 gemini: false,
                 grokbuild: false,
                 opencode: false,
+                ..Default::default()
             },
             description: None,
             homepage: None,
@@ -622,6 +624,7 @@ fn enabling_codex_mcp_skips_when_codex_dir_missing() {
                 gemini: false,
                 grokbuild: false,
                 opencode: false,
+                ..Default::default()
             },
             description: None,
             homepage: None,
@@ -667,6 +670,7 @@ fn upsert_mcp_server_disabling_app_removes_from_claude_live_config() {
                 gemini: false,
                 grokbuild: false,
                 opencode: false,
+                ..Default::default()
             },
             description: None,
             homepage: None,
@@ -701,6 +705,7 @@ fn upsert_mcp_server_disabling_app_removes_from_claude_live_config() {
                 gemini: false,
                 grokbuild: false,
                 opencode: false,
+                ..Default::default()
             },
             description: None,
             homepage: None,
@@ -834,6 +839,7 @@ fn enabling_gemini_mcp_skips_when_gemini_dir_missing() {
                 gemini: false,
                 grokbuild: false,
                 opencode: false,
+                ..Default::default()
             },
             description: None,
             homepage: None,
@@ -889,6 +895,7 @@ fn enabling_claude_mcp_skips_when_claude_config_absent() {
                 gemini: false,
                 grokbuild: false,
                 opencode: false,
+                ..Default::default()
             },
             description: None,
             homepage: None,
@@ -944,6 +951,7 @@ fn explicit_default_claude_dir_keeps_default_split_mcp_path() {
                 gemini: false,
                 grokbuild: false,
                 opencode: false,
+                ..Default::default()
             },
             description: None,
             homepage: None,
@@ -1000,6 +1008,7 @@ fn custom_claude_dir_writes_mcp_inside_config_dir() {
                 gemini: false,
                 grokbuild: false,
                 opencode: false,
+                ..Default::default()
             },
             description: None,
             homepage: None,
@@ -1079,6 +1088,7 @@ fn custom_claude_dir_sync_does_not_copy_default_profile() {
                 gemini: false,
                 grokbuild: false,
                 opencode: false,
+                ..Default::default()
             },
             description: None,
             homepage: None,
@@ -1221,6 +1231,7 @@ fn sync_all_enabled_only_removes_entries_it_projected_itself() {
                 gemini: false,
                 grokbuild: false,
                 opencode: false,
+                ..Default::default()
             },
             description: None,
             homepage: None,
@@ -1243,6 +1254,7 @@ fn sync_all_enabled_only_removes_entries_it_projected_itself() {
                 gemini: false,
                 grokbuild: false,
                 opencode: false,
+                ..Default::default()
             },
             description: None,
             homepage: None,

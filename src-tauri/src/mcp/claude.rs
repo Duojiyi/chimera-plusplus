@@ -93,6 +93,7 @@ pub fn import_from_claude(config: &mut MultiAppConfig) -> Result<usize, AppError
                         gemini: false,
                         grokbuild: false,
                         opencode: false,
+                        ..Default::default()
                     },
                     description: None,
                     homepage: None,

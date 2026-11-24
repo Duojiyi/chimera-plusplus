@@ -67,6 +67,10 @@ impl Provider {
         }
     }
 
+    pub fn has_official_category(&self) -> bool {
+        self.category.as_deref() == Some("official")
+    }
+
     pub fn is_codex_oauth(&self) -> bool {
         self.provider_type() == Some("codex_oauth")
     }
@@ -172,7 +176,7 @@ impl Provider {
                 (base_url, api_key)
             }
             // Gemini uses Google-specific env keys (with a legacy GOOGLE_API_KEY fallback).
-            AppType::Gemini => {
+            AppType::Gemini | AppType::Agy => {
                 let env = settings.get("env");
                 let base_url = str_at(env.and_then(|e| e.get("GOOGLE_GEMINI_BASE_URL")));
                 let api_key = first_non_empty(env, &["GEMINI_API_KEY", "GOOGLE_API_KEY"]);
@@ -183,14 +187,76 @@ impl Provider {
                 .and_then(Value::as_str)
                 .and_then(crate::grok_config::extract_credentials)
                 .unwrap_or_default(),
-
-            // Pi custom providers use the native models.json field names.
-            AppType::Pi => (
+            AppType::Copilot => {
+                if let Some(provider) = settings.get("provider").filter(|v| v.is_object()) {
+                    (
+                        str_at(provider.get("baseUrl")),
+                        first_non_empty(Some(provider), &["apiKey", "bearerToken"]),
+                    )
+                } else {
+                    let env = settings.get("env");
+                    (
+                        str_at(env.and_then(|e| e.get("COPILOT_PROVIDER_BASE_URL"))),
+                        first_non_empty(
+                            env,
+                            &["COPILOT_PROVIDER_API_KEY", "COPILOT_PROVIDER_BEARER_TOKEN"],
+                        ),
+                    )
+                }
+            }
+            AppType::Dsh => (
+                str_at(settings.pointer("/options/baseURL")),
+                str_at(settings.pointer("/options/apiKey")),
+            ),
+            AppType::Kimi => (
+                str_at(settings.pointer("/provider/base_url")),
+                str_at(settings.pointer("/provider/api_key")),
+            ),
+            AppType::Hermes => (
+                str_at(settings.get("base_url")),
+                str_at(settings.get("api_key")),
+            ),
+            AppType::OpenClaw => (
+                str_at(settings.get("baseUrl")),
+                str_at(settings.get("apiKey")),
+            ),
+            AppType::Codebuddy => {
+                let url = str_at(settings.get("url"));
+                let base_url = url
+                    .trim_end_matches('/')
+                    .strip_suffix("/chat/completions")
+                    .map(str::to_string)
+                    .unwrap_or(url);
+                (base_url, str_at(settings.get("apiKey")))
+            }
+            AppType::WorkBuddy => {
+                let first_model = settings
+                    .get("models")
+                    .and_then(Value::as_array)
+                    .and_then(|models| models.first());
+                let pick = |field: &str| {
+                    let shared = str_at(settings.get(field));
+                    if shared.is_empty() {
+                        str_at(first_model.and_then(|model| model.get(field)))
+                    } else {
+                        shared
+                    }
+                };
+                let url = pick("url");
+                let base_url = url
+                    .trim_end_matches('/')
+                    .strip_suffix("/chat/completions")
+                    .map(str::to_string)
+                    .unwrap_or(url);
+                (base_url, pick("apiKey"))
+            }
+            // Pi / Oh My Pi custom providers use native models.json field names.
+            AppType::Pi | AppType::Omp => (
                 crate::pi_config::provider_base_url(settings).unwrap_or_default(),
                 str_at(settings.get("apiKey")),
             ),
-            // OpenCode (OMO) nests credentials under `options`.
-            AppType::OpenCode => {
+            // OpenCode / MiniMax Code nest credentials under `options`.
+            AppType::OpenCode | AppType::Mcode => {
                 let options = settings.get("options");
                 (
                     str_at(options.and_then(|o| o.get("baseURL"))),

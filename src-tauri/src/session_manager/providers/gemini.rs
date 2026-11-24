@@ -6,8 +6,13 @@ use crate::security_limits::{
     read_dir_without_links, read_to_string_limited, MAX_CONFIG_FILE_BYTES,
 };
 use crate::session_manager::delete_backup::{backup_root, backup_session_files};
+use crate::session_manager::model::{ContentRef, DiffOp, MessageMeta, SessionBlock, ToolStatus};
 use crate::session_manager::{SessionMessage, SessionMeta};
 
+use super::blocks::{
+    assign_turn_ids, count_diff_lines, single_file_diff, thinking_block, tool_call_block,
+    tool_result_block, ToolSource,
+};
 use super::utils::{parse_timestamp_to_ms, truncate_summary};
 
 const PROVIDER_ID: &str = "gemini";
@@ -66,53 +71,261 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
         .and_then(Value::as_array)
         .ok_or_else(|| "No messages array found".to_string())?;
 
+    let rel_path = relative_to_tmp_root(path);
+    let file_ref = |pointer: String| -> Option<ContentRef> {
+        Some(ContentRef::File {
+            rel_path: rel_path.clone(),
+            pointer,
+        })
+    };
+
     let mut result = Vec::new();
-    for msg in messages {
-        let role = match msg.get("type").and_then(Value::as_str) {
-            Some("gemini") => "assistant",
-            Some("user") => "user",
+    for (index, msg) in messages.iter().enumerate() {
+        let ts = msg.get("timestamp").and_then(parse_timestamp_to_ms);
+        let base = format!("/messages/{index}");
+        let mut message = match msg.get("type").and_then(Value::as_str) {
+            Some("user") => {
+                let text = content_text(msg.get("content"));
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let trimmed = text.trim_start();
+                let injected = trimmed.starts_with("<session_context>")
+                    || trimmed.starts_with("<hook_context>");
+                let mut message =
+                    SessionMessage::from_blocks("user", ts, vec![SessionBlock::text(text)]);
+                message.injected = injected;
+                message
+            }
+            Some("gemini") => {
+                let blocks = gemini_blocks(msg, &base, &file_ref);
+                let mut message = SessionMessage::from_blocks("assistant", ts, blocks);
+                message.meta = gemini_meta(msg);
+                message
+            }
             Some("info") | Some("error") => continue,
             Some(_) | None => continue,
         };
-
-        // Gemini content may be a plain string or an array of {text: ...} objects
-        let mut content = match msg.get("content") {
-            Some(Value::String(s)) => s.to_string(),
-            Some(Value::Array(items)) => items
-                .iter()
-                .filter_map(|item| item.get("text").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            _ => String::new(),
-        };
-
-        // Append tool call names from the optional toolCalls array
-        if let Some(Value::Array(calls)) = msg.get("toolCalls") {
-            for call in calls {
-                if let Some(name) = call.get("name").and_then(Value::as_str) {
-                    if !content.is_empty() {
-                        content.push('\n');
-                    }
-                    content.push_str(&format!("[Tool: {name}]"));
-                }
-            }
-        }
-
-        if content.trim().is_empty() {
+        if message.is_empty() {
             continue;
         }
-
-        let ts = msg.get("timestamp").and_then(parse_timestamp_to_ms);
-
-        result.push(SessionMessage {
-            role: role.to_string(),
-            content,
-            ts,
-            truncated: false,
-        });
+        message.id = msg.get("id").and_then(Value::as_str).map(str::to_string);
+        result.push(message);
     }
 
+    assign_turn_ids(&mut result);
     Ok(result)
+}
+
+pub(crate) struct MergedThoughts {
+    pub summary: String,
+    pub text: String,
+}
+
+pub(crate) fn format_thoughts(value: &Value) -> Option<MergedThoughts> {
+    let items = value.as_array()?;
+    let mut thoughts = Vec::new();
+    for item in items {
+        let object = item.as_object()?;
+        let field = |key: &str| object.get(key).and_then(Value::as_str).unwrap_or("").trim();
+        let (subject, description) = (field("subject"), field("description"));
+        if !subject.is_empty() || !description.is_empty() {
+            thoughts.push((subject, description));
+        }
+    }
+    if thoughts.is_empty() {
+        return None;
+    }
+    let summary = thoughts
+        .iter()
+        .map(|(subject, _)| *subject)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let text = thoughts
+        .iter()
+        .map(
+            |(subject, description)| match (subject.is_empty(), description.is_empty()) {
+                (false, false) => format!("**{subject}**\n\n{description}"),
+                (false, true) => format!("**{subject}**"),
+                _ => description.to_string(),
+            },
+        )
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Some(MergedThoughts { summary, text })
+}
+
+fn relative_to_tmp_root(path: &Path) -> String {
+    let parts: Vec<String> = path
+        .components()
+        .rev()
+        .take(3)
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+        .collect();
+    parts.into_iter().rev().collect::<Vec<_>>().join("/")
+}
+
+fn content_text(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(s)) => s.to_string(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+fn gemini_blocks(
+    msg: &Value,
+    base: &str,
+    file_ref: &dyn Fn(String) -> Option<ContentRef>,
+) -> Vec<SessionBlock> {
+    let mut blocks = Vec::new();
+
+    if let Some(thoughts) = msg.get("thoughts").and_then(format_thoughts) {
+        blocks.push(thinking_block(
+            &thoughts.text,
+            (!thoughts.summary.is_empty()).then_some(thoughts.summary),
+            None,
+            || file_ref(format!("{base}/thoughts")),
+        ));
+    }
+
+    let text = content_text(msg.get("content"));
+    if !text.trim().is_empty() {
+        blocks.push(SessionBlock::text(text));
+    }
+
+    for (j, call) in msg
+        .get("toolCalls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let Some(name) = call.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let call_base = format!("{base}/toolCalls/{j}");
+        let id = call
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{name}-{j}"));
+        let args = call.get("args").cloned().unwrap_or(Value::Null);
+        let mut call_block = tool_call_block(ToolSource::Gemini, id.clone(), name, &args, || {
+            file_ref(format!("{call_base}/args"))
+        });
+
+        let (output, pointer) = tool_output(call, &call_base);
+        if let Some(diff_text) = call
+            .pointer("/resultDisplay/fileDiff")
+            .and_then(Value::as_str)
+        {
+            if let SessionBlock::ToolCall { diff, title, .. } = &mut call_block {
+                let (added, removed) = count_diff_lines(diff_text);
+                let path = call
+                    .pointer("/resultDisplay/filePath")
+                    .or_else(|| call.pointer("/resultDisplay/fileName"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(title.as_str())
+                    .to_string();
+                let op = diff
+                    .as_ref()
+                    .and_then(|d| d.files.first())
+                    .map_or(DiffOp::Update, |f| f.op);
+                let mut summary = single_file_diff(&path, op, added, removed);
+                summary.full = file_ref(format!("{call_base}/resultDisplay/fileDiff"));
+                *diff = Some(summary);
+            }
+        }
+        blocks.push(call_block);
+
+        let status = match call.get("status").and_then(Value::as_str) {
+            Some("success" | "completed") => ToolStatus::Success,
+            Some("error") => ToolStatus::Error,
+            Some("cancelled" | "canceled") => ToolStatus::Interrupted,
+            Some("executing" | "scheduled" | "validating" | "awaiting_approval") => {
+                ToolStatus::Pending
+            }
+            _ => ToolStatus::Unknown,
+        };
+        blocks.push(tool_result_block(id, status, &output, || {
+            pointer.and_then(file_ref)
+        }));
+    }
+
+    blocks
+}
+
+fn tool_output(call: &Value, call_base: &str) -> (String, Option<String>) {
+    match call.get("resultDisplay") {
+        Some(Value::String(text)) if !text.is_empty() => {
+            return (text.clone(), Some(format!("{call_base}/resultDisplay")));
+        }
+        Some(display @ Value::Object(_)) => {
+            if let Some(diff) = display.get("fileDiff").and_then(Value::as_str) {
+                return (
+                    diff.to_string(),
+                    Some(format!("{call_base}/resultDisplay/fileDiff")),
+                );
+            }
+            return (display.to_string(), None);
+        }
+        _ => {}
+    }
+    for (k, item) in call
+        .get("result")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        for key in ["output", "error"] {
+            if let Some(text) = item
+                .pointer(&format!("/functionResponse/response/{key}"))
+                .and_then(Value::as_str)
+            {
+                return (
+                    text.to_string(),
+                    Some(format!(
+                        "{call_base}/result/{k}/functionResponse/response/{key}"
+                    )),
+                );
+            }
+        }
+    }
+    match call.get("result") {
+        Some(Value::String(text)) => (text.clone(), Some(format!("{call_base}/result"))),
+        Some(Value::Null) | None => (String::new(), None),
+        Some(other) => (other.to_string(), None),
+    }
+}
+
+fn gemini_meta(msg: &Value) -> Option<MessageMeta> {
+    let tokens = msg.get("tokens");
+    let count = |key: &str| {
+        tokens
+            .and_then(|t| t.get(key))
+            .and_then(Value::as_u64)
+            .filter(|n| *n > 0)
+    };
+    let meta = MessageMeta {
+        model: msg
+            .get("model")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        input_tokens: count("input"),
+        output_tokens: count("output"),
+        cache_read_tokens: count("cached"),
+        reasoning_tokens: count("thoughts"),
+        ..MessageMeta::default()
+    };
+    (meta != MessageMeta::default()).then_some(meta)
 }
 
 pub fn delete_session(_root: &Path, path: &Path, session_id: &str) -> Result<bool, String> {

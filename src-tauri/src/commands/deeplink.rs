@@ -218,15 +218,24 @@ pub async fn import_from_deeplink_unified(
             }))
         }
         "prompt" => {
+            let state = state.inner().clone();
             let prompt_id =
-                import_prompt_from_deeplink(&state, request).map_err(|e| e.to_string())?;
+                tokio::task::spawn_blocking(move || import_prompt_from_deeplink(&state, request))
+                    .await
+                    .map_err(|e| format!("Prompt deep link task failed: {e}"))?
+                    .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({
                 "type": "prompt",
                 "id": prompt_id
             }))
         }
         "mcp" => {
-            let result = import_mcp_from_deeplink(&state, request).map_err(|e| e.to_string())?;
+            let state = state.inner().clone();
+            let result =
+                tokio::task::spawn_blocking(move || import_mcp_from_deeplink(&state, request))
+                    .await
+                    .map_err(|e| format!("MCP deep link task failed: {e}"))?
+                    .map_err(|e| e.to_string())?;
             // Add type field to the result
             Ok(serde_json::json!({
                 "type": "mcp",
@@ -236,8 +245,12 @@ pub async fn import_from_deeplink_unified(
             }))
         }
         "skill" => {
+            let state = state.inner().clone();
             let skill_key =
-                import_skill_from_deeplink(&state, request).map_err(|e| e.to_string())?;
+                tokio::task::spawn_blocking(move || import_skill_from_deeplink(&state, request))
+                    .await
+                    .map_err(|e| format!("Skill deep link task failed: {e}"))?
+                    .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({
                 "type": "skill",
                 "key": skill_key

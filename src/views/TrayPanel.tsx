@@ -13,7 +13,7 @@ import {
   Route,
   X,
 } from "lucide-react";
-import { LineBadge } from "@/components/LineBadge";
+import { AppGlyph, RouteGlyph } from "@/components/AppGlyph";
 import appIcon from "@/assets/icons/app-icon.png";
 import {
   Root as Tabs,
@@ -658,12 +658,7 @@ export function TrayPanel() {
   const effectiveOpenTools =
     openTools ?? (defaultOpenId ? new Set([defaultOpenId]) : new Set<string>());
   function toggleTool(toolId: string, isOpen: boolean) {
-    setOpenTools((previous) => {
-      const next = new Set(previous ?? effectiveOpenTools);
-      if (isOpen) next.add(toolId);
-      else next.delete(toolId);
-      return next;
-    });
+    setOpenTools(isOpen ? new Set([toolId]) : new Set());
   }
   return (
     <main
@@ -741,24 +736,39 @@ export function TrayPanel() {
                 }}
               >
                 <summary>
-                  <span>
-                    <strong>{tool.name}</strong>
-                    <small title={current?.name}>
+                  <AppGlyph
+                    app={tool.id}
+                    size={18}
+                    plated
+                    plateSize={32}
+                    className="tray-tool-glyph"
+                  />
+                  <span className="tray-tool-meta">
+                    <span className="tray-tool-head">
+                      <strong>{tool.name}</strong>
+                      {tool.autoFailover && (
+                        <small className="tray-auto-chip">
+                          {text.automatic}
+                        </small>
+                      )}
+                      {tool.currentUsageSummary && (
+                        <small
+                          className="tray-quota-chip"
+                          title={tool.currentUsageSummary}
+                        >
+                          {tool.currentUsageSummary}
+                        </small>
+                      )}
+                    </span>
+                    <small className="tray-tool-current" title={current?.name}>
                       {current?.name ?? text.noCurrent}
                     </small>
-                    {tool.currentUsageSummary && (
-                      <small
-                        className="tray-quota-chip"
-                        title={tool.currentUsageSummary}
-                      >
-                        {tool.currentUsageSummary}
-                      </small>
-                    )}
                   </span>
-                  {tool.autoFailover && (
-                    <small className="tray-auto-chip">{text.automatic}</small>
-                  )}
-                  <ChevronDown size={15} aria-hidden="true" />
+                  <ChevronDown
+                    size={15}
+                    className="tray-tool-chevron"
+                    aria-hidden="true"
+                  />
                 </summary>
                 {tool.lines.length ? (
                   <ul aria-label={text.lineList(tool.name)}>
@@ -787,7 +797,11 @@ export function TrayPanel() {
                             }
                             onClick={() => switchLine(tool, line)}
                           >
-                            <LineBadge line={identity} size="sm" />
+                            <RouteGlyph
+                              appId={tool.id}
+                              line={identity}
+                              size={24}
+                            />
                             <span className="tray-line-info">
                               <span title={line.name}>{line.name}</span>
                               {line.blockedByTakeover && (
@@ -796,7 +810,11 @@ export function TrayPanel() {
                               {canPin && <small>{text.pin}</small>}
                             </span>
                             {active && (
-                              <Check size={15} aria-label={text.current} />
+                              <Check
+                                size={15}
+                                className="tray-line-check"
+                                aria-label={text.current}
+                              />
                             )}
                           </button>
                         </li>

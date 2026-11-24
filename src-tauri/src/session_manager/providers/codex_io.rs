@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
+use super::utils::JsonlSpan;
 use crate::security_limits::open_regular_file_no_symlink;
 
 const MAX_COMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
@@ -43,7 +44,10 @@ impl<R: Read> Read for LimitedRead<R> {
 
 /// One JSONL record as read by [`SessionLines::next_record`].
 pub(super) enum SessionLine {
-    Text(String),
+    Text {
+        line: String,
+        span: JsonlSpan,
+    },
     /// A line over the per-line cap. It was consumed without being kept:
     /// `bytes` (newline included) says how large it was and `prefix` holds
     /// its first bytes, enough to read the record type.
@@ -56,6 +60,7 @@ pub(super) enum SessionLine {
 pub(super) struct SessionLines {
     reader: BufReader<Box<dyn Read>>,
     max_line_bytes: usize,
+    offset: u64,
 }
 
 impl SessionLines {
@@ -67,6 +72,7 @@ impl SessionLines {
                 label: "session decoded output exceeds byte limit",
             })),
             max_line_bytes,
+            offset: 0,
         }
     }
 
@@ -74,12 +80,14 @@ impl SessionLines {
         Self {
             reader: BufReader::new(Box::new(reader)),
             max_line_bytes,
+            offset: 0,
         }
     }
 
     /// The next line, or the size of a line too long to keep. Reading carries
     /// on after an oversized line, so one huge record cannot hide the rest.
     pub(super) fn next_record(&mut self) -> io::Result<Option<SessionLine>> {
+        let start = self.offset;
         let mut bytes = Vec::new();
         let read = (&mut self.reader)
             .take(self.max_line_bytes as u64 + 1)
@@ -93,12 +101,19 @@ impl SessionLines {
             } else {
                 self.skip_rest_of_line()?
             };
+            let total = read as u64 + rest;
+            self.offset = self.offset.saturating_add(total);
             bytes.truncate(OVERSIZED_PREFIX_BYTES);
             return Ok(Some(SessionLine::Oversized {
-                bytes: read as u64 + rest,
+                bytes: total,
                 prefix: bytes,
             }));
         }
+        self.offset = self.offset.saturating_add(read as u64);
+        let span = JsonlSpan {
+            offset: start,
+            len: u32::try_from(read).unwrap_or(u32::MAX),
+        };
         if bytes.last() == Some(&b'\n') {
             bytes.pop();
             if bytes.last() == Some(&b'\r') {
@@ -106,7 +121,7 @@ impl SessionLines {
             }
         }
         String::from_utf8(bytes)
-            .map(|line| Some(SessionLine::Text(line)))
+            .map(|line| Some(SessionLine::Text { line, span }))
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     }
 
@@ -116,7 +131,7 @@ impl SessionLines {
     fn next_line(&mut self) -> io::Result<Option<String>> {
         match self.next_record()? {
             None => Ok(None),
-            Some(SessionLine::Text(line)) => Ok(Some(line)),
+            Some(SessionLine::Text { line, .. }) => Ok(Some(line)),
             Some(SessionLine::Oversized { .. }) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "session line exceeds byte limit",
@@ -213,7 +228,7 @@ fn read_head_tail_lines_with_limit(
         let mut records = 0usize;
         while let Some(record) = lines.next_record()? {
             records += 1;
-            let SessionLine::Text(line) = record else {
+            let SessionLine::Text { line, .. } = record else {
                 continue;
             };
             if records <= head_n {
@@ -238,7 +253,7 @@ fn read_head_tail_lines_with_limit(
     for _ in 0..head_n {
         match lines.next_record()? {
             None => break,
-            Some(SessionLine::Text(line)) => head.push(line),
+            Some(SessionLine::Text { line, .. }) => head.push(line),
             Some(SessionLine::Oversized { .. }) => {}
         }
     }
@@ -253,7 +268,7 @@ fn read_head_tail_lines_with_limit(
     }
     let mut tail = VecDeque::new();
     while let Some(record) = tail_lines.next_record()? {
-        let SessionLine::Text(line) = record else {
+        let SessionLine::Text { line, .. } = record else {
             continue;
         };
         if tail_n > 0 {
@@ -362,7 +377,7 @@ mod tests {
         let mut lines = SessionLines::unbounded(Cursor::new(content.into_bytes()), 10);
         assert!(matches!(
             lines.next_record().unwrap(),
-            Some(SessionLine::Text(line)) if line == "first"
+            Some(SessionLine::Text { line, .. }) if line == "first"
         ));
         assert!(matches!(
             lines.next_record().unwrap(),
@@ -370,7 +385,7 @@ mod tests {
         ));
         assert!(matches!(
             lines.next_record().unwrap(),
-            Some(SessionLine::Text(line)) if line == "last"
+            Some(SessionLine::Text { line, .. }) if line == "last"
         ));
         assert!(lines.next_record().unwrap().is_none());
     }

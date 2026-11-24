@@ -330,6 +330,36 @@ pub fn anthropic_to_responses(
         }
         result["include"] = json!(includes);
 
+        // GPT-6.2 Sol / Astra 在 ChatGPT 反代后端只缓存 `input` 前缀，不缓存顶层
+        // `instructions`：移入 input 首条 developer 消息后可命中前缀缓存；
+        // 下方必填字段兜底会把 instructions 重新填为 ""。
+        let use_developer_instructions = matches!(
+            result.get("model").and_then(Value::as_str),
+            Some("gpt-6.2-sol" | "gpt-6.2-astra")
+        );
+        if use_developer_instructions {
+            if let Some(instructions) = result
+                .get("instructions")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .map(str::to_owned)
+            {
+                let developer_message = json!({
+                    "type": "message",
+                    "role": "developer",
+                    "content": instructions,
+                });
+                if let Some(input) = result.get_mut("input").and_then(Value::as_array_mut) {
+                    input.insert(0, developer_message);
+                } else {
+                    result["input"] = json!([developer_message]);
+                }
+                if let Some(obj) = result.as_object_mut() {
+                    obj.remove("instructions");
+                }
+            }
+        }
+
         if let Some(obj) = result.as_object_mut() {
             // —— 删除 ChatGPT 反代不接受的字段 ——
             obj.remove("max_output_tokens");

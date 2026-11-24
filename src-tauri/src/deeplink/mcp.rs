@@ -182,20 +182,30 @@ pub(crate) fn parse_mcp_apps(apps_str: &str) -> Result<McpApps, AppError> {
         gemini: false,
         grokbuild: false,
         opencode: false,
+        ..Default::default()
     };
 
     for app in apps_str.split(',') {
-        match app.trim() {
-            "claude" => apps.claude = true,
-            "codex" => apps.codex = true,
-            "gemini" => apps.gemini = true,
-            "grokbuild" | "grok" => apps.grokbuild = true,
-            "opencode" => apps.opencode = true,
-
-            other => {
+        let trimmed = app.trim();
+        let parsed = if trimmed.eq_ignore_ascii_case("grok") {
+            Ok(crate::app_config::AppType::GrokBuild)
+        } else {
+            trimmed.parse::<crate::app_config::AppType>()
+        };
+        match parsed {
+            Ok(app_type)
+                if !matches!(
+                    app_type,
+                    crate::app_config::AppType::ClaudeDesktop
+                        | crate::app_config::AppType::OpenClaw
+                ) =>
+            {
+                apps.set_enabled_for(&app_type, true);
+            }
+            _ => {
                 return Err(AppError::InvalidInput(format!(
-                    "Invalid app in 'apps': {other}"
-                )))
+                    "Invalid app in 'apps': {trimmed}"
+                )));
             }
         }
     }

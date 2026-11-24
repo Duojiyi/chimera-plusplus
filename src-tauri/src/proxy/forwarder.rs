@@ -1853,6 +1853,23 @@ impl RequestForwarder {
             && !codex_responses_to_chat && !codex_responses_to_anthropic
             && super::providers::transform_codex_responses_xai_sanitize::is_xai_native_responses_url(&url);
 
+        if matches!(app_type, AppType::Codex | AppType::GrokBuild)
+            && !codex_responses_to_chat
+            && !codex_responses_to_anthropic
+            && !codex_official_auth_passthrough
+        {
+            let repaired =
+                super::providers::codex_responses_arguments::dedupe_duplicate_argument_keys(
+                    &mut request_body,
+                );
+            if repaired > 0 {
+                log::debug!(
+                    "[Codex] Merged repeated JSON keys in {repaired} replayed function_call argument object(s) (provider={})",
+                    provider.id
+                );
+            }
+        }
+
         if xai_native_responses {
             if let Some(model) = super::providers::codex_provider_upstream_model(provider) {
                 let allowed = super::providers::transform_codex_responses_xai_sanitize::collect_xai_catalog_model_ids(&provider.settings_config);

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Table,
@@ -29,7 +29,7 @@ import {
 import { useModelPricing, useDeleteModelPricing } from "@/lib/query/usage";
 import { PricingEditModal } from "./PricingEditModal";
 import { isNonNegativeDecimalString, type ModelPricing } from "@/types/usage";
-import { Plus, Pencil, Trash2, Loader2 } from "lucide-react";
+import { Plus, Pencil, Trash2, Loader2, Search } from "lucide-react";
 import { toast } from "sonner";
 import { proxyApi } from "@/lib/api/proxy";
 import { cn } from "@/lib/utils";
@@ -53,6 +53,18 @@ export function PricingConfigPanel() {
   const [editingModel, setEditingModel] = useState<ModelPricing | null>(null);
   const [isAddingNew, setIsAddingNew] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const filteredPricing = useMemo(() => {
+    if (!pricing) return [];
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return pricing;
+    return pricing.filter(
+      (model) =>
+        model.modelId.toLowerCase().includes(query) ||
+        model.displayName.toLowerCase().includes(query),
+    );
+  }, [pricing, searchQuery]);
 
   // 三个应用的配置状态
   const [appConfigs, setAppConfigs] = useState<AppConfigState>({
@@ -343,26 +355,54 @@ export function PricingConfigPanel() {
 
       {/* 模型定价配置 */}
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h4 className="text-sm font-medium text-muted-foreground">
             {t("usage.modelPricingDesc")} {t("usage.perMillion")}
           </h4>
-          <Button
-            onClick={(e) => {
-              e.stopPropagation();
-              handleAddNew();
-            }}
-            size="sm"
-          >
-            <Plus className="mr-1 h-4 w-4" />
-            {t("common.add")}
-          </Button>
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Search
+                className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <Input
+                type="search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder={t("usage.searchModelPlaceholder", {
+                  defaultValue: "搜索模型 ID 或名称…",
+                })}
+                aria-label={t("usage.searchModelPlaceholder", {
+                  defaultValue: "搜索模型 ID 或名称…",
+                })}
+                className="h-8 w-48 pl-8 text-xs"
+              />
+            </div>
+            <Button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleAddNew();
+              }}
+              size="sm"
+            >
+              <Plus className="mr-1 h-4 w-4" />
+              {t("common.add")}
+            </Button>
+          </div>
         </div>
 
         <div className="space-y-4">
           {!pricing || pricing.length === 0 ? (
             <Alert>
               <AlertDescription>{t("usage.noPricingData")}</AlertDescription>
+            </Alert>
+          ) : filteredPricing.length === 0 ? (
+            <Alert>
+              <AlertDescription>
+                {t("usage.noMatchingPricing", {
+                  defaultValue: "未找到匹配的模型定价",
+                })}
+              </AlertDescription>
             </Alert>
           ) : (
             <div className="rounded-md bg-card/60 shadow-sm">
@@ -393,7 +433,7 @@ export function PricingConfigPanel() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {pricing.map((model) => (
+                  {filteredPricing.map((model) => (
                     <TableRow key={model.modelId}>
                       <TableCell
                         className={cn(usageTable.td, "font-mono text-xs")}

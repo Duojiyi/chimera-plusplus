@@ -325,12 +325,28 @@ pub struct VisibleApps {
     pub grokbuild: bool,
     #[serde(default = "default_false")]
     pub opencode: bool,
-
+    #[serde(default)]
+    pub openclaw: bool,
+    #[serde(default)]
+    pub hermes: bool,
     #[serde(default)]
     pub pi: bool,
-    /// Independent tool preference; OMP is not a provider AppType.
     #[serde(default)]
     pub omp: bool,
+    #[serde(default)]
+    pub agy: bool,
+    #[serde(default)]
+    pub mcode: bool,
+    #[serde(default)]
+    pub kimi: bool,
+    #[serde(default)]
+    pub dsh: bool,
+    #[serde(default)]
+    pub copilot: bool,
+    #[serde(default)]
+    pub workbuddy: bool,
+    #[serde(default)]
+    pub codebuddy: bool,
 }
 
 impl Default for VisibleApps {
@@ -342,10 +358,17 @@ impl Default for VisibleApps {
             gemini: false,
             grokbuild: false,
             opencode: false,
-
-            // 默认不显示，需用户手动启用
+            openclaw: false,
+            hermes: false,
             pi: false,
             omp: false,
+            agy: false,
+            mcode: false,
+            kimi: false,
+            dsh: false,
+            copilot: false,
+            workbuddy: false,
+            codebuddy: false,
         }
     }
 }
@@ -360,8 +383,17 @@ impl VisibleApps {
             AppType::Gemini => self.gemini,
             AppType::GrokBuild => self.grokbuild,
             AppType::OpenCode => self.opencode,
-
+            AppType::OpenClaw => self.openclaw,
+            AppType::Hermes => self.hermes,
             AppType::Pi => self.pi,
+            AppType::Omp => self.omp,
+            AppType::Agy => self.agy,
+            AppType::Mcode => self.mcode,
+            AppType::Kimi => self.kimi,
+            AppType::Dsh => self.dsh,
+            AppType::Copilot => self.copilot,
+            AppType::WorkBuddy => self.workbuddy,
+            AppType::Codebuddy => self.codebuddy,
         }
     }
 }
@@ -756,6 +788,16 @@ pub struct AppSettings {
     pub grok_config_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opencode_config_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openclaw_config_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hermes_config_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi_config_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omp_config_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dsh_config_dir: Option<String>,
 
     // ===== 当前供应商 ID（设备级）=====
     /// 当前 Claude 供应商 ID（本地存储，优先于数据库 is_current）
@@ -874,6 +916,11 @@ impl Default for AppSettings {
             gemini_config_dir: None,
             grok_config_dir: None,
             opencode_config_dir: None,
+            openclaw_config_dir: None,
+            hermes_config_dir: None,
+            pi_config_dir: None,
+            omp_config_dir: None,
+            dsh_config_dir: None,
 
             current_provider_claude: None,
             current_provider_claude_desktop: None,
@@ -998,6 +1045,20 @@ impl AppSettings {
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
+
+        for field in [
+            &mut self.openclaw_config_dir,
+            &mut self.hermes_config_dir,
+            &mut self.pi_config_dir,
+            &mut self.omp_config_dir,
+            &mut self.dsh_config_dir,
+        ] {
+            *field = field
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+        }
 
         self.language = self
             .language
@@ -1539,6 +1600,30 @@ pub fn get_opencode_override_dir() -> Option<PathBuf> {
         .map(|p| resolve_override_path(p))
 }
 
+pub fn get_override_dir(app: &AppType) -> Option<PathBuf> {
+    let settings = settings_store().read().ok()?;
+    let dir = match app {
+        AppType::Claude => &settings.claude_config_dir,
+        AppType::Codex => &settings.codex_config_dir,
+        AppType::Gemini => &settings.gemini_config_dir,
+        AppType::GrokBuild => &settings.grok_config_dir,
+        AppType::OpenCode => &settings.opencode_config_dir,
+        AppType::OpenClaw => &settings.openclaw_config_dir,
+        AppType::Hermes => &settings.hermes_config_dir,
+        AppType::Pi => &settings.pi_config_dir,
+        AppType::Omp => &settings.omp_config_dir,
+        AppType::Dsh => &settings.dsh_config_dir,
+        AppType::ClaudeDesktop
+        | AppType::Mcode
+        | AppType::Kimi
+        | AppType::Agy
+        | AppType::Copilot
+        | AppType::Codebuddy
+        | AppType::WorkBuddy => return None,
+    };
+    dir.as_deref().map(resolve_override_path)
+}
+
 pub fn preserve_codex_official_auth_on_switch() -> bool {
     settings_store()
         .read()
@@ -1575,8 +1660,18 @@ pub fn get_current_provider(app_type: &AppType) -> Option<String> {
         AppType::GrokBuild => settings.current_provider_grokbuild.clone(),
         AppType::OpenCode => settings.current_provider_opencode.clone(),
 
-        // Additive: no current provider.
-        AppType::Pi => None,
+        // Additive / launch-based tools: no single local current_provider override.
+        AppType::OpenClaw
+        | AppType::Hermes
+        | AppType::Pi
+        | AppType::Mcode
+        | AppType::Kimi
+        | AppType::Dsh
+        | AppType::Agy
+        | AppType::Omp
+        | AppType::Copilot
+        | AppType::WorkBuddy
+        | AppType::Codebuddy => None,
     }
 }
 
@@ -1594,7 +1689,17 @@ pub fn set_current_provider(app_type: &AppType, id: Option<&str>) -> Result<(), 
         AppType::GrokBuild => settings.current_provider_grokbuild = id_owned.clone(),
         AppType::OpenCode => settings.current_provider_opencode = id_owned.clone(),
 
-        AppType::Pi => {}
+        AppType::OpenClaw
+        | AppType::Hermes
+        | AppType::Pi
+        | AppType::Mcode
+        | AppType::Kimi
+        | AppType::Dsh
+        | AppType::Agy
+        | AppType::Omp
+        | AppType::Copilot
+        | AppType::WorkBuddy
+        | AppType::Codebuddy => {}
     })
 }
 

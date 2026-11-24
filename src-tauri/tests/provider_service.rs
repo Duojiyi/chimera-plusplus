@@ -166,6 +166,7 @@ command = "say"
                 gemini: false,
                 grokbuild: false,
                 opencode: false,
+                ..Default::default()
             },
             description: None,
             homepage: None,
@@ -938,6 +939,7 @@ fn reapply_codex_official_live_resyncs_mcp_servers() {
                 gemini: false,
                 grokbuild: false,
                 opencode: false,
+                ..Default::default()
             },
             description: None,
             homepage: None,
@@ -1038,6 +1040,7 @@ fn reapply_codex_official_live_projects_mcp_despite_broken_claude_json() {
                 gemini: false,
                 grokbuild: false,
                 opencode: false,
+                ..Default::default()
             },
             description: None,
             homepage: None,
@@ -1132,6 +1135,7 @@ fn switch_codex_projects_mcp_despite_broken_claude_json() {
                 gemini: false,
                 grokbuild: false,
                 opencode: false,
+                ..Default::default()
             },
             description: None,
             homepage: None,
@@ -1195,6 +1199,7 @@ fn sync_all_enabled_reports_broken_app_but_projects_the_rest() {
                 gemini: false,
                 grokbuild: false,
                 opencode: false,
+                ..Default::default()
             },
             description: None,
             homepage: None,

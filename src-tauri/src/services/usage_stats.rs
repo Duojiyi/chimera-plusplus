@@ -245,6 +245,17 @@ pub(crate) fn provider_name_coalesce(log_alias: &str, provider_alias: &str) -> S
          WHEN '_codex_session' THEN 'Codex (Session)' \
          WHEN '_gemini_session' THEN 'Gemini (Session)' \
          WHEN '_opencode_session' THEN 'OpenCode (Session)' \
+         WHEN '_grok_session' THEN 'Grok Build (Session)' \
+         WHEN '_agy_session' THEN 'Antigravity (Session)' \
+         WHEN '_kimi_session' THEN 'Kimi Code (Session)' \
+         WHEN '_copilot_session' THEN 'Copilot CLI (Session)' \
+         WHEN '_workbuddy_session' THEN 'WorkBuddy (Session)' \
+         WHEN '_codebuddy_session' THEN 'CodeBuddy Code (Session)' \
+         WHEN '_dsh_session' THEN 'DeepSeek Harness (Session)' \
+         WHEN '_dsh_account_session' THEN 'DeepSeek Harness (OAuth)' \
+         WHEN '_mcode_session' THEN 'MiniMax Code (Session)' \
+         WHEN '_pi_session' THEN 'Pi (Session)' \
+         WHEN '_omp_session' THEN 'Oh My Pi (Session)' \
          ELSE {log_alias}.provider_id END)"
     )
 }
@@ -344,10 +355,16 @@ fn compatible_usage_identity_sql(proxy: &str, session: &str) -> String {
     )
 }
 
+fn strip_model_prefix_sql(expr: &str) -> String {
+    format!("REPLACE(TRIM({expr}), RTRIM(TRIM({expr}), REPLACE(TRIM({expr}), '/', '')), '')")
+}
+
 /// One predicate for import, display and archival. Archived proxy receipts keep
 /// this decision valid after the 30-day detail retention period has elapsed.
 fn matching_proxy_usage_sql(session: &str, ambiguous: bool) -> String {
     let identity = compatible_usage_identity_sql("p", session);
+    let p_model = strip_model_prefix_sql("p.model");
+    let s_model = strip_model_prefix_sql(&format!("{session}.model"));
     // A legacy UUID is neither evidence of a different session nor proof of
     // the same one. Only a shared request ID can resolve that ambiguity.
     let untrusted = format!(
@@ -380,8 +397,10 @@ fn matching_proxy_usage_sql(session: &str, ambiguous: bool) -> String {
          AND p.created_at BETWEEN
              {session}.created_at - {SESSION_PROXY_DEDUP_WINDOW_SECONDS}
              AND {session}.created_at + {SESSION_PROXY_DEDUP_WINDOW_SECONDS}
-         AND (LOWER(p.model) = LOWER({session}.model)
-              OR LOWER(p.model) = 'unknown' OR LOWER({session}.model) = 'unknown')"
+         AND ((NULLIF({p_model}, '') IS NOT NULL
+               AND NULLIF({s_model}, '') IS NOT NULL
+               AND LOWER({p_model}) = LOWER({s_model}))
+              OR LOWER(TRIM(p.model)) = 'unknown' OR LOWER(TRIM({session}.model)) = 'unknown')"
     );
     format!(
         "EXISTS (SELECT 1 FROM proxy_request_logs p WHERE {predicate}
@@ -561,6 +580,29 @@ pub(crate) fn has_suspected_codex_session_duplicate(
         |row| row.get::<_, bool>(0),
     )
     .map_err(|error| AppError::Database(format!("查询疑似重复 Codex 会话用量失败: {error}")))
+}
+
+#[allow(dead_code)]
+pub(crate) fn has_recent_grokbuild_proxy_activity(
+    conn: &Connection,
+    created_at: i64,
+) -> Result<bool, AppError> {
+    let l_data_source = data_source_expr("l");
+    let sql = format!(
+        "SELECT EXISTS (
+            SELECT 1
+            FROM proxy_request_logs l
+            WHERE {l_data_source} = 'proxy'
+              AND l.app_type = 'grokbuild'
+              AND l.created_at BETWEEN ?1 - ?2 AND ?1 + ?2
+        )"
+    );
+    conn.query_row(
+        &sql,
+        params![created_at, SESSION_PROXY_DEDUP_WINDOW_SECONDS],
+        |row| row.get::<_, bool>(0),
+    )
+    .map_err(|e| AppError::Database(format!("查询 Grok 接管活动失败: {e}")))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1977,12 +2019,26 @@ impl Database {
         // 总成本 = 基础成本之和 × 倍率
         let base_total = input_cost + output_cost + cache_read_cost + cache_creation_cost;
         let total_cost = base_total * multiplier;
+        // 单价全为 0（免费模型）时算出来仍是 0，写回去下次照样当缺价，只是白白 UPDATE。
+        if total_cost.is_zero() {
+            return Ok(false);
+        }
 
-        log.input_cost_usd = format!("{input_cost:.6}");
-        log.output_cost_usd = format!("{output_cost:.6}");
-        log.cache_read_cost_usd = format!("{cache_read_cost:.6}");
-        log.cache_creation_cost_usd = format!("{cache_creation_cost:.6}");
-        log.total_cost_usd = format!("{total_cost:.6}");
+        // 至少 6 位小数、不截断：只存 6 位会把极小额（几个 token、低倍率）写成 0，
+        // 下次读取又被当成缺价重算。界面显示时再舍入。
+        fn cost_string(value: rust_decimal::Decimal) -> String {
+            let value = value.normalize();
+            if value.scale() < 6 {
+                format!("{value:.6}")
+            } else {
+                value.to_string()
+            }
+        }
+        log.input_cost_usd = cost_string(input_cost);
+        log.output_cost_usd = cost_string(output_cost);
+        log.cache_read_cost_usd = cost_string(cache_read_cost);
+        log.cache_creation_cost_usd = cost_string(cache_creation_cost);
+        log.total_cost_usd = cost_string(total_cost);
 
         conn.execute(
             "UPDATE proxy_request_logs
@@ -2086,24 +2142,30 @@ pub(crate) fn find_model_pricing(conn: &Connection, model_id: &str) -> Option<Mo
         })
 }
 
+#[derive(Clone)]
+struct PricingCandidate {
+    model_id: String,
+    allow_prefix_match: bool,
+}
+
 pub(crate) fn find_model_pricing_row(
     conn: &Connection,
     model_id: &str,
 ) -> Result<Option<(String, String, String, String)>, AppError> {
-    let candidates = model_pricing_candidates(model_id);
+    let candidates = model_pricing_candidates_detailed(model_id);
     if candidates.is_empty() {
         return Ok(None);
     }
 
     for candidate in &candidates {
-        if let Some(row) = query_model_pricing_exact(conn, candidate)? {
+        if let Some(row) = query_model_pricing_exact(conn, &candidate.model_id)? {
             return Ok(Some(row));
         }
     }
 
     for candidate in &candidates {
-        if should_try_pricing_prefix_match(candidate) {
-            if let Some(row) = query_model_pricing_prefix(conn, candidate)? {
+        if candidate.allow_prefix_match && should_try_pricing_prefix_match(&candidate.model_id) {
+            if let Some(row) = query_model_pricing_prefix(conn, &candidate.model_id)? {
                 return Ok(Some(row));
             }
         }
@@ -2149,7 +2211,7 @@ fn query_model_pricing_exact(
         "SELECT input_cost_per_million, output_cost_per_million,
                 cache_read_cost_per_million, cache_creation_cost_per_million
          FROM model_pricing
-         WHERE model_id = ?1",
+         WHERE model_id = ?1 COLLATE NOCASE",
         [model_id],
         |row| {
             Ok((
@@ -2168,13 +2230,17 @@ fn query_model_pricing_prefix(
     conn: &Connection,
     model_id: &str,
 ) -> Result<Option<(String, String, String, String)>, AppError> {
-    let pattern = format!("{model_id}-%");
+    let escaped = model_id
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let pattern = format!("{escaped}-%");
     conn.query_row(
         "SELECT input_cost_per_million, output_cost_per_million,
                 cache_read_cost_per_million, cache_creation_cost_per_million
          FROM model_pricing
-         WHERE model_id LIKE ?1
-         ORDER BY LENGTH(model_id) ASC
+         WHERE model_id LIKE ?1 ESCAPE '\\'
+         ORDER BY LENGTH(model_id) ASC, rowid ASC
          LIMIT 1",
         [pattern],
         |row| {
@@ -2191,43 +2257,113 @@ fn query_model_pricing_prefix(
 }
 
 fn model_pricing_candidates(model_id: &str) -> Vec<String> {
+    model_pricing_candidates_detailed(model_id)
+        .into_iter()
+        .map(|candidate| candidate.model_id)
+        .collect()
+}
+
+fn model_pricing_candidates_detailed(model_id: &str) -> Vec<PricingCandidate> {
     let cleaned = clean_model_id_for_pricing(model_id);
     if is_placeholder_pricing_model(&cleaned) {
         return Vec::new();
     }
 
-    let mut candidates = Vec::new();
-    let mut queue = vec![cleaned];
+    let mut candidates: Vec<PricingCandidate> = Vec::new();
+    let mut queue = std::collections::VecDeque::from([PricingCandidate {
+        model_id: cleaned,
+        allow_prefix_match: true,
+    }]);
 
-    while let Some(candidate) = queue.pop() {
-        if !push_unique_candidate(&mut candidates, candidate.clone()) {
+    while let Some(entry) = queue.pop_front() {
+        let allow_prefix_match = entry.allow_prefix_match;
+        if !push_unique_candidate_detailed(&mut candidates, entry.clone()) {
             continue;
         }
+        let candidate = entry.model_id;
+        let push_derived = |queue: &mut std::collections::VecDeque<PricingCandidate>,
+                            model_id: String| {
+            queue.push_back(PricingCandidate {
+                model_id,
+                allow_prefix_match,
+            });
+        };
 
         if let Some(stripped) = strip_known_model_namespace(&candidate) {
-            queue.push(stripped);
+            push_derived(&mut queue, stripped);
         }
         if let Some(stripped) = strip_claude_desktop_non_anthropic_prefix(&candidate) {
-            queue.push(stripped);
+            push_derived(&mut queue, stripped);
         }
         if let Some(stripped) = strip_bedrock_model_version_suffix(&candidate) {
-            queue.push(stripped);
+            push_derived(&mut queue, stripped);
+        }
+        if candidate.starts_with("claude-")
+            && candidate.contains('.')
+            && strip_claude_desktop_non_anthropic_prefix(&candidate).is_none()
+        {
+            push_derived(&mut queue, candidate.replace('.', "-"));
         }
         if let Some(stripped) = strip_model_date_suffix(&candidate) {
-            queue.push(stripped);
+            push_derived(&mut queue, stripped);
+        }
+        if let Some(stripped) = strip_model_tag_suffix(&candidate) {
+            push_derived(&mut queue, stripped);
         }
         if let Some(stripped) = strip_reasoning_effort_suffix(&candidate) {
-            queue.push(stripped);
+            push_derived(&mut queue, stripped);
         }
-        if candidate.starts_with("claude-") && candidate.contains('.') {
-            queue.push(candidate.replace('.', "-"));
+        if let Some(stripped) = strip_gemini_flash_tiered_suffix(&candidate) {
+            queue.push_back(PricingCandidate {
+                model_id: stripped,
+                allow_prefix_match: false,
+            });
+        }
+        if candidate == "gemini-4-hydrogen-tiered" {
+            queue.push_back(PricingCandidate {
+                model_id: "gemini-4-hydrogen".to_string(),
+                allow_prefix_match: false,
+            });
+        }
+        if matches!(
+            candidate.as_str(),
+            "gemini-4-hydrogen-orchestrator" | "gemini-flash-worker-agy"
+        ) {
+            queue.push_back(PricingCandidate {
+                model_id: "gemini-4-hydrogen".to_string(),
+                allow_prefix_match: false,
+            });
+        }
+        if let Some(stripped) = strip_claude_thinking_suffix(&candidate) {
+            push_derived(&mut queue, stripped);
         }
     }
 
     candidates
 }
 
-fn clean_model_id_for_pricing(model_id: &str) -> String {
+fn push_unique_candidate_detailed(
+    candidates: &mut Vec<PricingCandidate>,
+    candidate: PricingCandidate,
+) -> bool {
+    if candidate.model_id.is_empty() {
+        return false;
+    }
+    if let Some(existing) = candidates
+        .iter_mut()
+        .find(|existing| existing.model_id == candidate.model_id)
+    {
+        if !existing.allow_prefix_match && candidate.allow_prefix_match {
+            existing.allow_prefix_match = true;
+            return true;
+        }
+        return false;
+    }
+    candidates.push(candidate);
+    true
+}
+
+pub(crate) fn clean_model_id_for_pricing(model_id: &str) -> String {
     let normalized = model_id
         .rsplit_once('/')
         .map_or(model_id, |(_, r)| r)
@@ -2244,6 +2380,7 @@ fn clean_model_id_for_pricing(model_id: &str) -> String {
         .to_string()
 }
 
+#[allow(dead_code)]
 fn push_unique_candidate(candidates: &mut Vec<String>, candidate: String) -> bool {
     if candidate.is_empty() || candidates.iter().any(|existing| existing == &candidate) {
         return false;
@@ -2292,6 +2429,7 @@ fn strip_claude_desktop_non_anthropic_prefix(model_id: &str) -> Option<String> {
         "glm",
         "gpt",
         "grok",
+        "hermes",
         "hy3",
         "hunyuan",
         "jamba",
@@ -2365,6 +2503,32 @@ fn strip_model_date_suffix(model_id: &str) -> Option<String> {
     None
 }
 
+fn strip_model_tag_suffix(model_id: &str) -> Option<String> {
+    // Strip `-preview-MM-DD` (e.g. gemini-2.5-pro-preview-06-05 -> gemini-2.5-pro)
+    let bytes = model_id.as_bytes();
+    if bytes.len() > 14 {
+        let start = bytes.len() - 14;
+        if let Some(tail) = model_id.get(start..) {
+            let tb = tail.as_bytes();
+            if tail.starts_with("-preview-")
+                && tb[9..11].iter().all(|b| b.is_ascii_digit())
+                && tb[11] == b'-'
+                && tb[12..14].iter().all(|b| b.is_ascii_digit())
+            {
+                return Some(model_id[..start].to_string());
+            }
+        }
+    }
+    for suffix in ["-latest", "-exp"] {
+        if let Some(stripped) = model_id.strip_suffix(suffix) {
+            if !stripped.is_empty() {
+                return Some(stripped.to_string());
+            }
+        }
+    }
+    None
+}
+
 fn strip_reasoning_effort_suffix(model_id: &str) -> Option<String> {
     for suffix in ["-minimal", "-low", "-medium", "-high", "-xhigh"] {
         if let Some(stripped) = model_id.strip_suffix(suffix) {
@@ -2376,7 +2540,35 @@ fn strip_reasoning_effort_suffix(model_id: &str) -> Option<String> {
     None
 }
 
+fn strip_gemini_flash_tiered_suffix(model_id: &str) -> Option<String> {
+    let version = model_id
+        .strip_prefix("gemini-")?
+        .strip_suffix("-flash-tiered")?;
+    (!version.is_empty()
+        && version
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())))
+    .then(|| format!("gemini-{version}-flash"))
+}
+
+fn strip_claude_thinking_suffix(model_id: &str) -> Option<String> {
+    if !model_id.starts_with("claude-")
+        || strip_claude_desktop_non_anthropic_prefix(model_id).is_some()
+    {
+        return None;
+    }
+    let base = model_id.strip_suffix("-thinking")?;
+    (base.len() > "claude-".len()).then(|| base.to_string())
+}
+
 fn should_try_pricing_prefix_match(model_id: &str) -> bool {
+    if matches!(
+        model_id,
+        "gemini-4-hydrogen-tiered" | "gemini-4-hydrogen-orchestrator" | "gemini-flash-worker-agy"
+    ) || strip_gemini_flash_tiered_suffix(model_id).is_some()
+    {
+        return false;
+    }
     let dash_count = model_id.matches('-').count();
 
     if model_id.starts_with("claude-") {

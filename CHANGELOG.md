@@ -10,6 +10,32 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.4] - 2026-11-25
+
+### Added
+
+- 全面扩展至 17 款本地 AI 编程工具支持（新增 OpenClaw、Hermes、Oh My Pi、Antigravity、MiniMax Code、Kimi Code、DeepSeek Harness、Copilot CLI、WorkBuddy、CodeBuddy Code），统一接入线路管理、多工具用量统计、会话管理、MCP、Skills、Prompt 与配置目录自定义。
+- 新增工具品牌图标与线路单字徽章体系（`AppGlyph` / `RouteGlyph`），覆盖侧边栏工具切换器、托盘快捷浮窗、线路页、OMP 线路页与深链导入弹窗。
+- 为 Claude Code、Gemini CLI、Grok Build 与 Codex 补齐结构化会话消息块（思考块、工具调用、差异统计与按需全文展开）及 Codex `.jsonl.zst` 压缩会话回退读取。
+- 内置官方线路默认入口并支持原生多线路配置（DeepSeek Harness、OpenClaw、Hermes、MiniMax Code、Kimi Code、Copilot CLI、WorkBuddy、CodeBuddy Code）自动识别与免落库只读展示。
+
+### Changed
+
+- 重构非 Codex 工具线路页与托盘快捷浮窗布局（对齐旗舰看板与单展开手风琴体验），并将 MCP 新增/编辑弹窗、通用工具线路表单与代理/用量面板统一收敛至 Chimera++ v5.2 浅色液态玻璃视觉体系。
+- 用量页支持按当前工具联动筛选全部 17 款工具会话数据源，并扩展基础模型计价表与后缀归一（`-preview-MM-DD` / `-latest` / `-exp`）以提升成本估算准确度。
+- 补齐 4 语种（`zh`、`en`、`zh-TW`、`ja`）新增工具名与会话数据源国际化词条。
+
+### Fixed
+
+- 修复多线路开关裁切偏移、新增官方入口按钮在已有官方入口时重复显示，以及切换/启停线路失败时吞掉后端真实错误提示的问题。
+- 修复 `GenericToolProviderForm` 在 Kimi Code、CodeBuddy Code、Hermes 下的配置结构偏差与 `tool-registry.json` 中 4 处本地配置文件路径错误；修复 MCP 在 OMP/Antigravity/Pi/Copilot 下的编辑、停用与真删除行为。
+- 补齐 Antigravity 订阅配额路由、全部 10 个支持自定义目录工具的设置持久化与实时备份清单，以及 Grok Build / Gemini / OpenCode / Kimi / Copilot / WorkBuddy / CodeBuddy 会话用量解析器的边界游标与 16 MiB 单行内存防护。
+
+### Security
+
+- 将 `Oh My Pi` 纳入 Deep Link 命令/环境变量展开拦截及 CC Switch 导入守卫；Deep Link 技能仓库导入前强制执行路径与段校验，并将阻塞型 Deep Link 导入移至 `spawn_blocking`。
+- 收紧 Kimi OAuth 官方 HTTPS 域名白名单、禁重定向探测与 256 KiB 响应流上限；SQL 备份导出改为仅本机用户可读权限（`atomic_write_private`），并修复 Windows 终端启动脚本双引号内错误 `^` 转义导致的路径执行异常。
+
 ## [2.9.3] - 2026-11-24
 
 ### Changed

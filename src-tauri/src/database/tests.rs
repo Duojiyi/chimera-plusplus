@@ -1317,10 +1317,17 @@ fn model_pricing_seed_includes_upstream_resync_rows() {
         "deepseek-flash",
         "deepseek-v4-flash-0731",
         "deepseek-v4-flash-vision-exp",
+        "claude-fable-5-2",
+        "claude-haiku-5-5",
+        "claude-sonnet-5-5",
+        "deepseek-v4.1-flash",
         "gemini-3.5-flash-lite",
         "gemini-3.6-flash",
         "gemini-3.7-flash",
         "gemini-3.8-flash",
+        "gemini-4-argon",
+        "gemini-4-carbon",
+        "gemini-4-neon",
         "glm-5-turbo",
         "glm-5.3",
         "glm-5.3-flash",
@@ -1336,19 +1343,31 @@ fn model_pricing_seed_includes_upstream_resync_rows() {
         "gpt-6-astra",
         "gpt-6-luna",
         "gpt-6-sol",
+        "gpt-6.1-sol",
+        "gpt-6.1-terra",
+        "gpt-6.2-astra",
+        "gpt-6.2-sol",
         "grok-4.5-build",
         "grok-4.6",
         "grok-4.7",
         "hy4-preview",
+        "k3.1-pro",
+        "k3.1-pro-highspeed",
         "kimi-k2.7-code-highspeed",
+        "kimi-k3.1-pro",
+        "kimi-k3.1-pro-highspeed",
         "mimo-v2.6-flash",
         "mimo-v2.6-pro",
         "mimo-v2.6-pro-ultraspeed",
+        "qwen3.6-27b",
         "qwen3.6-flash",
+        "qwen3.7-flash",
         "qwen3.8-2.4t-a95b",
         "qwen3.8-27b",
         "qwen3.8-flash",
         "qwen3.8-max",
+        "qwen3.8-omni-flash",
+        "qwen4-max",
         "step-5-preview",
     ] {
         pricing_row(&conn, model_id);
@@ -1361,6 +1380,22 @@ fn model_pricing_seed_includes_upstream_resync_rows() {
         pricing_row(&conn, "gpt-5.6-luna"),
         price("0.20", "1.20", "0.02", "0.25")
     );
+    assert_eq!(
+        pricing_row(&conn, "gpt-6.2-astra"),
+        price("8", "40", "0.40", "10")
+    );
+    assert_eq!(
+        pricing_row(&conn, "gpt-6.2-sol"),
+        price("2", "10", "0.10", "2.50")
+    );
+    assert_eq!(
+        pricing_row(&conn, "gpt-6.1-sol"),
+        price("2", "10", "0.10", "2.50")
+    );
+    assert_eq!(
+        pricing_row(&conn, "gpt-6.1-terra"),
+        price("1", "5", "0.05", "1.25")
+    );
 
     // 每个内置行都记下了指纹，后续重同步据此区分用户改动
     let raw: String = conn
@@ -1371,7 +1406,7 @@ fn model_pricing_seed_includes_upstream_resync_rows() {
         )
         .expect("fingerprints stored");
     let fingerprints: HashMap<String, String> = serde_json::from_str(&raw).expect("json");
-    assert!(fingerprints.len() >= 219, "{}", fingerprints.len());
+    assert!(fingerprints.len() >= 223, "{}", fingerprints.len());
     assert!(fingerprints.contains_key("gpt-5.6-sol"));
 }
 

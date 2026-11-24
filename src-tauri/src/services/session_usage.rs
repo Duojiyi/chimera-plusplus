@@ -10,7 +10,9 @@
 
 use super::session_usage_codex::{read_capped_line, MAX_SESSION_LINE_BYTES};
 use crate::config::get_claude_config_dir;
-use crate::database::{lock_conn, Database};
+#[cfg(test)]
+use crate::database::lock_conn;
+use crate::database::Database;
 use crate::error::AppError;
 use crate::proxy::usage::calculator::{CostCalculator, ModelPricing};
 use crate::proxy::usage::parser::{claude_cache_creation_1h_tokens, TokenUsage};
@@ -23,6 +25,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::OnceLock;
 use std::time::SystemTime;
 
@@ -85,28 +88,219 @@ fn merge_sync_step(
     }
 }
 
+type SyncStep = (
+    &'static str,
+    fn(&Database, &SyncCursors) -> Result<SessionSyncResult, AppError>,
+);
+
 /// 调用方必须持有 [`session_sync_mutex`]。此函数是同步内核，供后台任务、
 /// 手动同步和 Codex 重建共享，避免 tokio Mutex 重入。
 pub fn sync_all_unlocked(db: &Database) -> SessionSyncResult {
-    let mut result = SessionSyncResult::default();
-    merge_sync_step(&mut result, "Claude", sync_claude_session_logs(db));
-    merge_sync_step(
-        &mut result,
-        "Codex",
-        crate::services::session_usage_codex::sync_codex_usage(db),
-    );
-    merge_sync_step(
-        &mut result,
-        "Gemini",
-        crate::services::session_usage_gemini::sync_gemini_usage(db),
-    );
-    merge_sync_step(
-        &mut result,
-        "OpenCode",
-        crate::services::session_usage_opencode::sync_opencode_usage(db),
-    );
+    let cursors = match load_sync_cursors(db) {
+        Ok(cursors) => cursors,
+        Err(error) => {
+            return SessionSyncResult {
+                errors: vec![format!("预取同步游标失败: {error}")],
+                ..Default::default()
+            }
+        }
+    };
+    let steps: &[SyncStep] = &[
+        ("Claude", |db, _cursors| sync_claude_session_logs(db)),
+        ("Codex", |db, _cursors| {
+            crate::services::session_usage_codex::sync_codex_usage(db)
+        }),
+        ("Gemini", |db, _cursors| {
+            crate::services::session_usage_gemini::sync_gemini_usage(db)
+        }),
+        ("OpenCode", |db, _cursors| {
+            crate::services::session_usage_opencode::sync_opencode_usage(db)
+        }),
+        (
+            "Grok Build",
+            crate::services::session_usage_grokbuild::sync_grokbuild_usage,
+        ),
+        (
+            "Pi",
+            crate::services::session_usage_pi::sync_pi_usage_with_cursors,
+        ),
+        (
+            "Oh My Pi",
+            crate::services::session_usage_omp::sync_omp_usage,
+        ),
+        ("MCode", |db, _cursors| {
+            crate::services::session_usage_mcode::sync_mcode_usage(db)
+        }),
+        (
+            "Antigravity",
+            crate::services::session_usage_agy::sync_agy_usage_with_cursors,
+        ),
+        (
+            "Kimi Code",
+            crate::services::session_usage_kimi::sync_kimi_usage,
+        ),
+        (
+            "GitHub Copilot CLI",
+            crate::services::session_usage_copilot::sync_copilot_usage,
+        ),
+        (
+            "WorkBuddy",
+            crate::services::session_usage_workbuddy::sync_workbuddy_usage,
+        ),
+        (
+            "CodeBuddy Code",
+            crate::services::session_usage_codebuddy::sync_codebuddy_usage,
+        ),
+        (
+            "DeepSeek Harness",
+            crate::services::session_usage_dsh::sync_dsh_usage,
+        ),
+    ];
+    let result = std::thread::scope(|scope| {
+        let workers: Vec<_> = steps
+            .iter()
+            .map(|&(name, sync)| {
+                let cursors = &cursors;
+                (
+                    name,
+                    std::thread::Builder::new()
+                        .name(format!("usage-{name}"))
+                        .spawn_scoped(scope, move || sync(db, cursors)),
+                )
+            })
+            .collect();
+        let mut aggregate = SessionSyncResult::default();
+        for (name, worker) in workers {
+            let step = match worker {
+                Ok(worker) => worker
+                    .join()
+                    .unwrap_or_else(|_| Err(AppError::Message("同步线程异常退出".into()))),
+                Err(error) => Err(AppError::Message(format!("无法启动同步线程: {error}"))),
+            };
+            merge_sync_step(&mut aggregate, name, step);
+        }
+        aggregate
+    });
     notify_sync_result(&result);
+    record_sync_completed(chrono::Utc::now().timestamp_millis());
     result
+}
+
+/// 最近一次完整扫描完成的时间（毫秒时间戳）；0 表示本次启动后还没扫过。
+static LAST_SYNC_COMPLETED_AT_MS: AtomicI64 = AtomicI64::new(0);
+
+/// 记下一次扫描完成的时间；只会往后走（并发调用时不会被较早的时间覆盖）。
+pub(crate) fn record_sync_completed(at_ms: i64) {
+    LAST_SYNC_COMPLETED_AT_MS.fetch_max(at_ms, Ordering::Relaxed);
+}
+
+/// 最近一次完整扫描完成的时间（毫秒时间戳）；本次启动后还没扫过时为 `None`。
+#[allow(dead_code)]
+pub fn last_sync_completed_at() -> Option<i64> {
+    let value = LAST_SYNC_COMPLETED_AT_MS.load(Ordering::Relaxed);
+    (value > 0).then_some(value)
+}
+
+/// `session_log_sync` 表一行的内存快照。
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
+pub(crate) struct SyncCursor {
+    pub last_modified: i64,
+    pub last_line_offset: i64,
+    pub last_byte_offset: Option<i64>,
+    pub last_tail_fingerprint: Option<i64>,
+    pub parser_state: Option<String>,
+    pub last_synced_at: i64,
+}
+
+pub(crate) type SyncCursors = HashMap<String, SyncCursor>;
+
+/// 一次性预取 `session_log_sync` 全表游标。
+pub(crate) fn load_sync_cursors(db: &Database) -> Result<SyncCursors, AppError> {
+    let conn = db.conn_guard()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT file_path, last_modified, last_line_offset, last_synced_at, last_byte_offset,
+                    last_tail_fingerprint, parser_state
+             FROM session_log_sync",
+        )
+        .map_err(|e| AppError::Database(format!("预取同步游标失败: {e}")))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            SyncCursor {
+                last_modified: row.get(1)?,
+                last_line_offset: row.get(2)?,
+                last_synced_at: row.get(3)?,
+                last_byte_offset: row.get(4)?,
+                last_tail_fingerprint: row.get(5)?,
+                parser_state: row.get(6)?,
+            },
+        ))
+    });
+    rows.and_then(|rows| rows.collect::<Result<HashMap<_, _>, _>>())
+        .map_err(|e| AppError::Database(format!("预取同步游标失败: {e}")))
+}
+
+/// 估算出的请求耗时短于这个毫秒数就不要。
+const MIN_PLAUSIBLE_LATENCY_MS: i64 = 100;
+/// 估算出的请求耗时长于这个毫秒数也不要。
+const MAX_PLAUSIBLE_LATENCY_MS: i64 = 60 * 60 * 1000;
+
+/// 会话日志没有请求计时，耗时只能拿两个时间戳相减估出来（含首字等待）。
+pub(crate) fn estimated_latency_ms(start_ms: i64, end_ms: i64) -> Option<i64> {
+    let latency = end_ms.checked_sub(start_ms)?;
+    (MIN_PLAUSIBLE_LATENCY_MS..=MAX_PLAUSIBLE_LATENCY_MS)
+        .contains(&latency)
+        .then_some(latency)
+}
+
+#[allow(dead_code)]
+pub(crate) fn parse_timestamp_millis(timestamp: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|dt| dt.timestamp_millis())
+}
+
+/// 首字时间：起点到开始输出。必须落在 (0, 耗时] 之间。
+#[allow(dead_code)]
+pub(crate) fn estimated_first_token_ms(
+    start_ms: i64,
+    first_output_ms: i64,
+    latency_ms: i64,
+) -> Option<i64> {
+    let first_token = first_output_ms.checked_sub(start_ms)?;
+    (first_token > 0 && first_token <= latency_ms).then_some(first_token)
+}
+
+/// 按日志时间戳估出来的计时。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) struct EstimatedTiming {
+    pub(crate) latency_ms: i64,
+    pub(crate) first_token_ms: Option<i64>,
+}
+
+/// 五个金额列（输入、输出、缓存读、缓存写、合计）。查不到价格的全记 "0"。
+#[allow(dead_code)]
+pub(crate) fn cost_columns(
+    app_type: &str,
+    usage: &TokenUsage,
+    pricing: Option<&ModelPricing>,
+    multiplier: Decimal,
+) -> [String; 5] {
+    let Some(pricing) = pricing else {
+        return std::array::from_fn(|_| "0".to_string());
+    };
+    let cost = CostCalculator::calculate_for_app(app_type, usage, pricing, multiplier);
+    [
+        cost.input_cost,
+        cost.output_cost,
+        cost.cache_read_cost,
+        cost.cache_creation_cost,
+        cost.total_cost,
+    ]
+    .map(|value| value.to_string())
 }
 
 pub(crate) fn notify_sync_result(result: &SessionSyncResult) {
@@ -400,7 +594,7 @@ fn sync_single_file(db: &Database, file_path: &Path) -> Result<(u32, u32), AppEr
     let mut imported: u32 = 0;
     let mut skipped: u32 = 0;
 
-    let conn = lock_conn!(db.conn);
+    let conn = db.conn_guard()?;
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| AppError::Database(format!("开启导入事务失败: {e}")))?;
@@ -457,7 +651,7 @@ fn sync_single_file(db: &Database, file_path: &Path) -> Result<(u32, u32), AppEr
 ///
 /// Shared by all session_usage_* parsers.
 pub(crate) fn get_sync_state(db: &Database, file_path: &str) -> Result<(i64, i64), AppError> {
-    let conn = lock_conn!(db.conn);
+    let conn = db.conn_guard()?;
     let result = conn.query_row(
         "SELECT last_modified, last_line_offset FROM session_log_sync WHERE file_path = ?1",
         rusqlite::params![file_path],
@@ -488,17 +682,58 @@ pub(crate) fn update_sync_state(
     last_modified: i64,
     last_offset: i64,
 ) -> Result<(), AppError> {
+    let conn = db.conn_guard()?;
+    update_sync_state_on_conn(&conn, file_path, last_modified, last_offset)
+}
+
+/// [`update_sync_state`] 的免锁版本，供调用方在已持锁的事务内把游标推进与数据插入绑成原子提交。
+pub(crate) fn update_sync_state_on_conn(
+    conn: &rusqlite::Connection,
+    file_path: &str,
+    last_modified: i64,
+    last_offset: i64,
+) -> Result<(), AppError> {
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    let conn = lock_conn!(db.conn);
-    conn.execute(
+    conn.prepare_cached(
         "INSERT OR REPLACE INTO session_log_sync (file_path, last_modified, last_line_offset, last_synced_at)
          VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![file_path, last_modified, last_offset, now],
     )
+    .and_then(|mut stmt| stmt.execute(rusqlite::params![file_path, last_modified, last_offset, now]))
+    .map_err(|e| AppError::Database(format!("更新同步状态失败: {e}")))?;
+    Ok(())
+}
+
+/// 写入字节游标（Grok 等按行流式扫描）。
+#[allow(dead_code)]
+pub(crate) fn update_byte_sync_state(
+    db: &Database,
+    file_path: &str,
+    last_modified: i64,
+    byte_offset: i64,
+) -> Result<(), AppError> {
+    let conn = db.conn_guard()?;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    conn.prepare_cached(
+        "INSERT OR REPLACE INTO session_log_sync
+         (file_path, last_modified, last_line_offset, last_synced_at, last_byte_offset)
+         VALUES (?1, ?2, 0, ?3, ?4)",
+    )
+    .and_then(|mut stmt| {
+        stmt.execute(rusqlite::params![
+            file_path,
+            last_modified,
+            now,
+            byte_offset
+        ])
+    })
     .map_err(|e| AppError::Database(format!("更新同步状态失败: {e}")))?;
     Ok(())
 }
@@ -626,7 +861,7 @@ fn find_model_pricing_for_session(
 
 /// 查询数据来源分布统计
 pub fn get_data_source_breakdown(db: &Database) -> Result<Vec<DataSourceSummary>, AppError> {
-    let conn = lock_conn!(db.conn);
+    let conn = db.conn_guard()?;
 
     let effective_filter = effective_usage_log_filter(&conn, "l")?;
     let sql = format!(

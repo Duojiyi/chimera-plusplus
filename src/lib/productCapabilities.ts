@@ -6,9 +6,17 @@ export const productToolViews = {
   "tool-gemini": "gemini",
   "tool-grokbuild": "grokbuild",
   "tool-opencode": "opencode",
-
+  "tool-openclaw": "openclaw",
+  "tool-hermes": "hermes",
   "tool-pi": "pi",
   "tool-omp": "omp",
+  "tool-agy": "agy",
+  "tool-mcode": "mcode",
+  "tool-kimi": "kimi",
+  "tool-dsh": "dsh",
+  "tool-copilot": "copilot",
+  "tool-workbuddy": "workbuddy",
+  "tool-codebuddy": "codebuddy",
 } as const satisfies Record<string, keyof VisibleApps>;
 
 export function isProductToolVisible(
@@ -56,10 +64,19 @@ const gatedViews: Record<string, string[]> = {
   "tool-claude": ["multi_tool"],
   "tool-gemini": ["multi_tool"],
   "tool-opencode": ["multi_tool"],
+  "tool-openclaw": ["multi_tool"],
+  "tool-hermes": ["multi_tool"],
   "tool-pi": ["multi_tool"],
   "tool-omp": ["multi_tool"],
   "tool-claude-desktop": ["multi_tool"],
   "tool-grokbuild": ["multi_tool"],
+  "tool-agy": ["multi_tool"],
+  "tool-mcode": ["multi_tool"],
+  "tool-kimi": ["multi_tool"],
+  "tool-dsh": ["multi_tool"],
+  "tool-copilot": ["multi_tool"],
+  "tool-workbuddy": ["multi_tool"],
+  "tool-codebuddy": ["multi_tool"],
 };
 
 export function canOpenProductView(

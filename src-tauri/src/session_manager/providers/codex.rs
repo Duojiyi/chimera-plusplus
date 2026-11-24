@@ -21,11 +21,13 @@ use crate::session_manager::delete_backup::{
     available_space, backup_files, human_size, manifest_entries, new_generation_name,
     prune_session_delete_backups, write_manifest, BackedUpFile, RESTORE_STAGING_PREFIX,
 };
+use crate::session_manager::model::{EventKind, SessionBlock};
 use crate::session_manager::{SessionDeleteResult, SessionMessage, SessionMeta};
 
+use super::blocks::{large_text_block, summary_event_block};
 use super::utils::{
     extract_message_text, extract_text, parse_timestamp_to_ms, path_basename, truncate_summary,
-    TITLE_MAX_CHARS,
+    JsonlSpan, TITLE_MAX_CHARS,
 };
 
 use super::codex_io::{
@@ -423,10 +425,12 @@ fn collect_messages(
     let mut hidden = 0usize;
     while let Some(record) = lines.next_record()? {
         let message = match record {
-            SessionLine::Text(line) => match message_from_record(&line, limits.tool_output_bytes) {
-                Some(message) => message,
-                None => continue,
-            },
+            SessionLine::Text { line, span } => {
+                match message_from_record(&line, span, limits.tool_output_bytes) {
+                    Some(message) => message,
+                    None => continue,
+                }
+            }
             SessionLine::Oversized { bytes, prefix } => match oversized_notice(&prefix, bytes) {
                 Some(message) => message,
                 None => continue,
@@ -447,13 +451,43 @@ fn collect_messages(
     Ok(messages)
 }
 
+fn is_codex_injected_text(text: &str) -> bool {
+    let t = text.trim_start();
+    t.starts_with("# AGENTS.md")
+        || t.starts_with("<permissions instructions>")
+        || t.starts_with("<environment_context>")
+        || t.starts_with("<INSTRUCTIONS>")
+        || t.starts_with("<collaboration_mode>")
+        || t.starts_with("<app-context>")
+}
+
 /// The message Codex shows for one rollout line, if it shows one.
-fn message_from_record(line: &str, tool_output_bytes: usize) -> Option<SessionMessage> {
+fn message_from_record(
+    line: &str,
+    span: JsonlSpan,
+    tool_output_bytes: usize,
+) -> Option<SessionMessage> {
     let mut value: Value = serde_json::from_str(line).ok()?;
-    if value.get("type").and_then(Value::as_str) != Some("response_item") {
+    let record_type = value.get("type").and_then(Value::as_str)?;
+    let ts = value.get("timestamp").and_then(parse_timestamp_to_ms);
+
+    if record_type == "compacted" {
+        let summary = value
+            .pointer("/payload/message")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if summary.trim().is_empty() {
+            return None;
+        }
+        let block = summary_event_block(EventKind::Compaction, summary, || {
+            Some(span.content_ref("/payload/message"))
+        });
+        return Some(SessionMessage::from_blocks("system", ts, vec![block]));
+    }
+
+    if record_type != "response_item" {
         return None;
     }
-    let ts = value.get("timestamp").and_then(parse_timestamp_to_ms);
     let payload = value.get_mut("payload")?;
     let payload_type = payload
         .get("type")
@@ -462,6 +496,8 @@ fn message_from_record(line: &str, tool_output_bytes: usize) -> Option<SessionMe
         .to_owned();
 
     // Codex uses separate payload types for tool interactions
+    let mut blocks = Vec::new();
+    let mut injected = false;
     let (role, content, truncated) = match payload_type.as_str() {
         "message" => {
             let role = payload
@@ -473,6 +509,25 @@ fn message_from_record(line: &str, tool_output_bytes: usize) -> Option<SessionMe
                 .get("content")
                 .map(extract_message_text)
                 .unwrap_or_default();
+            if let Some(items) = payload.get("content").and_then(Value::as_array) {
+                for (i, item) in items.iter().enumerate() {
+                    if let Some(text) = item.get("text").and_then(Value::as_str) {
+                        if text.trim().is_empty() {
+                            continue;
+                        }
+                        if role == "developer" || is_codex_injected_text(text) {
+                            if role == "developer" {
+                                injected = true;
+                            }
+                            blocks.push(large_text_block(text.to_string(), || {
+                                Some(span.content_ref(format!("/payload/content/{i}/text")))
+                            }));
+                        } else {
+                            blocks.push(SessionBlock::text(text.to_string()));
+                        }
+                    }
+                }
+            }
             (role, content, false)
         }
         "function_call" => {
@@ -502,7 +557,10 @@ fn message_from_record(line: &str, tool_output_bytes: usize) -> Option<SessionMe
         role,
         content,
         ts,
+        injected,
+        blocks,
         truncated,
+        ..Default::default()
     })
 }
 
@@ -555,6 +613,7 @@ fn notice(content: String) -> SessionMessage {
         content,
         ts: None,
         truncated: true,
+        ..Default::default()
     }
 }
 

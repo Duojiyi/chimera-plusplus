@@ -228,6 +228,7 @@ pub fn import_from_opencode(config: &mut MultiAppConfig) -> Result<usize, AppErr
                         gemini: false,
                         grokbuild: false,
                         opencode: true,
+                        ..Default::default()
                     },
                     description: None,
                     homepage: None,

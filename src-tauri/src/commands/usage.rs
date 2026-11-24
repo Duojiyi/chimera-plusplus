@@ -298,11 +298,21 @@ pub async fn sync_session_usage(
     state: State<'_, AppState>,
 ) -> Result<crate::services::session_usage::SessionSyncResult, AppError> {
     let db = state.db.clone();
-    crate::services::session_usage::run_session_sync_blocking(move || {
+    let db_for_pricing = db.clone();
+    let result = crate::services::session_usage::run_session_sync_blocking(move || {
+        match db.backfill_missing_usage_costs() {
+            Ok(updated) if updated > 0 => crate::usage_events::notify_log_recorded(),
+            Ok(_) => {}
+            Err(error) => log::warn!("手动同步前回填历史用量成本失败: {error}"),
+        }
         crate::services::session_usage::sync_all_unlocked(&db)
     })
     .await
-    .map_err(|error| AppError::Message(format!("会话用量同步任务失败: {error}")))
+    .map_err(|error| AppError::Message(format!("会话用量同步任务失败: {error}")))?;
+    tauri::async_runtime::spawn(async move {
+        crate::commands::models_dev::sync_missing_model_pricing_if_needed(db_for_pricing).await;
+    });
+    Ok(result)
 }
 
 /// 只同步 Codex 会话。Chimera++ 的公开界面仅展示 Codex，避免扫描其它
@@ -312,13 +322,23 @@ pub async fn sync_codex_session_usage(
     state: State<'_, AppState>,
 ) -> Result<crate::services::session_usage::SessionSyncResult, AppError> {
     let db = state.db.clone();
-    crate::services::session_usage::run_session_sync_blocking(move || {
+    let db_for_pricing = db.clone();
+    let result = crate::services::session_usage::run_session_sync_blocking(move || {
+        match db.backfill_missing_usage_costs() {
+            Ok(updated) if updated > 0 => crate::usage_events::notify_log_recorded(),
+            Ok(_) => {}
+            Err(error) => log::warn!("Codex 同步前回填历史用量成本失败: {error}"),
+        }
         let result = crate::services::session_usage_codex::sync_codex_usage(&db)?;
         crate::services::session_usage::notify_sync_result(&result);
-        Ok(result)
+        Ok::<_, AppError>(result)
     })
     .await
-    .map_err(|error| AppError::Message(format!("Codex 会话用量同步任务失败: {error}")))?
+    .map_err(|error| AppError::Message(format!("Codex 会话用量同步任务失败: {error}")))??;
+    tauri::async_runtime::spawn(async move {
+        crate::commands::models_dev::sync_missing_model_pricing_if_needed(db_for_pricing).await;
+    });
+    Ok(result)
 }
 
 /// 仅在 Codex 原子替换提交成功后通知前端刷新。

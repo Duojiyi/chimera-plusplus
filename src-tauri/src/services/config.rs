@@ -132,8 +132,18 @@ impl ConfigService {
                 // OpenCode providers are managed directly in the config file
             }
 
-            AppType::Pi => {
-                // Membership lives in the tool's own file; no live sync needed
+            AppType::Pi
+            | AppType::OpenClaw
+            | AppType::Hermes
+            | AppType::Omp
+            | AppType::Agy
+            | AppType::Mcode
+            | AppType::Kimi
+            | AppType::Dsh
+            | AppType::Copilot
+            | AppType::WorkBuddy
+            | AppType::Codebuddy => {
+                // Additive / tool-managed configs are synced through dedicated writers.
             }
         }
 

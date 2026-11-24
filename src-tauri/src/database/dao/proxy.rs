@@ -8,7 +8,7 @@ use crate::error::AppError;
 use crate::proxy::types::*;
 use rust_decimal::Decimal;
 
-use super::super::{lock_conn, Database};
+use super::super::{lock_conn, lock_recovering, Database};
 
 /// MH-17 / L4: drop `auth` from a Codex takeover backup. The proxy
 /// placeholder is not a credential and is kept, so a backup that captured an
@@ -544,7 +544,7 @@ impl Database {
     /// 用于同步路径核对 Live 里的代理地址（Codex 官方路由没有占位符，只能按地址认）。
     pub fn get_proxy_listen_sync(&self) -> (String, u16) {
         let default = ("127.0.0.1".to_string(), 15721);
-        let Ok(conn) = self.conn.lock() else {
+        let Ok(conn) = lock_recovering(&self.conn) else {
             return default;
         };
         conn.query_row(
@@ -559,7 +559,7 @@ impl Database {
     ///
     /// 用于 `ProfileService::apply` 等 sync 路径判断是否需要停止代理服务。
     pub fn is_live_takeover_active_sync(&self) -> bool {
-        let conn = match self.conn.lock() {
+        let conn = match lock_recovering(&self.conn) {
             Ok(c) => c,
             Err(_) => return false,
         };
@@ -965,7 +965,7 @@ impl Database {
     /// 用于托盘菜单构建等同步场景
     /// 返回 (enabled, auto_failover_enabled)
     pub fn get_proxy_flags_sync(&self, app_type: &str) -> (bool, bool) {
-        let conn = match self.conn.lock() {
+        let conn = match lock_recovering(&self.conn) {
             Ok(c) => c,
             Err(_) => return (false, false),
         };

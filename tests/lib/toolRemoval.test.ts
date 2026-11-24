@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from "node:fs";
 import registry from "@/shared/tool-registry.json";
 const read = (path: string) => readFileSync(path, "utf8");
 describe("supported tools and layout contracts", () => {
-  it("registers exactly seven tools and removes retired native modules", () => {
+  it("registers all 17 supported tools across frontend and backend", () => {
     expect(registry.map((t) => t.id)).toEqual([
       "codex",
       "claude",
@@ -11,12 +11,33 @@ describe("supported tools and layout contracts", () => {
       "gemini",
       "grokbuild",
       "opencode",
+      "openclaw",
+      "hermes",
       "pi",
+      "omp",
+      "agy",
+      "mcode",
+      "kimi",
+      "dsh",
+      "copilot",
+      "workbuddy",
+      "codebuddy",
     ]);
-    expect(read("src-tauri/src/tool_registry.rs")).toContain("[ToolInfo; 7]");
-    for (const tool of ["openclaw", "hermes", "mcode"]) {
-      expect(existsSync(`src-tauri/src/${tool}_config.rs`)).toBe(false);
-      expect(read("src-tauri/src/app_config.rs")).not.toMatch(
+    expect(read("src-tauri/src/tool_registry.rs")).toContain("[ToolInfo; 17]");
+    for (const tool of [
+      "openclaw",
+      "hermes",
+      "mcode",
+      "kimi",
+      "dsh",
+      "agy",
+      "omp",
+      "copilot",
+      "workbuddy",
+      "codebuddy",
+    ]) {
+      expect(existsSync(`src-tauri/src/${tool}_config.rs`)).toBe(true);
+      expect(read("src-tauri/src/app_config.rs")).toMatch(
         new RegExp(`AppType::${tool}`, "i"),
       );
     }

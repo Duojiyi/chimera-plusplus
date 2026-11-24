@@ -227,6 +227,12 @@ pub fn get_for_auth_probe() -> Result<Client, String> {
     Ok(client)
 }
 
+/// 不跟随任何重定向的客户端（复用 [`get_for_auth_probe`]）。
+#[allow(dead_code)]
+pub fn no_redirect() -> Result<Client, String> {
+    get_for_auth_probe()
+}
+
 fn build_auth_probe_client(proxy_url: Option<&str>) -> Result<Client, String> {
     build_client_with_redirect_policy(proxy_url, reqwest::redirect::Policy::none())
 }

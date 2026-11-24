@@ -258,15 +258,20 @@
 .chimera-shell .tool-view .tool-lines-card {
   display: flex;
   flex-direction: column;
-  padding: 0 19px 10px;
+  padding: 0 12px 10px;
+  border: 0;
+  background: rgba(249, 251, 254, 0.54);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .chimera-shell .tool-view .tool-lines-caption {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
   margin: 0;
-  padding: 16px 0 10px;
+  padding: 14px 8px 12px;
   border-bottom: 1px solid var(--v3-hairline);
   font-size: var(--fs-xs);
   color: var(--text-3);
@@ -312,21 +317,43 @@
   overflow: visible;
 }
 
-.chimera-shell .tool-view .tool-line-row {
-  position: relative;
-  min-height: 46px;
-  border: 0;
-  border-bottom: 1px solid var(--v3-hairline);
-  background: transparent;
-  font-size: var(--fs-sm);
+.chimera-shell .tool-view .tool-line-group {
+  display: flex;
+  flex-direction: column;
 }
 
-.chimera-shell .tool-view .tool-line-row:last-child {
-  border-bottom: 0;
+.chimera-shell .tool-view .tool-line-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 6px;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.chimera-shell .tool-view .tool-line-group-count {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-weight: 500;
+  opacity: 0.75;
+}
+
+.chimera-shell .tool-view .tool-line-row {
+  position: relative;
+  min-height: 60px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  font-size: var(--fs-sm);
+  transition: background-color 120ms ease;
 }
 
 .chimera-shell .tool-view .tool-line-head {
   min-height: 34px;
+  padding: 4px 12px;
+  border-radius: 0;
+  border-bottom: 1px solid var(--v3-hairline);
   background: transparent;
   color: var(--text-3);
   font-size: var(--fs-xs);
@@ -336,17 +363,20 @@
 }
 
 .chimera-shell .tool-view .tool-line-row:not(.tool-line-head):hover {
-  background: #ffffff66;
+  background: rgba(255, 255, 255, 0.65);
 }
 
 .chimera-shell .tool-view .tool-line-row[data-current] {
-  background: #ffffffb3;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 1px 3px rgba(17, 19, 24, 0.04);
 }
 
 .chimera-shell .tool-view .tool-line-row[data-current]::before {
-  left: -19px;
-  top: 10px;
-  bottom: 10px;
+  left: 0;
+  top: 13px;
+  bottom: 13px;
   width: 3px;
   border-radius: 2px;
   background: var(--accent-petrol);
@@ -356,6 +386,13 @@
   .tool-view:not([data-kind="switch"])
   .tool-line-row[data-current] {
   background: transparent;
+  box-shadow: none;
+}
+
+.chimera-shell
+  .tool-view:not([data-kind="switch"])
+  .tool-line-row[data-current]:hover {
+  background: rgba(255, 255, 255, 0.65);
 }
 
 .chimera-shell
@@ -364,26 +401,53 @@
   display: none;
 }
 
+/* 2-line rich identity cell matching Codex flagship lines table */
 .chimera-shell .tool-view .tool-line-name {
-  gap: 10px;
-  font-weight: 600;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 12px;
+  row-gap: 2px;
+  align-items: center;
+  min-width: 0;
 }
 
-.chimera-shell .tool-view .tool-line-name .line-badge {
-  width: 3px;
-  min-width: 3px;
-  height: 14px;
-  padding: 0;
-  border: 0;
-  border-radius: 2px;
-  font-size: 0;
-  line-height: 0;
-  color: transparent;
-  box-shadow: none;
+.chimera-shell .tool-view .tool-line-name > :first-child {
+  grid-column: 1;
+  grid-row: 1 / span 2;
 }
 
-.chimera-shell .tool-view .tool-line-name .line-badge * {
-  display: none;
+.chimera-shell .tool-view .tool-line-title {
+  grid-column: 2;
+  grid-row: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.35;
+  color: var(--text-1);
+}
+
+.chimera-shell .tool-view .tool-line-sub {
+  grid-column: 2;
+  grid-row: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  line-height: 1.35;
+  color: var(--text-3);
+}
+
+.chimera-shell .tool-view .tool-line-status-head {
+  text-align: center;
+}
+
+.chimera-shell .tool-view .tool-line-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .chimera-shell .tool-view .tool-line-mono {
@@ -432,17 +496,17 @@
 
 .chimera-shell .tool-view .tool-line-current,
 .chimera-shell .tool-view .tool-line-current:disabled {
-  border-color: var(--info-border);
-  background: var(--tag-current-bg);
+  border-color: transparent;
+  background: rgba(17, 19, 24, 0.055);
   box-shadow: none;
-  color: var(--tag-current-fg);
-  font-weight: 650;
+  color: var(--text-2);
+  font-weight: 600;
   opacity: 1;
 }
 
 .chimera-shell .tool-view :is(.tool-line-icon, .tool-provider-delete) {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border: 0;
   border-radius: 7px;
   background: transparent;
@@ -457,37 +521,44 @@
   color: var(--text-1);
 }
 
-/* 累加型开关 */
+/* 累加型开关 — cleanly aligned with liquid-glass.css 36×20 pill switch (no clipping/offset collision) */
 .chimera-shell .tool-view .tool-line-toggle {
   position: relative;
-  width: 30px;
-  height: 18px;
-  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 20px;
+  padding: 2px;
   border: 0;
   border-radius: 999px;
-  background: rgba(17, 19, 24, 0.122);
-  box-shadow: none;
+  background: rgba(17, 19, 24, 0.16);
+  box-shadow: inset 0 1px 2px rgba(17, 19, 24, 0.14);
   cursor: pointer;
+  transition: background-color 140ms ease;
 }
 
 .chimera-shell .tool-view .tool-line-toggle > span {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 14px;
-  height: 14px;
+  position: static;
+  display: block;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   background: #ffffff;
-  box-shadow: 0 1px 2px rgba(17, 19, 24, 0.2);
-  transition: transform 120ms ease-out;
+  box-shadow: 0 1px 3px rgba(17, 19, 24, 0.24);
+  transform: translateX(0);
+  transition: transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .chimera-shell .tool-view .tool-line-toggle[aria-pressed="true"] {
-  background: var(--switch-on-bg);
+  background: var(--switch-on-bg, #0e6470);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
 }
 
 .chimera-shell .tool-view .tool-line-toggle[aria-pressed="true"] > span {
-  transform: translateX(12px);
+  transform: translateX(16px);
 }
 
 /* v5.2 */
@@ -503,17 +574,33 @@
 
 .chimera-shell .tool-view .tool-empty {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
   text-align: left;
-  gap: 12px;
-  padding: 22px 20px;
+  gap: 14px 20px;
+  padding: 22px 24px;
+}
+
+.chimera-shell .tool-view .tool-empty-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 260px;
+}
+
+.chimera-shell .tool-view .tool-empty-copy strong {
+  font-size: var(--fs-base);
+  font-weight: 650;
+  color: var(--text-1);
 }
 
 .chimera-shell .tool-view .tool-empty p {
   margin: 0;
   font-size: var(--fs-sm);
-  line-height: 1.65;
+  line-height: 1.6;
   text-align: left;
   color: var(--text-2);
 }
@@ -691,65 +778,139 @@
   flex: none;
 }
 
+/* Current line hero signboard — aligned with Codex v5.2 .station-body */
 .chimera-shell .tool-active-line {
-  display: grid;
-  align-content: center;
-  gap: 9px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
   min-width: 0;
-  min-height: 130px;
-  padding: 18px 20px;
-  margin-bottom: 10px;
+  padding: 0;
+  margin-bottom: 4px;
   border: 1px solid var(--v3-glass-border);
   border-radius: 16px;
   background: var(--v3-glass-fill);
-  box-shadow: var(--v3-shadow-inner-top), var(--v3-shadow-outer);
+  box-shadow:
+    var(--v3-shadow-inner-top), var(--v3-shadow-inner-bottom),
+    var(--v3-shadow-outer);
+  -webkit-backdrop-filter: blur(var(--v3-glass-blur)) saturate(150%);
+  backdrop-filter: blur(var(--v3-glass-blur)) saturate(150%);
 }
-.chimera-shell .tool-active-line header,
-.chimera-shell .tool-active-line p {
+
+.chimera-shell .tool-station-main {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 20px 22px 16px;
+  min-width: 0;
+}
+
+.chimera-shell .tool-station-mark {
+  flex: none;
+  display: inline-flex;
+}
+
+.chimera-shell .tool-station-mark .line-badge {
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 10px;
+  background: #0c1a24;
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 650;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.chimera-shell .tool-station-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.chimera-shell .tool-station-eyebrow {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px 12px;
-  min-width: 0;
-  margin: 0;
-  color: var(--text-2);
-  font-size: var(--fs-sm);
+  gap: 8px;
 }
-.chimera-shell .tool-active-flag,
-.chimera-shell .tool-active-host {
-  max-width: 100%;
-  padding: 2px 8px;
-  line-height: 1.4;
-}
+
 .chimera-shell .tool-active-flag {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  padding: 0;
+  border: 0;
   color: var(--accent-petrol);
-  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
-  border-radius: 999px;
-  font-weight: 600;
+  font-size: var(--fs-xs);
+  font-weight: 650;
+  line-height: 1.4;
 }
-.chimera-shell .tool-active-flag::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
+
+.chimera-shell .tool-station-kind {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 6px;
+  background: rgba(17, 19, 24, 0.055);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 550;
+  line-height: 1.5;
 }
-.chimera-shell .tool-active-host {
-  background: color-mix(in srgb, currentColor 7%, transparent);
-  border-radius: 4px;
-  overflow-wrap: anywhere;
+
+.chimera-shell .tool-station-title-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-width: 0;
 }
+
 .chimera-shell .tool-active-line h2 {
   margin: 0;
   color: var(--text-1);
-  font-size: 1.25rem;
-  font-weight: 650;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
   overflow-wrap: anywhere;
 }
-.chimera-shell .tool-active-line p span + span::before {
+
+.chimera-shell .tool-active-host {
+  max-width: 100%;
+  padding: 0;
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--font-mono), ui-monospace, Consolas, monospace;
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.chimera-shell .tool-station-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chimera-shell .tool-station-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 0;
+  padding: 11px 22px 13px;
+  border-top: 1px solid var(--v3-hairline);
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.chimera-shell .tool-station-meta span + span::before {
   content: "·";
-  margin-inline-end: 12px;
+  margin-inline-end: 14px;
+  opacity: 0.55;
 }

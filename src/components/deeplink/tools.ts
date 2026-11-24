@@ -1,14 +1,11 @@
+import registry from "@/shared/tool-registry.json";
+import { toolDisplayNames } from "@/components/settings/toolBadges";
+
 /** Display names of the tools a deep link can target, as in the sidebar. */
 const TOOL_NAMES: Record<string, string> = {
-  claude: "Claude Code",
-  "claude-desktop": "Claude Desktop",
+  ...toolDisplayNames,
   claude_desktop: "Claude Desktop",
-  codex: "Codex",
-  gemini: "Gemini CLI",
-  grokbuild: "Grok Build",
   grok: "Grok Build",
-  opencode: "OpenCode",
-  pi: "Pi",
 };
 
 export function toolName(app?: string | null): string {
@@ -17,7 +14,9 @@ export function toolName(app?: string | null): string {
 }
 
 /** Tools that enable several lines at once instead of switching one. */
-const ADDITIVE_TOOLS = new Set(["opencode", "pi"]);
+const ADDITIVE_TOOLS = new Set(
+  registry.filter((tool) => tool.mode === "additive").map((tool) => tool.id),
+);
 
 export function isAdditiveTool(app?: string | null): boolean {
   return ADDITIVE_TOOLS.has(app?.trim() ?? "");

@@ -65,6 +65,15 @@ const APP_FILTER_ICON: Record<AppType, string> = {
   gemini: "gemini",
   grokbuild: "grok",
   opencode: "opencode",
+  pi: "pi",
+  omp: "omp",
+  mcode: "minimax",
+  kimi: "kimi",
+  codebuddy: "codebuddy",
+  dsh: "deepseek",
+  agy: "antigravity",
+  copilot: "githubcopilot",
+  workbuddy: "workbuddy",
 };
 
 // Select 的 "all" 哨兵和用户自定义名称同处一个值域——真有来源/模型叫 "all"
@@ -80,6 +89,11 @@ interface UsageDashboardProps {
   /** Starts on the range and tool the surrounding page shows. */
   rangePreset?: Exclude<UsageRangeSelection["preset"], "custom">;
   initialAppType?: AppTypeFilter;
+  /** Controlled app filter when the surrounding page owns the top filter bar. */
+  appType?: AppTypeFilter;
+  onAppTypeChange?: (next: AppTypeFilter) => void;
+  hideAppFilter?: boolean;
+  hideDatePicker?: boolean;
   detailsOnly?: boolean;
   refreshStamp?: number;
 }
@@ -89,6 +103,10 @@ export function UsageDashboard({
   onRefreshIntervalChange,
   rangePreset: outerPreset = "today",
   initialAppType = "all",
+  appType: controlledAppType,
+  onAppTypeChange,
+  hideAppFilter = false,
+  hideDatePicker = false,
   detailsOnly = false,
   refreshStamp,
 }: UsageDashboardProps = {}) {
@@ -117,11 +135,24 @@ export function UsageDashboard({
       void queryClient.invalidateQueries({ queryKey: usageKeys.all });
     }
   }, [queryClient, refreshStamp]);
-  const [appType, setAppType] = useState<AppTypeFilter>(initialAppType);
+  const [internalAppType, setInternalAppType] =
+    useState<AppTypeFilter>(initialAppType);
+  const appType = controlledAppType ?? internalAppType;
   const [providerName, setProviderName] = useState<string | undefined>(
     undefined,
   );
   const [model, setModel] = useState<string | undefined>(undefined);
+  const prevControlledApp = useRef(controlledAppType);
+  useEffect(() => {
+    if (
+      controlledAppType !== undefined &&
+      controlledAppType !== prevControlledApp.current
+    ) {
+      prevControlledApp.current = controlledAppType;
+      setProviderName(undefined);
+      setModel(undefined);
+    }
+  }, [controlledAppType]);
   const [refreshIntervalMs, setRefreshIntervalMs] = useState(() =>
     normalizeRefreshInterval(savedRefreshIntervalMs),
   );
@@ -132,7 +163,10 @@ export function UsageDashboard({
   // 切应用时清掉下游筛选，避免留下一个在新范围内查无数据的"幽灵"组合；
   // 切 Provider 同理清掉模型（模型选项随 Provider 级联）。
   const changeAppType = (next: AppTypeFilter) => {
-    setAppType(next);
+    if (controlledAppType === undefined) {
+      setInternalAppType(next);
+    }
+    onAppTypeChange?.(next);
     if (next !== appType) {
       setProviderName(undefined);
       setModel(undefined);
@@ -248,47 +282,51 @@ export function UsageDashboard({
           )}
           <p className="text-sm text-muted-foreground">
             {detailsOnly
-              ? "下方筛选仅影响明细。成本按模型定价估算。"
+              ? hideAppFilter
+                ? "随顶部应用与时间范围联动，可进一步按来源或模型细筛。成本按模型定价估算。"
+                : "下方筛选仅影响明细。成本按模型定价估算。"
               : "包含本地代理和已导入的会话记录，成本按模型定价估算。"}
           </p>
         </div>
 
         <div className="usage-detail-filters flex flex-wrap items-center gap-2">
-          <div
-            role="group"
-            aria-label="应用范围"
-            className="flex flex-wrap items-center p-1 bg-muted/30 rounded-lg border border-border/50"
-          >
-            {APP_FILTER_OPTIONS.map((type) => {
-              const label = t(`usage.appFilter.${type}`);
-              return (
-                <button
-                  key={type}
-                  type="button"
-                  onClick={() => changeAppType(type)}
-                  title={label}
-                  aria-label={label}
-                  aria-pressed={appType === type}
-                  className={cn(
-                    "flex h-8 items-center justify-center px-2.5 rounded-md transition-all",
-                    appType === type
-                      ? "bg-background text-primary shadow-sm"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted/50",
-                  )}
-                >
-                  {type === "all" ? (
-                    <LayoutGrid className="h-4 w-4" />
-                  ) : (
-                    <ProviderIcon
-                      icon={APP_FILTER_ICON[type]}
-                      name={label}
-                      size={16}
-                    />
-                  )}
-                </button>
-              );
-            })}
-          </div>
+          {!hideAppFilter && (
+            <div
+              role="group"
+              aria-label="应用范围"
+              className="flex flex-wrap items-center p-1 bg-muted/30 rounded-lg border border-border/50"
+            >
+              {APP_FILTER_OPTIONS.map((type) => {
+                const label = t(`usage.appFilter.${type}`);
+                return (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => changeAppType(type)}
+                    title={label}
+                    aria-label={label}
+                    aria-pressed={appType === type}
+                    className={cn(
+                      "flex h-8 items-center justify-center px-2.5 rounded-md transition-all",
+                      appType === type
+                        ? "bg-background text-primary shadow-sm"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted/50",
+                    )}
+                  >
+                    {type === "all" ? (
+                      <LayoutGrid className="h-4 w-4" />
+                    ) : (
+                      <ProviderIcon
+                        icon={APP_FILTER_ICON[type]}
+                        name={label}
+                        size={16}
+                      />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           <Select
             value={
@@ -366,11 +404,13 @@ export function UsageDashboard({
               </SelectContent>
             </Select>
 
-            <UsageDateRangePicker
-              selection={range}
-              triggerLabel={rangeLabel}
-              onApply={(nextRange) => setRange(nextRange)}
-            />
+            {!hideDatePicker && (
+              <UsageDateRangePicker
+                selection={range}
+                triggerLabel={rangeLabel}
+                onApply={(nextRange) => setRange(nextRange)}
+              />
+            )}
           </div>
         </div>
       </div>

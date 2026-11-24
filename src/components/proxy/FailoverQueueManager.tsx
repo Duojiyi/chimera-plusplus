@@ -133,7 +133,7 @@ export function FailoverQueueManager({
               })}
             </span>
             {isFailoverEnabled && (
-              <span className="px-2 py-0.5 text-xs rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
+              <span className="px-2 py-0.5 text-xs rounded-full bg-primary/15 text-primary">
                 {t("common.enabled", { defaultValue: "已开启" })}
               </span>
             )}

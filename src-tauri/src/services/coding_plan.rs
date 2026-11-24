@@ -128,10 +128,17 @@ fn make_error(msg: String) -> SubscriptionQuota {
 // ── Kimi For Coding ─────────────────────────────────────────
 
 async fn query_kimi(api_key: &str) -> Result<SubscriptionQuota, String> {
+    query_kimi_at("https://api.kimi.com/coding/v1", api_key).await
+}
+
+pub(crate) async fn query_kimi_at(
+    base_url: &str,
+    api_key: &str,
+) -> Result<SubscriptionQuota, String> {
     let client = crate::proxy::http_client::get_for_auth_probe()?;
 
     let resp = client
-        .get("https://api.kimi.com/coding/v1/usages")
+        .get(format!("{}/usages", base_url.trim_end_matches('/')))
         .header("Authorization", format!("Bearer {api_key}"))
         .header("Accept", "application/json")
         .timeout(std::time::Duration::from_secs(15))

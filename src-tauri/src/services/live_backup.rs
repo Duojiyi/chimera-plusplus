@@ -123,8 +123,17 @@ pub fn live_files(app: &AppType) -> Result<Vec<PathBuf>, AppError> {
         ],
         AppType::GrokBuild => vec![crate::grok_config::get_grok_config_path()],
         AppType::OpenCode => vec![crate::opencode_config::get_opencode_config_path()],
-
-        _ => Vec::new(),
+        AppType::OpenClaw => vec![crate::openclaw_config::get_openclaw_config_path()],
+        AppType::Hermes => vec![crate::hermes_config::get_hermes_config_path()],
+        AppType::Pi => vec![crate::pi_config::get_pi_models_path()?],
+        AppType::Omp => vec![crate::omp_config::get_omp_models_path()?],
+        AppType::Agy => vec![crate::agy_config::settings_path()],
+        AppType::Mcode => vec![crate::mcode_config::config_path()],
+        AppType::Kimi => vec![crate::kimi_config::config_path()],
+        AppType::Dsh => crate::dsh_config::read_paths(),
+        AppType::Copilot => vec![crate::copilot_config::providers_path()],
+        AppType::WorkBuddy => vec![crate::workbuddy_config::config_path()],
+        AppType::Codebuddy => vec![crate::codebuddy_config::config_path()],
     };
     Ok(files
         .into_iter()

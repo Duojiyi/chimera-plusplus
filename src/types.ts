@@ -316,10 +316,17 @@ export interface VisibleApps {
   gemini: boolean;
   grokbuild: boolean;
   opencode: boolean;
-
+  openclaw?: boolean;
+  hermes?: boolean;
   pi: boolean;
-  // Independent tool visibility, not a provider AppId.
   omp: boolean;
+  agy?: boolean;
+  mcode?: boolean;
+  kimi?: boolean;
+  dsh?: boolean;
+  copilot?: boolean;
+  workbuddy?: boolean;
+  codebuddy?: boolean;
 }
 
 // WebDAV 同步状态
@@ -448,6 +455,11 @@ export interface Settings {
   grokConfigDir?: string;
   // 覆盖 OpenCode 配置目录（可选）
   opencodeConfigDir?: string;
+  openclawConfigDir?: string;
+  hermesConfigDir?: string;
+  piConfigDir?: string;
+  ompConfigDir?: string;
+  dshConfigDir?: string;
 
   // ===== 当前供应商 ID（设备级）=====
   // 当前 Claude 供应商 ID（优先于数据库 is_current）
@@ -538,9 +550,16 @@ export interface McpApps {
   gemini: boolean;
   grokbuild?: boolean;
   opencode: boolean;
-
-  /** Pi native MCP is managed separately from the shared registry. */
+  hermes?: boolean;
   pi?: boolean;
+  omp?: boolean;
+  agy?: boolean;
+  mcode?: boolean;
+  kimi?: boolean;
+  dsh?: boolean;
+  copilot?: boolean;
+  workbuddy?: boolean;
+  codebuddy?: boolean;
 }
 
 // MCP 服务器条目（v3.7.0 统一结构）

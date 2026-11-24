@@ -18,7 +18,7 @@ import { OmpModelPicker } from "./OmpModelPicker";
 import { getChimeraHubTemplate } from "@/config/codexTemplates";
 import { useContext, useEffect, useRef, useState } from "react";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
-import { LineBadge } from "@/components/LineBadge";
+import { RouteGlyph } from "@/components/AppGlyph";
 import {
   EditorAdvanced,
   EditorChoice,
@@ -728,7 +728,11 @@ export function OmpProviders({
                 return (
                   <div key={id} className="tool-line-row" role="row">
                     <span role="rowheader" className="tool-line-name">
-                      <LineBadge line={{ id, name: id }} />
+                      <RouteGlyph
+                        appId="omp"
+                        line={{ id, name: id }}
+                        size={28}
+                      />
                       <span title={id}>{id}</span>
                     </span>
                     {baseUrl ? (

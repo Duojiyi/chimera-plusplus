@@ -45,6 +45,20 @@ pub fn validate_server_id(id: &str) -> Result<(), AppError> {
 ///
 /// 除了形状校验外，这里还限制递归资源预算，避免 deep link 或外部配置
 /// 通过超大 args/env/headers 将内存、SQLite 和多个 live 配置文件拖垮。
+/// 推断 MCP server spec 的传输类型（未显式声明但有 `url` 无 `command` 时按 `http`）。
+pub(crate) fn spec_transport_type(spec: &Value) -> &str {
+    let has = |key: &str| {
+        spec.get(key)
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.trim().is_empty())
+    };
+    let explicit = spec.get("type").and_then(|v| v.as_str());
+    if matches!(explicit, None | Some("stdio")) && !has("command") && has("url") {
+        return "http";
+    }
+    explicit.unwrap_or("stdio")
+}
+
 pub fn validate_server_spec(spec: &Value) -> Result<(), AppError> {
     let object = spec
         .as_object()

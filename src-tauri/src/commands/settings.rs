@@ -68,6 +68,11 @@ fn merge_settings_for_save(
     incoming.gemini_config_dir = existing.gemini_config_dir.clone();
     incoming.grok_config_dir = existing.grok_config_dir.clone();
     incoming.opencode_config_dir = existing.opencode_config_dir.clone();
+    incoming.openclaw_config_dir = existing.openclaw_config_dir.clone();
+    incoming.hermes_config_dir = existing.hermes_config_dir.clone();
+    incoming.pi_config_dir = existing.pi_config_dir.clone();
+    incoming.omp_config_dir = existing.omp_config_dir.clone();
+    incoming.dsh_config_dir = existing.dsh_config_dir.clone();
 
     // local_migrations 是纯后端状态（迁移完成标记），前端没有合法的修改场景，
     // 无条件取现有值。若按 incoming 透传：后端清掉 marker（如关闭统一会话
@@ -181,6 +186,11 @@ impl ConfigDirectoryPatch {
             "gemini" => |s| &mut s.gemini_config_dir,
             "grokbuild" => |s| &mut s.grok_config_dir,
             "opencode" => |s| &mut s.opencode_config_dir,
+            "openclaw" => |s| &mut s.openclaw_config_dir,
+            "hermes" => |s| &mut s.hermes_config_dir,
+            "pi" => |s| &mut s.pi_config_dir,
+            "omp" => |s| &mut s.omp_config_dir,
+            "dsh" => |s| &mut s.dsh_config_dir,
 
             _ => return Err(format!("Unknown config directory tool: {app}")),
         };

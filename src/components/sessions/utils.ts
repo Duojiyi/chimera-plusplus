@@ -20,6 +20,17 @@ const PROVIDER_NAMES: Record<string, string> = {
   gemini: "Gemini CLI",
   opencode: "OpenCode",
   grokbuild: "Grok Build",
+  openclaw: "OpenClaw",
+  hermes: "Hermes",
+  pi: "Pi",
+  omp: "Oh My Pi",
+  agy: "Antigravity",
+  mcode: "MiniMax Code",
+  kimi: "Kimi Code",
+  dsh: "DeepSeek Harness",
+  copilot: "Copilot CLI",
+  workbuddy: "WorkBuddy",
+  codebuddy: "CodeBuddy Code",
 };
 
 /** Tools whose deletes also remove sub-sessions they spawned. */
@@ -168,6 +179,10 @@ export const getProviderLabel = (providerId: string) =>
 export const getProviderIconName = (providerId: string) => {
   if (providerId === "codex") return "openai";
   if (providerId === "grokbuild") return "grok";
+  if (providerId === "agy") return "antigravity";
+  if (providerId === "mcode") return "minimax";
+  if (providerId === "dsh") return "deepseek";
+  if (providerId === "copilot") return "githubcopilot";
   return providerId;
 };
 

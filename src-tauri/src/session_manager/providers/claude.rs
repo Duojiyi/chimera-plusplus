@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 use std::path::Path;
 
 use serde_json::Value;
@@ -9,11 +9,16 @@ use crate::security_limits::{
     MAX_SESSION_SCAN_DEPTH,
 };
 use crate::session_manager::delete_backup::{backup_root, backup_session_files};
+use crate::session_manager::model::{EventKind, SessionBlock, ToolStatus};
 use crate::session_manager::{SessionMessage, SessionMeta};
 
+use super::blocks::{
+    assign_turn_ids, large_text_block, summary_event_block, thinking_block, tool_call_block,
+    tool_result_block, ToolSource,
+};
 use super::utils::{
     deletion_files, extract_text, parse_timestamp_to_ms, path_basename, read_head_tail_lines,
-    truncate_summary, TITLE_MAX_CHARS,
+    truncate_summary, JsonlSpan, LineSpans, TITLE_MAX_CHARS,
 };
 
 const PROVIDER_ID: &str = "claude";
@@ -41,84 +46,245 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
     // freezing the UI. Same rationale as codex.rs::load_messages.
     let file = open_limited_regular_file(path, MAX_SESSION_FILE_BYTES)
         .map_err(|e| format!("Failed to open session file: {e}"))?;
-    let reader = BufReader::new(file);
+    let mut lines = LineSpans::new(BufReader::new(file));
     let mut messages = Vec::new();
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-        let value: Value = match serde_json::from_str(&line) {
+    while let Ok(Some(line)) = lines.next_line() {
+        if line.bytes.is_empty() {
+            continue;
+        }
+        let value: Value = match serde_json::from_slice(line.bytes) {
             Ok(parsed) => parsed,
             Err(_) => continue,
         };
 
-        if value.get("isMeta").and_then(Value::as_bool) == Some(true) {
+        if value.get("isMeta").and_then(Value::as_bool) == Some(true)
+            || value.get("isSidechain").and_then(Value::as_bool) == Some(true)
+        {
             continue;
         }
+
+        let span = line.span;
+        let ts = value.get("timestamp").and_then(parse_timestamp_to_ms);
+        let uuid = value
+            .get("uuid")
+            .and_then(Value::as_str)
+            .map(str::to_string);
 
         let message = match value.get("message") {
             Some(message) => message,
             None => continue,
         };
 
+        if value.get("isCompactSummary").and_then(Value::as_bool) == Some(true) {
+            let summary = message.get("content").map(extract_text).unwrap_or_default();
+            if !summary.trim().is_empty() {
+                let block = summary_event_block(EventKind::Compaction, &summary, || {
+                    Some(span.content_ref("/message/content"))
+                });
+                let mut msg = SessionMessage::from_blocks("system", ts, vec![block]);
+                msg.id = uuid;
+                messages.push(msg);
+            }
+            continue;
+        }
+
         let role = message
             .get("role")
             .and_then(Value::as_str)
             .unwrap_or("unknown")
             .to_string();
-        let ts = value.get("timestamp").and_then(parse_timestamp_to_ms);
 
         // Claude wraps tool_result inside user messages, sometimes next to the
         // user's own text. Split those items out as "tool" entries so command
         // and file output is never filed under the user's turn.
         if role == "user" {
             if let Some(Value::Array(items)) = message.get("content") {
-                for (role, run) in tool_result_runs(items) {
-                    push_message(&mut messages, role, &Value::Array(run), ts);
+                for (run_role, run) in tool_result_runs(items) {
+                    push_user_array_run(&mut messages, run_role, &run, uuid.clone(), ts, span);
                 }
                 continue;
             }
         }
 
         if let Some(content) = message.get("content") {
-            push_message(&mut messages, &role, content, ts);
+            push_message(&mut messages, &role, content, uuid, ts, span);
         }
     }
 
+    assign_turn_ids(&mut messages);
     Ok(messages)
 }
 
 /// Consecutive items of a user message, grouped by whether they are tool
-/// results, in their original order.
-fn tool_result_runs(items: &[Value]) -> Vec<(&'static str, Vec<Value>)> {
-    let mut runs: Vec<(&'static str, Vec<Value>)> = Vec::new();
-    for item in items {
+/// results, in their original order, preserving original array indices.
+fn tool_result_runs(items: &[Value]) -> Vec<(&'static str, Vec<(usize, Value)>)> {
+    let mut runs: Vec<(&'static str, Vec<(usize, Value)>)> = Vec::new();
+    for (idx, item) in items.iter().enumerate() {
         let role = if item.get("type").and_then(Value::as_str) == Some("tool_result") {
             "tool"
         } else {
             "user"
         };
         match runs.last_mut() {
-            Some((last, run)) if *last == role => run.push(item.clone()),
-            _ => runs.push((role, vec![item.clone()])),
+            Some((last, run)) if *last == role => run.push((idx, item.clone())),
+            _ => runs.push((role, vec![(idx, item.clone())])),
         }
     }
     runs
 }
 
-fn push_message(messages: &mut Vec<SessionMessage>, role: &str, content: &Value, ts: Option<i64>) {
-    let content = extract_text(content);
-    if content.trim().is_empty() {
+fn push_user_array_run(
+    messages: &mut Vec<SessionMessage>,
+    role: &str,
+    run: &[(usize, Value)],
+    uuid: Option<String>,
+    ts: Option<i64>,
+    span: JsonlSpan,
+) {
+    let mut blocks = Vec::new();
+    let mut injected = false;
+    for (idx, item) in run {
+        if role == "tool" {
+            let call_id = item
+                .get("tool_use_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let is_error = item.get("is_error").and_then(Value::as_bool) == Some(true);
+            let status = if is_error {
+                ToolStatus::Error
+            } else {
+                ToolStatus::Success
+            };
+            let text = item.get("content").map(extract_text).unwrap_or_default();
+            if !text.trim().is_empty() {
+                blocks.push(tool_result_block(call_id, status, &text, || {
+                    Some(span.content_ref(format!("/message/content/{idx}/content")))
+                }));
+            }
+        } else if item.get("type").and_then(Value::as_str) == Some("text") {
+            if let Some(text) = item.get("text").and_then(Value::as_str) {
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if is_injected_text(trimmed) {
+                    injected = true;
+                    blocks.push(large_text_block(text.to_string(), || {
+                        Some(span.content_ref(format!("/message/content/{idx}/text")))
+                    }));
+                } else {
+                    blocks.push(SessionBlock::text(text.to_string()));
+                }
+            }
+        } else {
+            let text = extract_text(item);
+            if !text.trim().is_empty() {
+                blocks.push(SessionBlock::text(text));
+            }
+        }
+    }
+    if blocks.is_empty() {
         return;
     }
-    messages.push(SessionMessage {
-        role: role.to_string(),
-        content,
-        ts,
-        truncated: false,
-    });
+    let mut msg = SessionMessage::from_blocks(role, ts, blocks);
+    msg.id = uuid;
+    msg.injected = injected;
+    messages.push(msg);
+}
+
+fn push_message(
+    messages: &mut Vec<SessionMessage>,
+    role: &str,
+    content: &Value,
+    uuid: Option<String>,
+    ts: Option<i64>,
+    span: JsonlSpan,
+) {
+    let mut blocks = Vec::new();
+    let mut injected = false;
+
+    match content {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return;
+            }
+            if role == "user" && is_injected_text(trimmed) {
+                injected = true;
+                blocks.push(large_text_block(text.clone(), || {
+                    Some(span.content_ref("/message/content"))
+                }));
+            } else {
+                blocks.push(SessionBlock::text(text.clone()));
+            }
+        }
+        Value::Array(items) => {
+            for (idx, item) in items.iter().enumerate() {
+                match item.get("type").and_then(Value::as_str) {
+                    Some("text") => {
+                        if let Some(text) = item.get("text").and_then(Value::as_str) {
+                            if !text.trim().is_empty() {
+                                blocks.push(SessionBlock::text(text.to_string()));
+                            }
+                        }
+                    }
+                    Some("thinking") => {
+                        if let Some(text) = item.get("thinking").and_then(Value::as_str) {
+                            if !text.trim().is_empty() {
+                                blocks.push(thinking_block(text, None, None, || {
+                                    Some(
+                                        span.content_ref(format!(
+                                            "/message/content/{idx}/thinking"
+                                        )),
+                                    )
+                                }));
+                            }
+                        }
+                    }
+                    Some("tool_use" | "server_tool_use") => {
+                        let id = item
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        let name = item
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown");
+                        let input = item.get("input").cloned().unwrap_or(Value::Null);
+                        blocks.push(tool_call_block(
+                            ToolSource::Claude,
+                            id,
+                            name,
+                            &input,
+                            || Some(span.content_ref(format!("/message/content/{idx}/input"))),
+                        ));
+                    }
+                    _ => {
+                        let text = extract_text(item);
+                        if !text.trim().is_empty() {
+                            blocks.push(SessionBlock::text(text));
+                        }
+                    }
+                }
+            }
+        }
+        other => {
+            let text = extract_text(other);
+            if !text.trim().is_empty() {
+                blocks.push(SessionBlock::text(text));
+            }
+        }
+    }
+
+    if blocks.is_empty() {
+        return;
+    }
+    let mut msg = SessionMessage::from_blocks(role, ts, blocks);
+    msg.id = uuid;
+    msg.injected = injected;
+    messages.push(msg);
 }
 
 pub fn delete_session(root: &Path, path: &Path, session_id: &str) -> Result<bool, String> {

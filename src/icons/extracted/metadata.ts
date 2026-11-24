@@ -2,6 +2,62 @@
 import { IconMetadata } from "@/types/icon";
 
 export const iconMetadata: Record<string, IconMetadata> = {
+  antigravity: {
+    name: "antigravity",
+    displayName: "Antigravity",
+    category: "ai-provider",
+    keywords: ["antigravity", "agy", "google", "gemini"],
+    defaultColor: "#3B82F6",
+  },
+  hermes: {
+    name: "hermes",
+    displayName: "Hermes",
+    category: "ai-provider",
+    keywords: ["hermes", "nous", "agent"],
+    defaultColor: "#7C3AED",
+  },
+  openclaw: {
+    name: "openclaw",
+    displayName: "OpenClaw",
+    category: "ai-provider",
+    keywords: ["openclaw", "claw", "agent"],
+    defaultColor: "#E11D48",
+  },
+  opencode: {
+    name: "opencode",
+    displayName: "OpenCode",
+    category: "ai-provider",
+    keywords: ["opencode", "omo", "cli"],
+    defaultColor: "#211E1E",
+  },
+  pi: {
+    name: "pi",
+    displayName: "Pi",
+    category: "ai-provider",
+    keywords: ["pi", "coding-agent"],
+    defaultColor: "#A855F7",
+  },
+  omp: {
+    name: "omp",
+    displayName: "Oh My Pi",
+    category: "ai-provider",
+    keywords: ["omp", "oh-my-pi", "pi"],
+    defaultColor: "#8B5CF6",
+  },
+  workbuddy: {
+    name: "workbuddy",
+    displayName: "WorkBuddy",
+    category: "ai-provider",
+    keywords: ["workbuddy", "tencent"],
+    defaultColor: "#0EC8A9",
+  },
+  codebuddy: {
+    name: "codebuddy",
+    displayName: "CodeBuddy Code",
+    category: "ai-provider",
+    keywords: ["codebuddy", "tencent"],
+    defaultColor: "#2563EB",
+  },
   aigocode: {
     name: "aigocode",
     displayName: "AIGoCode",

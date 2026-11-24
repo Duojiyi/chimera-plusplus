@@ -2,6 +2,7 @@
 //!
 //! 提供 MCP 服务器的 CRUD 操作。
 
+use super::{Rows, UnreadableEntry};
 use crate::app_config::{AppType, McpApps, McpServer};
 use crate::database::{lock_conn, Database};
 use crate::error::AppError;
@@ -9,7 +10,9 @@ use indexmap::IndexMap;
 use rusqlite::{params, OptionalExtension};
 
 const MCP_COLUMNS: &str = "id, name, server_config, description, homepage, docs, tags,
-    enabled_claude, enabled_codex, enabled_gemini, enabled_grokbuild, enabled_opencode";
+    enabled_claude, enabled_codex, enabled_gemini, enabled_grokbuild, enabled_opencode,
+    enabled_hermes, enabled_mcode, enabled_pi, enabled_agy, enabled_kimi, enabled_omp,
+    enabled_dsh, enabled_copilot, enabled_workbuddy, enabled_codebuddy";
 
 fn decode_server(row: &rusqlite::Row<'_>, id: &str) -> Result<McpServer, AppError> {
     let decode_error =
@@ -35,6 +38,16 @@ fn decode_server(row: &rusqlite::Row<'_>, id: &str) -> Result<McpServer, AppErro
             gemini: row.get(9)?,
             grokbuild: row.get(10)?,
             opencode: row.get(11)?,
+            hermes: row.get(12)?,
+            mcode: row.get(13)?,
+            pi: row.get(14)?,
+            agy: row.get(15)?,
+            kimi: row.get(16)?,
+            omp: row.get(17)?,
+            dsh: row.get(18)?,
+            copilot: row.get(19)?,
+            workbuddy: row.get(20)?,
+            codebuddy: row.get(21)?,
         },
         description: row.get(3)?,
         homepage: row.get(4)?,
@@ -46,22 +59,38 @@ fn decode_server(row: &rusqlite::Row<'_>, id: &str) -> Result<McpServer, AppErro
 impl Database {
     /// Unreadable rows are reported individually and left in place.
     pub fn get_all_mcp_servers(&self) -> Result<IndexMap<String, McpServer>, AppError> {
+        Ok(self
+            .get_mcp_server_rows()?
+            .into_readable("读取 MCP 服务器列表"))
+    }
+
+    pub fn get_mcp_server_rows(&self) -> Result<Rows<McpServer>, AppError> {
         let conn = lock_conn!(self.conn);
         let mut stmt = conn.prepare(&format!(
             "SELECT {MCP_COLUMNS} FROM mcp_servers ORDER BY name ASC, id ASC"
         ))?;
         let mut rows = stmt.query([])?;
-        let mut servers = IndexMap::new();
+        let mut out = Rows {
+            readable: IndexMap::new(),
+            unreadable: Vec::new(),
+        };
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;
+            let name: String = row.get(1).unwrap_or_default();
             match decode_server(row, &id) {
                 Ok(server) => {
-                    servers.insert(id, server);
+                    out.readable.insert(id, server);
                 }
-                Err(error) => log::warn!("跳过无法读取的 MCP 服务器 {id}: {error}"),
+                Err(error) => {
+                    out.unreadable.push(UnreadableEntry {
+                        id,
+                        name,
+                        error: error.to_string(),
+                    });
+                }
             }
         }
-        Ok(servers)
+        Ok(out)
     }
 
     /// A targeted edit must distinguish an unreadable row from a missing row.
@@ -89,7 +118,17 @@ impl Database {
             AppType::Gemini => "enabled_gemini",
             AppType::GrokBuild => "enabled_grokbuild",
             AppType::OpenCode => "enabled_opencode",
-            AppType::Pi | AppType::ClaudeDesktop => {
+            AppType::Hermes => "enabled_hermes",
+            AppType::Mcode => "enabled_mcode",
+            AppType::Pi => "enabled_pi",
+            AppType::Agy => "enabled_agy",
+            AppType::Kimi => "enabled_kimi",
+            AppType::Omp => "enabled_omp",
+            AppType::Dsh => "enabled_dsh",
+            AppType::Copilot => "enabled_copilot",
+            AppType::WorkBuddy => "enabled_workbuddy",
+            AppType::Codebuddy => "enabled_codebuddy",
+            AppType::OpenClaw | AppType::ClaudeDesktop => {
                 return Err(AppError::InvalidInput(format!(
                     "{} does not use the shared MCP registry",
                     app.as_str()
@@ -133,6 +172,16 @@ impl Database {
             server.apps.gemini,
             server.apps.grokbuild,
             server.apps.opencode,
+            server.apps.hermes,
+            server.apps.mcode,
+            server.apps.pi,
+            server.apps.agy,
+            server.apps.kimi,
+            server.apps.omp,
+            server.apps.dsh,
+            server.apps.copilot,
+            server.apps.workbuddy,
+            server.apps.codebuddy,
         ];
         let conn = lock_conn!(self.conn);
         // Update in place so the v17 `notes` column survives a save; REPLACE
@@ -141,7 +190,10 @@ impl Database {
             .execute(
                 "UPDATE mcp_servers SET name = ?2, server_config = ?3, description = ?4,
                      homepage = ?5, docs = ?6, tags = ?7, enabled_claude = ?8, enabled_codex = ?9,
-                     enabled_gemini = ?10, enabled_grokbuild = ?11, enabled_opencode = ?12
+                     enabled_gemini = ?10, enabled_grokbuild = ?11, enabled_opencode = ?12,
+                     enabled_hermes = ?13, enabled_mcode = ?14, enabled_pi = ?15, enabled_agy = ?16,
+                     enabled_kimi = ?17, enabled_omp = ?18, enabled_dsh = ?19, enabled_copilot = ?20,
+                     enabled_workbuddy = ?21, enabled_codebuddy = ?22
                  WHERE id = ?1",
                 values,
             )
@@ -150,13 +202,72 @@ impl Database {
             conn.execute(
                 "INSERT INTO mcp_servers (
                     id, name, server_config, description, homepage, docs, tags,
-                    enabled_claude, enabled_codex, enabled_gemini, enabled_grokbuild, enabled_opencode
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    enabled_claude, enabled_codex, enabled_gemini, enabled_grokbuild, enabled_opencode,
+                    enabled_hermes, enabled_mcode, enabled_pi, enabled_agy, enabled_kimi, enabled_omp,
+                    enabled_dsh, enabled_copilot, enabled_workbuddy, enabled_codebuddy
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
                 values,
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         }
         Ok(())
+    }
+
+    /// 更新指定 MCP 服务器在某个应用上的启用状态
+    #[allow(dead_code)]
+    pub fn update_mcp_server_app_enabled(
+        &self,
+        id: &str,
+        app: &crate::app_config::AppType,
+        enabled: bool,
+    ) -> Result<(), AppError> {
+        let Some(mut server) = self.get_all_mcp_servers()?.shift_remove(id) else {
+            return Ok(());
+        };
+        server.apps.set_enabled_for(app, enabled);
+        self.save_mcp_server(&server)
+    }
+
+    /// Return IDs of MCP servers enabled for the given app (ignoring malformed JSON).
+    pub fn mcp_server_ids_enabled_for(
+        &self,
+        app: &crate::app_config::AppType,
+    ) -> Result<std::collections::HashSet<String>, AppError> {
+        let Some(col) = (match app {
+            crate::app_config::AppType::Claude => Some("enabled_claude"),
+            crate::app_config::AppType::Codex => Some("enabled_codex"),
+            crate::app_config::AppType::Gemini => Some("enabled_gemini"),
+            crate::app_config::AppType::GrokBuild => Some("enabled_grokbuild"),
+            crate::app_config::AppType::OpenCode => Some("enabled_opencode"),
+            crate::app_config::AppType::Hermes => Some("enabled_hermes"),
+            crate::app_config::AppType::Mcode => Some("enabled_mcode"),
+            crate::app_config::AppType::Pi => Some("enabled_pi"),
+            crate::app_config::AppType::Agy => Some("enabled_agy"),
+            crate::app_config::AppType::Kimi => Some("enabled_kimi"),
+            crate::app_config::AppType::Omp => Some("enabled_omp"),
+            crate::app_config::AppType::Dsh => Some("enabled_dsh"),
+            crate::app_config::AppType::Copilot => Some("enabled_copilot"),
+            crate::app_config::AppType::WorkBuddy => Some("enabled_workbuddy"),
+            crate::app_config::AppType::Codebuddy => Some("enabled_codebuddy"),
+            crate::app_config::AppType::ClaudeDesktop | crate::app_config::AppType::OpenClaw => {
+                None
+            }
+        }) else {
+            return Ok(std::collections::HashSet::new());
+        };
+        let conn = lock_conn!(self.conn);
+        let sql = format!("SELECT id FROM mcp_servers WHERE {col} != 0");
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let mut ids = std::collections::HashSet::new();
+        for row in rows {
+            ids.insert(row.map_err(|e| AppError::Database(e.to_string()))?);
+        }
+        Ok(ids)
     }
 
     /// 删除 MCP 服务器

@@ -19,6 +19,7 @@ pub(crate) mod codex_chat_common;
 pub mod codex_chat_history;
 pub(crate) mod codex_id_normalize;
 pub mod codex_oauth_auth;
+pub(crate) mod codex_responses_arguments;
 pub(crate) mod codex_responses_sse;
 pub mod copilot_auth;
 pub mod copilot_model_map;
@@ -227,9 +228,20 @@ impl ProviderType {
                 ProviderType::Gemini
             }
             AppType::GrokBuild => ProviderType::Codex,
-            // Additive tools never go through the local proxy; keep the
-            // existing Codex-shaped fallback for them.
-            AppType::OpenCode | AppType::Pi => ProviderType::Codex,
+            // Additive and non-proxy tools never go through the local proxy;
+            // keep the existing Codex-shaped fallback for them.
+            AppType::OpenCode
+            | AppType::OpenClaw
+            | AppType::Hermes
+            | AppType::Pi
+            | AppType::Omp
+            | AppType::Agy
+            | AppType::Mcode
+            | AppType::Kimi
+            | AppType::Dsh
+            | AppType::Copilot
+            | AppType::WorkBuddy
+            | AppType::Codebuddy => ProviderType::Codex,
         }
     }
 
@@ -283,7 +295,18 @@ pub fn get_adapter(app_type: &AppType) -> Box<dyn ProviderAdapter> {
         AppType::Codex => Box::new(CodexAdapter::new()),
         AppType::Gemini => Box::new(GeminiAdapter::new()),
         AppType::GrokBuild => Box::new(CodexAdapter::new()),
-        AppType::OpenCode | AppType::Pi => Box::new(CodexAdapter::new()),
+        AppType::OpenCode
+        | AppType::OpenClaw
+        | AppType::Hermes
+        | AppType::Pi
+        | AppType::Omp
+        | AppType::Agy
+        | AppType::Mcode
+        | AppType::Kimi
+        | AppType::Dsh
+        | AppType::Copilot
+        | AppType::WorkBuddy
+        | AppType::Codebuddy => Box::new(CodexAdapter::new()),
     }
 }
 

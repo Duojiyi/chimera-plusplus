@@ -66,6 +66,7 @@ async fn read_response_text_limited(
 pub enum CredentialStatus {
     Valid,
     Expired,
+    RefreshPending,
     NotFound,
     ParseError,
 }
@@ -1467,6 +1468,11 @@ pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, Str
                         message.unwrap_or_else(|| "OAuth token has expired".to_string()),
                     ))
                 }
+                CredentialStatus::RefreshPending => Ok(SubscriptionQuota::error(
+                    "claude",
+                    CredentialStatus::RefreshPending,
+                    message.unwrap_or_else(|| "OAuth token refresh pending".to_string()),
+                )),
                 CredentialStatus::Valid => {
                     let token = token.expect("token must be Some when status is Valid");
                     query_claude_quota(&token).await
@@ -1506,6 +1512,11 @@ pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, Str
                         message.unwrap_or_else(|| "Codex OAuth token may be stale".to_string()),
                     ))
                 }
+                CredentialStatus::RefreshPending => Ok(SubscriptionQuota::error(
+                    "codex",
+                    CredentialStatus::RefreshPending,
+                    message.unwrap_or_else(|| "Codex OAuth token refresh pending".to_string()),
+                )),
                 CredentialStatus::Valid => {
                     let token = token.expect("token must be Some when status is Valid");
                     query_codex_quota(
@@ -1530,6 +1541,11 @@ pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, Str
                     "gemini",
                     CredentialStatus::ParseError,
                     message.unwrap_or_else(|| "Failed to parse credentials".to_string()),
+                )),
+                CredentialStatus::RefreshPending => Ok(SubscriptionQuota::error(
+                    "gemini",
+                    CredentialStatus::RefreshPending,
+                    message.unwrap_or_else(|| "Gemini OAuth token refresh pending".to_string()),
                 )),
                 CredentialStatus::Expired => {
                     // Gemini access_token 仅 ~1h 有效，尝试用 refresh_token 刷新
@@ -1557,6 +1573,7 @@ pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, Str
                 }
             }
         }
+        "agy" => crate::services::subscription_agy::get_agy_subscription_quota().await,
         _ => Ok(SubscriptionQuota::not_found(tool)),
     }
 }

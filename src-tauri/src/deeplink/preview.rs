@@ -130,6 +130,18 @@ fn provider_live_paths(app_type: &AppType) -> Vec<PathBuf> {
         AppType::Pi => crate::pi_config::get_pi_models_path()
             .map(|path| vec![path])
             .unwrap_or_default(),
+        AppType::Omp => crate::omp_config::get_omp_models_path()
+            .map(|path| vec![path])
+            .unwrap_or_default(),
+        AppType::OpenClaw => vec![crate::openclaw_config::get_openclaw_config_path()],
+        AppType::Hermes => vec![crate::hermes_config::get_hermes_config_path()],
+        AppType::Agy => vec![crate::agy_config::settings_path()],
+        AppType::Mcode => vec![crate::mcode_config::config_path()],
+        AppType::Kimi => vec![crate::kimi_config::config_path()],
+        AppType::Dsh => vec![crate::dsh_config::config_path()],
+        AppType::Copilot => vec![crate::copilot_config::settings_path()],
+        AppType::WorkBuddy => vec![crate::workbuddy_config::config_path()],
+        AppType::Codebuddy => vec![crate::codebuddy_config::config_path()],
     }
 }
 
@@ -242,7 +254,18 @@ fn ignored_settings(
             ],
         )),
         AppType::GrokBuild => ignored.extend(grok_ignored_keys(&config)?),
-        AppType::OpenCode | AppType::Pi => {
+        AppType::OpenCode
+        | AppType::OpenClaw
+        | AppType::Hermes
+        | AppType::Pi
+        | AppType::Omp
+        | AppType::Agy
+        | AppType::Mcode
+        | AppType::Kimi
+        | AppType::Dsh
+        | AppType::Copilot
+        | AppType::WorkBuddy
+        | AppType::Codebuddy => {
             ignored.extend(other_keys(
                 &config,
                 &["apiKey", "api_key", "baseUrl", "base_url", "options"],

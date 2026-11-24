@@ -41,8 +41,8 @@ The v2.9 app is Codex-first, with a capability-based `232px` v3 Light Liquid Gla
 The current navigation is:
 
 1. **Codex**: 线路, 官方账号, 提示词, Skills 与 MCP, 用量, Codex 管理, 外观, 配置体检.
-2. **Other tools**: enabled tools (Claude Code, Claude Desktop, Gemini CLI, Grok Build, OpenCode, Pi, oh-my-pi) get their supported provider/entry management and tool-specific account/resource tabs. The tool manager exposes real support and installation state; unimplemented tools must not receive empty working-looking screens.
-3. **会话**: local session history across supported installed CLIs, with search, filtering, export where supported, and confirmation before deletion.
+2. **Other tools**: full 17-tool parity (Codex, Claude Code, Claude Desktop, Gemini CLI, Grok Build, OpenCode, OpenClaw, Hermes, Pi, oh-my-pi, Antigravity, MiniMax Code, Kimi Code, DeepSeek Harness, Copilot CLI, WorkBuddy, CodeBuddy Code). First launch keeps the sidebar focused on Codex; users explicitly enable additional tools in 设置 → 管理工具. Each tool receives its supported provider/entry management, prompt file management, MCP/Skills projection (where supported), local session browsing (16 providers), and local usage tracking (14 session/proxy scanners) unified under the Usage top App Switcher bar.
+3. **会话**: local session history across 16 supported CLIs/apps, with search, provider filtering, export where supported, and confirmation before deletion.
 4. **设置**: tool management, explicit imports, local backup/recovery, general preferences, Codex preferences, and application updates.
 
 The current delivery scope is Simplified Chinese and local data management. Multilingual completion and WebDAV/S3 cloud synchronization are excluded. The main UI does not expose language switching or cloud sync; backend cloud commands reject calls and cloud workers remain disabled. Existing translation resources and stored sync configuration are retained for compatibility, not activated or erased. Local backup/recovery, provider connections, outbound proxy configuration, and application updates remain in scope; local data management does not mean all network access is disabled.

@@ -225,10 +225,56 @@ pub(crate) fn provider_exists_in_live_config(
     match app_type {
         AppType::OpenCode => crate::opencode_config::get_providers()
             .map(|providers| providers.contains_key(provider_id)),
-
+        AppType::OpenClaw => crate::openclaw_config::get_providers()
+            .map(|providers| providers.contains_key(provider_id)),
+        AppType::Hermes => crate::hermes_config::get_providers()
+            .map(|providers| providers.contains_key(provider_id)),
         AppType::Pi => crate::pi_config::pi_provider_exists(provider_id),
+        AppType::Omp => Ok(crate::omp_config::get_providers()?.contains_key(provider_id)),
+        AppType::Dsh => crate::dsh_config::provider_key_exists(provider_id),
+        AppType::Kimi => crate::kimi_config::provider_key_exists(provider_id),
+        AppType::Mcode => crate::mcode_config::get_providers()
+            .map(|providers| providers.contains_key(provider_id)),
+        AppType::Codebuddy => crate::codebuddy_config::provider_key_exists(provider_id),
+        AppType::Copilot => crate::copilot_config::provider_key_exists(provider_id),
+        AppType::WorkBuddy => crate::workbuddy_config::get_providers()
+            .map(|providers| providers.contains_key(provider_id)),
+        AppType::Claude
+        | AppType::ClaudeDesktop
+        | AppType::Codex
+        | AppType::Gemini
+        | AppType::GrokBuild
+        | AppType::Agy => Ok(false),
+    }
+}
 
-        _ => Ok(false),
+pub(crate) fn remove_provider_from_live(
+    app_type: &AppType,
+    provider_id: &str,
+) -> Result<(), AppError> {
+    match app_type {
+        AppType::OpenCode => remove_opencode_provider_from_live(provider_id),
+        AppType::OpenClaw => crate::openclaw_config::remove_provider(provider_id).map(|_| ()),
+        AppType::Hermes => crate::hermes_config::remove_provider(provider_id).map(|_| ()),
+        AppType::Mcode => crate::mcode_config::remove_provider(provider_id),
+        AppType::Kimi => crate::kimi_config::save_and_commit(provider_id, None, false, || Ok(())),
+        AppType::Dsh => crate::dsh_config::save_and_commit(provider_id, None, false, || Ok(())),
+        AppType::Copilot => {
+            crate::copilot_config::save_and_commit(provider_id, None, false, || Ok(()))
+        }
+        AppType::WorkBuddy => crate::workbuddy_config::remove_provider(provider_id),
+        AppType::Codebuddy => crate::codebuddy_config::remove_provider(provider_id),
+        AppType::Claude
+        | AppType::ClaudeDesktop
+        | AppType::Codex
+        | AppType::Gemini
+        | AppType::GrokBuild
+        | AppType::Pi
+        | AppType::Omp
+        | AppType::Agy => Err(AppError::Message(format!(
+            "App {} does not support remove from live config",
+            app_type.as_str()
+        ))),
     }
 }
 
@@ -569,7 +615,20 @@ pub(crate) fn settings_contain_common_config(
             }
             _ => false,
         },
-        AppType::GrokBuild | AppType::OpenCode | AppType::Pi | AppType::ClaudeDesktop => false,
+        AppType::GrokBuild
+        | AppType::OpenCode
+        | AppType::OpenClaw
+        | AppType::Hermes
+        | AppType::Pi
+        | AppType::Omp
+        | AppType::Agy
+        | AppType::Mcode
+        | AppType::Kimi
+        | AppType::Dsh
+        | AppType::Copilot
+        | AppType::WorkBuddy
+        | AppType::Codebuddy
+        | AppType::ClaudeDesktop => false,
     }
 }
 
@@ -639,9 +698,20 @@ pub(crate) fn remove_common_config_from_settings(
             }
             Ok(result)
         }
-        AppType::GrokBuild | AppType::OpenCode | AppType::Pi | AppType::ClaudeDesktop => {
-            Ok(settings.clone())
-        }
+        AppType::GrokBuild
+        | AppType::OpenCode
+        | AppType::OpenClaw
+        | AppType::Hermes
+        | AppType::Pi
+        | AppType::Omp
+        | AppType::Agy
+        | AppType::Mcode
+        | AppType::Kimi
+        | AppType::Dsh
+        | AppType::Copilot
+        | AppType::WorkBuddy
+        | AppType::Codebuddy
+        | AppType::ClaudeDesktop => Ok(settings.clone()),
     }
 }
 
@@ -697,9 +767,20 @@ fn apply_common_config_to_settings(
             }
             Ok(result)
         }
-        AppType::GrokBuild | AppType::OpenCode | AppType::Pi | AppType::ClaudeDesktop => {
-            Ok(settings.clone())
-        }
+        AppType::GrokBuild
+        | AppType::OpenCode
+        | AppType::OpenClaw
+        | AppType::Hermes
+        | AppType::Pi
+        | AppType::Omp
+        | AppType::Agy
+        | AppType::Mcode
+        | AppType::Kimi
+        | AppType::Dsh
+        | AppType::Copilot
+        | AppType::WorkBuddy
+        | AppType::Codebuddy
+        | AppType::ClaudeDesktop => Ok(settings.clone()),
     }
 }
 
@@ -1408,6 +1489,76 @@ fn write_live_snapshot_receipted(
             }
         }
 
+        AppType::OpenClaw => {
+            use crate::openclaw_config;
+            use crate::openclaw_config::OpenClawProviderConfig;
+
+            match serde_json::from_value::<OpenClawProviderConfig>(provider.settings_config.clone())
+            {
+                Ok(config) => {
+                    openclaw_config::set_typed_provider(&provider.id, &config)?;
+                }
+                Err(_) => {
+                    if provider.settings_config.get("baseUrl").is_some()
+                        || provider.settings_config.get("api").is_some()
+                        || provider.settings_config.get("models").is_some()
+                    {
+                        openclaw_config::set_provider(
+                            &provider.id,
+                            provider.settings_config.clone(),
+                        )?;
+                    } else {
+                        return Err(AppError::Message(format!(
+                            "OpenClaw provider '{}' has invalid config structure for live config (must contain 'baseUrl', 'api', or 'models')",
+                            provider.id
+                        )));
+                    }
+                }
+            }
+        }
+        AppType::Hermes => {
+            crate::hermes_config::set_provider(&provider.id, provider.settings_config.clone())?;
+        }
+        AppType::Dsh => {
+            crate::dsh_config::set_provider(&provider.id, provider.settings_config.clone())?;
+        }
+        AppType::Kimi => {
+            crate::kimi_config::set_provider(&provider.id, provider.settings_config.clone())?;
+        }
+        AppType::Mcode => {
+            crate::mcode_config::set_provider(&provider.id, provider.settings_config.clone())?;
+        }
+        AppType::WorkBuddy => {
+            if !crate::workbuddy_config::is_official_provider(provider) {
+                crate::workbuddy_config::set_provider(&provider.id, &provider.settings_config)?;
+            }
+        }
+        AppType::Codebuddy => {
+            if !crate::codebuddy_config::is_official_provider(provider) {
+                crate::codebuddy_config::set_provider(
+                    &provider.id,
+                    provider.settings_config.clone(),
+                )?;
+            }
+        }
+        AppType::Agy => {
+            crate::agy_config::write_live_settings(&provider.settings_config)?;
+        }
+        AppType::Omp => {
+            return Err(AppError::InvalidInput(
+                "Oh My Pi providers use the Oh My Pi provider service".to_string(),
+            ));
+        }
+        AppType::Copilot => {
+            if crate::copilot_config::is_byok_settings(&provider.settings_config) {
+                crate::copilot_config::save_and_commit(
+                    &provider.id,
+                    Some(&provider.settings_config),
+                    false,
+                    || Ok(()),
+                )?;
+            }
+        }
         AppType::Pi => {
             return Err(AppError::InvalidInput(
                 "Pi providers use the Pi provider service".to_string(),
@@ -1422,9 +1573,9 @@ fn write_live_snapshot_receipted(
 /// Writes all providers from the database to the live configuration file.
 /// Used for OpenCode and other additive mode applications.
 fn sync_all_providers_to_live(state: &AppState, app_type: &AppType) -> Result<(), AppError> {
-    // Pi's models.json is the source of truth
+    // Pi / Oh My Pi models.json is the source of truth
     // for membership: a restore/import never re-adds entries removed there.
-    if matches!(app_type, AppType::Pi) {
+    if matches!(app_type, AppType::Pi | AppType::Omp) {
         return Ok(());
     }
     let providers = state.db.get_all_providers(app_type.as_str())?;
@@ -1613,6 +1764,54 @@ fn live_sync_outcome(failures: Vec<String>) -> Result<(), AppError> {
     }
 }
 
+/// Populate newly encountered DSH profiles with managed providers and enabled MCP servers.
+#[allow(dead_code)]
+pub(crate) fn initialize_dsh_profiles(state: &AppState) -> Result<(), AppError> {
+    let providers_res = state.db.get_all_providers(AppType::Dsh.as_str());
+    let server_rows = state.db.get_mcp_server_rows()?;
+    let dsh_server_ids = state.db.mcp_server_ids_enabled_for(&AppType::Dsh)?;
+    let blocking_mcp = server_rows
+        .unreadable
+        .iter()
+        .find(|entry| dsh_server_ids.contains(&entry.id));
+
+    let providers_map = match providers_res {
+        Ok(map) => map,
+        Err(err) => {
+            if crate::dsh_config::has_uninitialized_profiles()? {
+                return Err(err);
+            }
+            return Ok(());
+        }
+    };
+
+    if let Some(entry) = blocking_mcp {
+        if crate::dsh_config::has_uninitialized_profiles()? {
+            return Err(AppError::Database(entry.error.clone()));
+        }
+        return Ok(());
+    }
+
+    let providers = providers_map
+        .into_iter()
+        .filter(|(_, provider)| {
+            provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.live_config_managed)
+                == Some(true)
+        })
+        .map(|(id, provider)| (id, provider.settings_config))
+        .collect();
+    let servers = server_rows
+        .readable
+        .into_iter()
+        .filter(|(_, server)| server.apps.dsh)
+        .map(|(id, server)| (id, server.server))
+        .collect();
+    crate::dsh_config::initialize_profiles(&providers, &servers)
+}
+
 /// Read current live settings for an app type
 pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
     match app_type {
@@ -1697,8 +1896,41 @@ pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
             Ok(config)
         }
         AppType::GrokBuild => crate::grok_config::read_grok_live_settings(),
+        AppType::OpenClaw => {
+            use crate::openclaw_config::{get_openclaw_config_path, read_openclaw_config};
 
-
+            let config_path = get_openclaw_config_path();
+            if !config_path.exists() {
+                return Err(AppError::localized(
+                    "openclaw.config.missing",
+                    "OpenClaw 配置文件不存在",
+                    "OpenClaw configuration file not found",
+                ));
+            }
+            read_openclaw_config()
+        }
+        AppType::Hermes => {
+            let config_path = crate::hermes_config::get_hermes_config_path();
+            if !config_path.exists() {
+                return Err(AppError::localized(
+                    "hermes.config.missing",
+                    "Hermes 配置文件不存在",
+                    "Hermes configuration file not found",
+                ));
+            }
+            let yaml_config = crate::hermes_config::read_hermes_config()?;
+            crate::hermes_config::yaml_to_json(&yaml_config)
+        }
+        AppType::Mcode => Ok(json!(crate::mcode_config::get_providers()?)),
+        AppType::Kimi => Ok(json!(crate::kimi_config::get_providers()?)),
+        AppType::Dsh => Ok(json!(crate::dsh_config::get_providers()?)),
+        AppType::WorkBuddy => Ok(json!(crate::workbuddy_config::get_providers()?)),
+        AppType::Codebuddy => Ok(json!(crate::codebuddy_config::get_providers()?)),
+        AppType::Agy => crate::agy_config::read_live_settings(),
+        AppType::Copilot => crate::copilot_config::read_live_settings(),
+        AppType::Omp => Err(AppError::InvalidInput(
+            "Oh My Pi providers are read from Oh My Pi's native models file".to_string(),
+        )),
         AppType::Pi => Err(AppError::InvalidInput(
             "Pi providers are read from Pi's native models file".to_string(),
         )),
@@ -1810,7 +2042,33 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
                 "config": config_obj
             })
         }
-        AppType::OpenCode | AppType::Pi => {
+        AppType::Agy => {
+            let live = crate::agy_config::read_live_settings()?;
+            if !crate::agy_config::has_managed_content(&live) {
+                return Ok(false);
+            }
+            live
+        }
+        AppType::Copilot => {
+            if !crate::copilot_config::settings_path().exists() {
+                return Ok(false);
+            }
+            let live = crate::copilot_config::read_live_settings()?;
+            if !crate::copilot_config::has_managed_content(&live) {
+                return Ok(false);
+            }
+            live
+        }
+        AppType::OpenCode
+        | AppType::OpenClaw
+        | AppType::Hermes
+        | AppType::Pi
+        | AppType::Omp
+        | AppType::Mcode
+        | AppType::Kimi
+        | AppType::Dsh
+        | AppType::WorkBuddy
+        | AppType::Codebuddy => {
             unreachable!("additive mode apps are handled by early return")
         }
     };

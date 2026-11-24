@@ -43,6 +43,10 @@ pub fn import_skill_from_deeplink(
         enabled: false,
     };
 
+    // Validate owner/name/branch against traversal or malformed repo segments.
+    crate::services::skill::SkillService::validate_skill_repo(&repo)
+        .map_err(|e| AppError::InvalidInput(e.to_string()))?;
+
     // Save using Database
     state.db.save_skill_repo(&repo)?;
 

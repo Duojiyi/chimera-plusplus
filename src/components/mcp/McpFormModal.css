@@ -1,0 +1,250 @@
+/* Chimera++ v5.2 Light Liquid Glass styling for McpFormModal */
+
+.mcp-form-stage {
+  gap: 22px;
+}
+
+.mcp-form-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.mcp-form-section + .mcp-form-section {
+  padding-top: 20px;
+  border-top: 1px solid var(--v3-hairline, rgba(17, 19, 24, 0.08));
+}
+
+.mcp-form-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mcp-form-section-title {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0;
+  font-size: var(--fs-md, 15px);
+  line-height: 22px;
+  font-weight: 700;
+  color: var(--text-1);
+}
+
+.mcp-form-section-title::before {
+  content: "";
+  width: 3px;
+  height: 15px;
+  border-radius: 2px;
+  background: var(--accent-petrol, #0e6470);
+  flex: none;
+}
+
+.mcp-preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mcp-preset-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--btn-secondary-border, rgba(17, 19, 24, 0.12));
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.76);
+  color: var(--text-2);
+  font-size: var(--fs-sm, 13px);
+  font-weight: 550;
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.mcp-preset-pill:hover {
+  border-color: rgba(17, 19, 24, 0.22);
+  background: #ffffff;
+  color: var(--text-1);
+}
+
+.mcp-preset-pill.is-active {
+  border-color: #16181d;
+  background: var(--cta-obsidian, #181c24);
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 2px 8px rgba(17, 19, 24, 0.16);
+}
+
+.mcp-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 16px;
+}
+
+.mcp-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mcp-form-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mcp-form-label {
+  display: block;
+  font-size: var(--fs-sm, 13px);
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.mcp-form-required {
+  color: var(--danger-fg, #b4342c);
+}
+
+.mcp-form-error-inline {
+  font-size: var(--fs-xs, 12px);
+  font-weight: 500;
+  color: var(--danger-fg, #b4342c);
+}
+
+.mcp-apps-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mcp-app-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 5px 12px 5px 10px;
+  border: 1px solid rgba(17, 19, 24, 0.11);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.72);
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.mcp-app-chip:hover {
+  border-color: rgba(17, 19, 24, 0.22);
+  background: #ffffff;
+}
+
+.mcp-app-chip.is-checked {
+  border-color: rgba(14, 100, 112, 0.36);
+  background: rgba(14, 100, 112, 0.075);
+}
+
+.mcp-app-chip label {
+  font-size: var(--fs-sm, 13px);
+  font-weight: 500;
+  color: var(--text-1);
+  cursor: pointer;
+  user-select: none;
+}
+
+.mcp-app-chip.is-checked label {
+  color: var(--accent-petrol, #0e6470);
+  font-weight: 600;
+}
+
+.mcp-meta-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(17, 19, 24, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--text-2);
+  font-size: var(--fs-sm, 13px);
+  font-weight: 550;
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
+}
+
+.mcp-meta-toggle:hover {
+  border-color: rgba(17, 19, 24, 0.22);
+  background: #ffffff;
+  color: var(--text-1);
+}
+
+.mcp-wizard-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid rgba(14, 100, 112, 0.26);
+  border-radius: 9px;
+  background: rgba(14, 100, 112, 0.07);
+  color: var(--accent-petrol, #0e6470);
+  font-size: var(--fs-xs, 12px);
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+
+.mcp-wizard-btn:hover {
+  border-color: rgba(14, 100, 112, 0.44);
+  background: rgba(14, 100, 112, 0.13);
+}
+
+.mcp-editor-frame {
+  min-height: 260px;
+  border: 1px solid rgba(17, 19, 24, 0.12);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.mcp-config-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border: 1px solid rgba(180, 52, 44, 0.22);
+  border-radius: 10px;
+  background: rgba(251, 239, 237, 0.9);
+  color: var(--danger-fg, #b4342c);
+  font-size: var(--fs-xs, 12px);
+}
+
+.mcp-form-footer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  width: 100%;
+}
+
+@media (max-width: 720px) {
+  .mcp-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

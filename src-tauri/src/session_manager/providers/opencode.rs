@@ -89,7 +89,7 @@ fn scan_sessions_json() -> Vec<SessionMeta> {
 /// Uses `rfind(":ses_")` to split the path from the session ID because the
 /// db path itself may contain colons (e.g. `C:\Users\...` on Windows).
 /// This relies on the OpenCode convention that session IDs start with `ses_`.
-fn parse_sqlite_source(source: &str) -> Option<(PathBuf, String)> {
+pub(crate) fn parse_sqlite_source(source: &str) -> Option<(PathBuf, String)> {
     let rest = source.strip_prefix("sqlite:")?;
     let sep = rest.rfind(":ses_")?;
     let db_path = PathBuf::from(&rest[..sep]);
@@ -224,6 +224,7 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
             content,
             ts: if ts > 0 { Some(ts) } else { None },
             truncated: false,
+            ..Default::default()
         })
         .collect();
 
@@ -331,6 +332,7 @@ pub fn load_messages_sqlite(source: &str) -> Result<Vec<SessionMessage>, String>
             content,
             ts: Some(ts),
             truncated: false,
+            ..Default::default()
         });
     }
 

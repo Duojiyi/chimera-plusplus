@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { KNOWN_APP_TYPES } from "@/types/usage";
+import { MCP_APP_IDS } from "@/config/appConfig";
 
 const LOCALE_NAMES = ["zh", "zh-TW", "en", "ja"] as const;
 
@@ -72,5 +74,20 @@ describe("i18n locale parity and static t() key coverage", () => {
       }
     }
     expect(missing).toEqual([]);
+  });
+
+  it("covers all KNOWN_APP_TYPES in usage.appFilter and all MCP_APP_IDS in mcp.unifiedPanel.apps", () => {
+    for (const app of KNOWN_APP_TYPES) {
+      expect(
+        locales.zh.has(`usage.appFilter.${app}`),
+        `missing usage.appFilter.${app}`,
+      ).toBe(true);
+    }
+    for (const app of MCP_APP_IDS) {
+      expect(
+        locales.zh.has(`mcp.unifiedPanel.apps.${app}`),
+        `missing mcp.unifiedPanel.apps.${app}`,
+      ).toBe(true);
+    }
   });
 });

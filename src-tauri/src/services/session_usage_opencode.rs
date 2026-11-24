@@ -102,6 +102,7 @@ pub fn sync_opencode_usage(db: &Database) -> Result<SessionSyncResult, AppError>
         errors: vec![],
     };
     let mut has_sync_errors = false;
+    let mut has_incomplete_sessions = false;
 
     // 查询所有会话
     let sessions = query_sessions(&opencode_conn)?;
@@ -151,6 +152,7 @@ pub fn sync_opencode_usage(db: &Database) -> Result<SessionSyncResult, AppError>
         }
 
         if session_has_incomplete_usage {
+            has_incomplete_sessions = true;
             continue;
         }
 
@@ -163,8 +165,8 @@ pub fn sync_opencode_usage(db: &Database) -> Result<SessionSyncResult, AppError>
         }
     }
 
-    // 仅在本轮完全成功时推进文件级状态；否则保留下次重试入口。
-    if !has_sync_errors {
+    // 仅在本轮完全成功且没有未完成用量记录时推进文件级状态；否则保留下次重试入口。
+    if !has_sync_errors && !has_incomplete_sessions {
         update_sync_state(db, &db_path_str, file_modified, 0)?;
     }
 
@@ -351,7 +353,7 @@ fn insert_opencode_message(
 
     // OpenCode 使用 Anthropic 风格：input 是新鲜输入，cache 单独计
     // output 包含 reasoning tokens（按输出计费）
-    let output_with_reasoning = msg.output_tokens + msg.reasoning_tokens;
+    let output_with_reasoning = msg.output_tokens.saturating_add(msg.reasoning_tokens);
 
     let dedup_key = DedupKey {
         session_id: Some(session_id),

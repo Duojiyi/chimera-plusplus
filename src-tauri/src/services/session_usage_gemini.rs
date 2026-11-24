@@ -174,17 +174,18 @@ fn sync_single_gemini_file(db: &Database, file_path: &Path) -> Result<(u32, u32)
 
         gemini_msg_count += 1;
 
-        // 提取消息 ID 和模型
+        // 提取消息 ID 和模型；缺少 id 时合成稳定回退键，避免单条脏消息永久阻塞整文件。
+        let timestamp = msg.get("timestamp").and_then(|v| v.as_str());
         let message_id = msg
             .get("id")
             .and_then(|v| v.as_str())
             .filter(|id| !id.is_empty())
-            .ok_or_else(|| AppError::Config("Gemini usage message has no id".into()))?;
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("idx{gemini_msg_count}-{}", timestamp.unwrap_or("no-ts")));
         let model = msg
             .get("model")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
-        let timestamp = msg.get("timestamp").and_then(|v| v.as_str());
 
         // 生成唯一 request_id
         let session_id_str = session_id.as_deref().unwrap_or("unknown");

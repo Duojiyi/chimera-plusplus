@@ -2407,3 +2407,77 @@ fn switch_omo_success_keeps_unrelated_plugins_and_excludes_opposite_variant() {
         }
     });
 }
+
+#[test]
+#[serial]
+fn dsh_list_surfaces_native_providers_and_remove_preserves_disabled_row() {
+    with_test_home(|state, home| {
+        let profile = home
+            .join(".dsh")
+            .join("profiles")
+            .join("web")
+            .join("cordis.patch.yml");
+        fs::create_dir_all(profile.parent().unwrap()).unwrap();
+        fs::write(
+            &profile,
+            r#"- id: llm-pi-ai
+  config:
+    providers:
+      k1:
+        displayName: Relay One
+        api: openai-completions
+        baseURL: https://relay1.example.com/v1
+        models:
+          - id: deepseek-chat
+      k2:
+        displayName: Relay Two
+        api: anthropic-messages
+        baseURL: https://relay2.example.com
+        models:
+          - id: claude-sonnet-4-6
+"#,
+        )
+        .unwrap();
+
+        let listed = ProviderService::list(state, AppType::Dsh).expect("list native DSH");
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed["k1"].name, "Relay One");
+        assert_eq!(
+            listed["k1"]
+                .meta
+                .as_ref()
+                .and_then(|m| m.live_config_managed),
+            Some(true)
+        );
+        assert_eq!(listed["k2"].name, "Relay Two");
+        // Reading the list must not silently persist native credentials to SQLite.
+        assert!(state.db.get_all_providers("dsh").unwrap().is_empty());
+
+        // Toggling off a native-only provider removes it from live config and
+        // retains a disabled catalog row so the user can re-enable it later.
+        ProviderService::remove_from_live_config(state, AppType::Dsh, "k1")
+            .expect("remove k1 from live");
+        let after = ProviderService::list(state, AppType::Dsh).expect("list after disable");
+        assert_eq!(after.len(), 2);
+        assert_eq!(
+            after["k1"]
+                .meta
+                .as_ref()
+                .and_then(|m| m.live_config_managed),
+            Some(false)
+        );
+        assert_eq!(
+            after["k2"]
+                .meta
+                .as_ref()
+                .and_then(|m| m.live_config_managed),
+            Some(true)
+        );
+        assert!(!crate::dsh_config::get_providers()
+            .unwrap()
+            .contains_key("k1"));
+        assert!(crate::dsh_config::get_providers()
+            .unwrap()
+            .contains_key("k2"));
+    });
+}

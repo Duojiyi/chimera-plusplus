@@ -17,6 +17,17 @@ export const APP_IDS: AppId[] = [
   "gemini",
   "grokbuild",
   "opencode",
+  "openclaw",
+  "hermes",
+  "pi",
+  "omp",
+  "agy",
+  "mcode",
+  "kimi",
+  "dsh",
+  "copilot",
+  "workbuddy",
+  "codebuddy",
 ];
 
 /** App IDs shown in Skills panels */
@@ -26,10 +37,18 @@ export const SKILLS_APP_IDS: AppId[] = [
   "gemini",
   "grokbuild",
   "opencode",
+  "hermes",
+  "agy",
+  "mcode",
+  "kimi",
+  "dsh",
+  "copilot",
+  "workbuddy",
+  "codebuddy",
 ];
 
 /** App IDs shown in MCP panels */
-export const MCP_APP_IDS: AppId[] = [...SKILLS_APP_IDS];
+export const MCP_APP_IDS: AppId[] = [...SKILLS_APP_IDS, "pi", "omp"];
 
 export const APP_ICON_MAP: Record<AppId, AppConfig> = {
   claude: {
@@ -97,10 +116,127 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
 
   pi: {
     label: "Pi",
-    icon: <ProviderIcon icon="pi" name="Pi" size={14} />,
+    icon: <ProviderIcon icon="pi" name="Pi" size={14} showFallback={false} />,
+    activeClass:
+      "bg-fuchsia-500/10 ring-1 ring-fuchsia-500/20 hover:bg-fuchsia-500/20 text-fuchsia-600 dark:text-fuchsia-400",
+    badgeClass:
+      "bg-fuchsia-500/10 text-fuchsia-700 dark:text-fuchsia-300 hover:bg-fuchsia-500/20 border-0 gap-1.5",
+  },
+  openclaw: {
+    label: "OpenClaw",
+    icon: (
+      <ProviderIcon
+        icon="openclaw"
+        name="OpenClaw"
+        size={14}
+        showFallback={false}
+      />
+    ),
+    activeClass:
+      "bg-rose-500/10 ring-1 ring-rose-500/20 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400",
+    badgeClass:
+      "bg-rose-500/10 text-rose-700 dark:text-rose-300 hover:bg-rose-500/20 border-0 gap-1.5",
+  },
+  hermes: {
+    label: "Hermes",
+    icon: (
+      <ProviderIcon
+        icon="hermes"
+        name="Hermes"
+        size={14}
+        showFallback={false}
+      />
+    ),
+    activeClass:
+      "bg-violet-500/10 ring-1 ring-violet-500/20 hover:bg-violet-500/20 text-violet-600 dark:text-violet-400",
+    badgeClass:
+      "bg-violet-500/10 text-violet-700 dark:text-violet-300 hover:bg-violet-500/20 border-0 gap-1.5",
+  },
+  omp: {
+    label: "Oh My Pi",
+    icon: (
+      <ProviderIcon icon="omp" name="Oh My Pi" size={14} showFallback={false} />
+    ),
+    activeClass:
+      "bg-cyan-500/10 ring-1 ring-cyan-500/20 hover:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400",
+    badgeClass:
+      "bg-cyan-500/10 text-cyan-700 dark:text-cyan-300 hover:bg-cyan-500/20 border-0 gap-1.5",
+  },
+  agy: {
+    label: "Antigravity",
+    icon: (
+      <ProviderIcon
+        icon="antigravity"
+        name="Antigravity"
+        size={14}
+        showFallback={false}
+      />
+    ),
+    activeClass:
+      "bg-sky-500/10 ring-1 ring-sky-500/20 hover:bg-sky-500/20 text-sky-700 dark:text-sky-300",
+    badgeClass:
+      "bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/20 border-0 gap-1.5",
+  },
+  mcode: {
+    label: "MiniMax Code",
+    icon: <ProviderIcon icon="minimax" name="MiniMax Code" size={14} />,
+    activeClass:
+      "bg-orange-500/10 ring-1 ring-orange-500/20 hover:bg-orange-500/20 text-orange-600 dark:text-orange-400",
+    badgeClass:
+      "bg-orange-500/10 text-orange-700 dark:text-orange-300 hover:bg-orange-500/20 border-0 gap-1.5",
+  },
+  kimi: {
+    label: "Kimi Code",
+    icon: <ProviderIcon icon="kimi" name="Kimi Code" size={14} />,
+    activeClass:
+      "bg-blue-500/10 ring-1 ring-blue-500/20 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400",
+    badgeClass:
+      "bg-blue-500/10 text-blue-700 dark:text-blue-300 hover:bg-blue-500/20 border-0 gap-1.5",
+  },
+  dsh: {
+    label: "DeepSeek Harness",
+    icon: <ProviderIcon icon="deepseek" name="DeepSeek Harness" size={14} />,
+    activeClass:
+      "bg-blue-500/10 ring-1 ring-blue-500/20 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400",
+    badgeClass:
+      "bg-blue-500/10 text-blue-700 dark:text-blue-300 hover:bg-blue-500/20 border-0 gap-1.5",
+  },
+  copilot: {
+    label: "Copilot CLI",
+    icon: (
+      <ProviderIcon
+        icon="githubcopilot"
+        name="Copilot CLI"
+        size={14}
+        showFallback={false}
+      />
+    ),
     activeClass:
       "bg-slate-500/10 ring-1 ring-slate-500/20 hover:bg-slate-500/20 text-slate-700 dark:text-slate-300",
     badgeClass:
       "bg-slate-500/10 text-slate-700 dark:text-slate-300 hover:bg-slate-500/20 border-0 gap-1.5",
+  },
+  workbuddy: {
+    label: "WorkBuddy",
+    icon: <ProviderIcon icon="workbuddy" name="WorkBuddy" size={14} />,
+    activeClass:
+      "bg-teal-500/10 ring-1 ring-teal-500/20 hover:bg-teal-500/20 text-teal-600 dark:text-teal-400",
+    badgeClass:
+      "bg-teal-500/10 text-teal-700 dark:text-teal-300 hover:bg-teal-500/20 border-0 gap-1.5",
+  },
+  codebuddy: {
+    label: "CodeBuddy Code",
+    icon: (
+      <ProviderIcon
+        icon="codebuddy"
+        name="CodeBuddy Code"
+        size={14}
+        showFallback={false}
+      />
+    ),
+    activeClass:
+      "bg-blue-500/10 ring-1 ring-blue-500/20 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400",
+    badgeClass:
+      "bg-blue-500/10 text-blue-700 dark:text-blue-300 hover:bg-blue-500/20 border-0 gap-1.5",
   },
 };
