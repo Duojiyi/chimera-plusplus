@@ -3,6 +3,7 @@ import { useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleAlert, Info } from "lucide-react";
 import { settingsApi } from "@/lib/api/settings";
+import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import { productToolViews } from "@/lib/productCapabilities";
 import registry from "@/shared/tool-registry.json";
 import type { VisibleApps } from "@/types";
@@ -63,6 +64,7 @@ export function ToolVisibilityPage({ native }: { native: boolean }) {
   });
   const queue = useRef<Promise<void>>(Promise.resolve());
   const [pending, setPending] = useState<ReadonlySet<ToolId>>(new Set());
+  useLightweightCloseBlocker(pending.size > 0);
   const [failures, setFailures] = useState<Partial<Record<ToolId, string>>>({});
   const ready = native && Boolean(data) && !isError;
   const [designPreview] = useState(() => !native && isDesignPreview());

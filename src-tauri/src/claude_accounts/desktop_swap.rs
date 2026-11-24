@@ -173,11 +173,18 @@ fn read_meta(dir: &Path) -> Option<SnapshotMeta> {
 fn write_meta(dir: &Path, meta: &SnapshotMeta) -> Result<(), AppError> {
     let data =
         serde_json::to_vec_pretty(meta).map_err(|e| AppError::JsonSerialize { source: e })?;
-    fs::write(dir.join(META_FILE), data).map_err(|e| AppError::io(dir, e))
+    crate::config::atomic_write(&dir.join(META_FILE), &data)
 }
 
 fn remove_if_exists(path: &Path) -> io::Result<()> {
     match fs::symlink_metadata(path) {
+        Ok(meta) if crate::security_limits::is_link_or_reparse_point(&meta) => {
+            if meta.is_dir() {
+                fs::remove_dir(path)
+            } else {
+                fs::remove_file(path)
+            }
+        }
         Ok(meta) if meta.is_dir() => fs::remove_dir_all(path),
         Ok(_) => fs::remove_file(path),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -190,13 +197,13 @@ fn copy_dir(src: &Path, dst: &Path) -> io::Result<()> {
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let (from, to) = (entry.path(), dst.join(entry.file_name()));
-        let kind = entry.file_type()?;
-        if kind.is_symlink() {
+        let meta = fs::symlink_metadata(&from)?;
+        if crate::security_limits::is_link_or_reparse_point(&meta) {
             continue;
         }
-        if kind.is_dir() {
+        if meta.is_dir() {
             copy_dir(&from, &to)?;
-        } else {
+        } else if meta.is_file() {
             fs::copy(&from, &to)?;
         }
     }
@@ -247,7 +254,10 @@ fn copy_files(src: &Path, dst: &Path, keep_settings: bool) -> io::Result<()> {
     fs::create_dir_all(dst)?;
     for rel in AUTH_FILES {
         let (from, to) = (src.join(rel), dst.join(rel));
-        if from.is_file() {
+        let from_is_regular_file = fs::symlink_metadata(&from)
+            .map(|meta| !crate::security_limits::is_link_or_reparse_point(&meta) && meta.is_file())
+            .unwrap_or(false);
+        if from_is_regular_file {
             if let Some(parent) = to.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -270,7 +280,10 @@ fn copy_files(src: &Path, dst: &Path, keep_settings: bool) -> io::Result<()> {
     for rel in AUTH_DIRS {
         let (from, to) = (src.join(rel), dst.join(rel));
         remove_if_exists(&to)?;
-        if from.is_dir() {
+        let from_is_regular_dir = fs::symlink_metadata(&from)
+            .map(|meta| !crate::security_limits::is_link_or_reparse_point(&meta) && meta.is_dir())
+            .unwrap_or(false);
+        if from_is_regular_dir {
             copy_dir(&from, &to)?;
         }
     }
@@ -368,7 +381,10 @@ fn recover_snapshot_save(parent: &Path, token: &str) -> Result<(), AppError> {
     if !target_exists {
         let source = if old_exists && snapshot_complete(&old) {
             &old
-        } else if !old_exists && staging_exists && snapshot_complete(&staging) {
+        } else if staging_exists && snapshot_complete(&staging) {
+            // Even when an incomplete `.old-*` exists from an interrupted overwrite
+            // of a damaged snapshot, roll forward from the complete staged snapshot
+            // rather than permanently wedging the vault.
             &staging
         } else {
             return Err(snapshot_save_error());
@@ -918,7 +934,7 @@ fn change_sign_in(
         "accountId": id,
         "startedAt": Utc::now().to_rfc3339(),
     });
-    fs::write(&pending, marker.to_string()).map_err(|e| AppError::io(&pending, e))?;
+    crate::config::atomic_write(&pending, marker.to_string().as_bytes())?;
     match apply(main) {
         Ok(()) => {
             finish_swap(vault);
@@ -955,6 +971,8 @@ pub struct SnapshotDto {
 #[serde(rename_all = "camelCase")]
 pub struct SwapStatus {
     pub supported: bool,
+    pub platform_supported: bool,
+    pub unsupported_reason: Option<String>,
     /// Desktop has its data open.
     pub running: bool,
     pub signed_in: bool,
@@ -993,8 +1011,18 @@ pub(crate) fn status_in(vault: &CodeVault, main: Option<&Path>) -> SwapStatus {
             });
         }
     }
+    let platform_supported = supported();
+    let unsupported_reason = if !platform_supported {
+        Some("Claude Desktop 账号切换目前仅支持 Windows。".to_string())
+    } else if main.is_none() {
+        Some("未检测到 Claude Desktop 配置目录，请先打开并登录 Claude Desktop。".to_string())
+    } else {
+        None
+    };
     SwapStatus {
-        supported: supported() && main.is_some(),
+        supported: platform_supported && main.is_some(),
+        platform_supported,
+        unsupported_reason,
         running: main.is_some_and(data_locked),
         signed_in: login.signed_in,
         api_mode,
@@ -1078,19 +1106,38 @@ fn main_desktop_pids() -> Vec<u32> {
         .collect()
 }
 
+#[cfg(windows)]
+fn process_exited(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject};
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        // Only treat ERROR_INVALID_PARAMETER (PID no longer exists) as exited;
+        // ERROR_ACCESS_DENIED (e.g. elevated/AppContainer process) means it is still alive.
+        return unsafe { GetLastError() } == ERROR_INVALID_PARAMETER;
+    }
+    let state = unsafe { WaitForSingleObject(handle, 0) };
+    unsafe { CloseHandle(handle) };
+    state == WAIT_OBJECT_0
+}
+
 /// Closes the default Desktop: asks nicely, then ends what is left, and
-/// waits until it has let go of its data. `true` when it was running.
+/// waits until both its data locks are released and its processes have exited.
+/// Returns `true` when it was running.
 #[cfg(windows)]
 pub(crate) fn close_main_desktop(main: &Path) -> Result<bool, AppError> {
     use std::os::windows::process::CommandExt;
     use std::time::{Duration, Instant};
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-    let pids = main_desktop_pids();
-    if pids.is_empty() && !data_locked(main) {
+    let mut tracked_pids = main_desktop_pids();
+    if tracked_pids.is_empty() && !data_locked(main) {
         return Ok(false);
     }
-    for pid in &pids {
+    for pid in &tracked_pids {
         let _ = std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string()])
             .creation_flags(CREATE_NO_WINDOW)
@@ -1099,23 +1146,30 @@ pub(crate) fn close_main_desktop(main: &Path) -> Result<bool, AppError> {
             .stderr(std::process::Stdio::null())
             .status();
     }
-    let wait = |limit: Duration| {
+    let wait = |tracked: &[u32], limit: Duration| {
         let start = Instant::now();
         while start.elapsed() < limit {
-            if !data_locked(main) {
+            if !data_locked(main)
+                && tracked.iter().all(|&pid| process_exited(pid))
+                && main_desktop_pids().is_empty()
+                && !data_locked(main)
+            {
                 return true;
             }
             std::thread::sleep(Duration::from_millis(150));
         }
         !data_locked(main)
+            && tracked.iter().all(|&pid| process_exited(pid))
+            && main_desktop_pids().is_empty()
     };
-    if !wait(Duration::from_secs(6)) {
+    if !wait(&tracked_pids, Duration::from_secs(6)) {
         // It lives on in the tray after its windows close. What it runs (Code
         // sessions, MCP servers) goes with it.
-        for pid in main_desktop_pids() {
-            crate::process_utils::terminate_process_tree(pid);
+        tracked_pids = main_desktop_pids();
+        for pid in &tracked_pids {
+            crate::process_utils::terminate_process_tree(*pid);
         }
-        if !wait(Duration::from_secs(8)) {
+        if !wait(&tracked_pids, Duration::from_secs(8)) {
             return Err(running_error());
         }
     }

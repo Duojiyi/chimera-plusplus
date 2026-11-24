@@ -147,3 +147,40 @@ impl Database {
         Ok(available)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn failover_queue_add_order_remove_and_clear_roundtrip() {
+        let db = Database::memory().expect("memory db");
+        let mut p1 = Provider::with_id("p1".into(), "First".into(), json!({}), None);
+        p1.sort_index = Some(20);
+        let mut p2 = Provider::with_id("p2".into(), "Second".into(), json!({}), None);
+        p2.sort_index = Some(10);
+        db.save_provider("codex", &p1).unwrap();
+        db.save_provider("codex", &p2).unwrap();
+
+        db.add_to_failover_queue("codex", "p1").unwrap();
+        db.add_to_failover_queue("codex", "p2").unwrap();
+        assert!(db.is_in_failover_queue("codex", "p1").unwrap());
+
+        let queue = db.get_failover_queue("codex").unwrap();
+        let ids: Vec<&str> = queue.iter().map(|i| i.provider_id.as_str()).collect();
+        assert_eq!(ids, vec!["p2", "p1"]);
+
+        db.remove_from_failover_queue("codex", "p2").unwrap();
+        assert!(!db.is_in_failover_queue("codex", "p2").unwrap());
+        assert_eq!(
+            db.get_available_providers_for_failover("codex")
+                .unwrap()
+                .len(),
+            1
+        );
+
+        db.clear_failover_queue("codex").unwrap();
+        assert!(db.get_failover_queue("codex").unwrap().is_empty());
+    }
+}

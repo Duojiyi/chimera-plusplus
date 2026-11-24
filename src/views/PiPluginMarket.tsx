@@ -140,8 +140,13 @@ export function PiPluginMarket({
   };
   const openSource = async (url: string) => {
     try {
-      if (native) await settingsApi.openExternal(url);
-      else window.open(url, "_blank", "noopener,noreferrer");
+      const trimmed = url.trim();
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error("仅允许打开 http:// 或 https:// 链接");
+      }
+      if (native) await settingsApi.openExternal(trimmed);
+      else window.open(trimmed, "_blank", "noopener,noreferrer");
     } catch (e) {
       setError(String(e));
     }

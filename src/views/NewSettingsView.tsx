@@ -11,11 +11,13 @@ import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import {
   lazy,
   Suspense,
+  useContext,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
 } from "react";
+import { QueryClientContext } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArchiveRestore,
@@ -40,6 +42,12 @@ import { getCurrentVersion } from "@/lib/updater";
 import { licenseLinks } from "@/lib/licenses";
 import { useUpdate } from "@/contexts/UpdateContext";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import {
+  readTextScale,
+  setTextScale,
+  TEXT_SCALE_OPTIONS,
+  type TextScale,
+} from "@/lib/textScale";
 
 const DatabaseRecoveryPanel = lazy(() =>
   import("@/components/settings/DatabaseRecoveryPanel").then((m) => ({
@@ -116,12 +124,6 @@ const defaultPreferences: PreferencesPatch = {
   minimizeToTrayOnClose: true,
   lightweightOnClose: false,
 };
-
-const closeBehaviors = [
-  ["tray", "最小化到托盘", "窗口收进托盘，Chimera++ 和本地路由继续运行"],
-  ["exit", "退出软件", "完全退出 Chimera++，本地路由随之停止"],
-  ["lightweight", "轻量模式", "关闭界面以释放内存，托盘和本地路由继续运行"],
-] as const;
 
 // Both values currently download from the same verified mirror: the runtime
 // manager resolves "auto" to it on Windows. Say so instead of implying a
@@ -211,6 +213,9 @@ export function NewSettingsView({
     installUpdate,
   } = useUpdate();
   const { t, i18n } = useTranslation();
+  const [textScale, setTextScaleState] = useState<TextScale>(() =>
+    readTextScale(),
+  );
   const [recoveryBusy, setRecoveryBusy] = useState(false);
   const [directoryBusy, setDirectoryBusy] = useState(false);
   const [dbOpen, setDbOpen] = useState(false);
@@ -229,6 +234,7 @@ export function NewSettingsView({
   // the highlight away from the section the user picked.
   const jumpTop = useRef<number | null>(null);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const queryClient = useContext(QueryClientContext);
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set());
   const [settings, setSettings] = useState<Settings | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
@@ -305,12 +311,16 @@ export function NewSettingsView({
     setActiveSection(current);
   };
 
+  const loadSeqRef = useRef(0);
+  const pendingCountsRef = useRef<Map<string, number>>(new Map());
   const loadSettings = async () => {
+    const seq = ++loadSeqRef.current;
     setSettingsError(null);
     try {
-      setSettings(await settingsApi.get());
+      const next = await settingsApi.get();
+      if (loadSeqRef.current === seq) setSettings(next);
     } catch (reason) {
-      setSettingsError(describeError(reason));
+      if (loadSeqRef.current === seq) setSettingsError(describeError(reason));
     }
   };
   useEffect(() => {
@@ -343,16 +353,27 @@ export function NewSettingsView({
   ) => {
     if (!settings) return;
     const keys = Object.keys(patch);
-    setPendingKeys((current) => new Set([...current, ...keys]));
+    keys.forEach((key) => {
+      pendingCountsRef.current.set(
+        key,
+        (pendingCountsRef.current.get(key) ?? 0) + 1,
+      );
+    });
+    setPendingKeys(new Set(pendingCountsRef.current.keys()));
     // Serialize UI responses; backend applies only these fields under its lock.
     saveQueue.current = saveQueue.current.then(async () => {
       try {
         if (runningInTauri) {
-          setSettings(await settingsApi.patchPreferences(patch));
+          const next = await settingsApi.patchPreferences(patch);
+          setSettings(next);
+          queryClient?.setQueryData(["settings"], next);
+          void queryClient?.invalidateQueries({ queryKey: ["settings"] });
         } else {
-          setSettings((current) =>
-            current ? { ...current, ...patch } : current,
-          );
+          setSettings((current) => {
+            const next = current ? { ...current, ...patch } : current;
+            if (next) queryClient?.setQueryData(["settings"], next);
+            return next;
+          });
         }
         if (done) {
           toast.success(done.message, {
@@ -364,11 +385,15 @@ export function NewSettingsView({
       } catch (reason) {
         toast.error("设置保存失败", { description: describeError(reason) });
       } finally {
-        setPendingKeys((current) => {
-          const next = new Set(current);
-          keys.forEach((key) => next.delete(key));
-          return next;
+        keys.forEach((key) => {
+          const remaining = (pendingCountsRef.current.get(key) ?? 1) - 1;
+          if (remaining <= 0) {
+            pendingCountsRef.current.delete(key);
+          } else {
+            pendingCountsRef.current.set(key, remaining);
+          }
         });
+        setPendingKeys(new Set(pendingCountsRef.current.keys()));
       }
     });
   };
@@ -402,9 +427,14 @@ export function NewSettingsView({
       // The backend registers the system entry and saves the preference as one
       // step and rolls back on failure, so the saved value only changes here.
       await settingsApi.setAutoLaunch(enabled);
-      setSettings((current) =>
-        current ? { ...current, launchOnStartup: enabled } : current,
-      );
+      setSettings((current) => {
+        const next = current
+          ? { ...current, launchOnStartup: enabled }
+          : current;
+        if (next) queryClient?.setQueryData(["settings"], next);
+        return next;
+      });
+      void queryClient?.invalidateQueries({ queryKey: ["settings"] });
       toast.success("开机自启动设置已保存");
     } catch (reason) {
       toast.error("设置开机自启动失败", { description: describeError(reason) });
@@ -417,11 +447,13 @@ export function NewSettingsView({
   const showProviderBalance = settings?.showProviderBalance ?? false;
   const updateSource =
     settings?.codexUpdateSource === "mirror" ? "mirror" : "auto";
-  const closeBehavior = !(settings?.minimizeToTrayOnClose ?? true)
-    ? "exit"
-    : settings?.lightweightOnClose
-      ? "lightweight"
-      : "tray";
+  const closeToTray = settings?.minimizeToTrayOnClose ?? true;
+  const lightweightOnClose =
+    closeToTray && Boolean(settings?.lightweightOnClose);
+  const closeSettingsBusy =
+    !settings ||
+    pendingKeys.has("minimizeToTrayOnClose") ||
+    pendingKeys.has("lightweightOnClose");
   useLightweightCloseBlocker(
     pendingKeys.size > 0 || autoLaunchBusy || installingAppUpdate || isStaging,
   );
@@ -452,8 +484,8 @@ export function NewSettingsView({
   };
   const installAppUpdate = async () => {
     try {
-      const installed = await installUpdate();
-      if (!installed) {
+      const outcome = await installUpdate();
+      if (outcome === "unavailable") {
         toast.info("该更新已不可用", { description: "已重新检查更新" });
       }
     } catch (reason) {
@@ -678,6 +710,87 @@ export function NewSettingsView({
               >
                 {heading("settings-general")}
                 <div className="settings-reference-list">
+                  <SettingsRow
+                    title="界面语言"
+                    description="当前应用使用的显示语言"
+                  >
+                    <span className="settings-current-language" lang="zh-CN">
+                      简体中文
+                    </span>
+                  </SettingsRow>
+                  <SettingsRow
+                    title="字号与阅读舒适度"
+                    titleId="text-scale-label"
+                    descriptionId="text-scale-note"
+                    description={
+                      TEXT_SCALE_OPTIONS.find(
+                        ([value]) => value === textScale,
+                      )?.[2]
+                    }
+                  >
+                    <div
+                      className="settings-segment settings-close-options"
+                      role="radiogroup"
+                      aria-labelledby="text-scale-label"
+                      aria-describedby="text-scale-note"
+                    >
+                      {TEXT_SCALE_OPTIONS.map(([value, label]) => (
+                        <label
+                          key={value}
+                          className={
+                            textScale === value ? "is-active" : undefined
+                          }
+                        >
+                          <input
+                            type="radio"
+                            name="text-scale"
+                            value={value}
+                            checked={textScale === value}
+                            onChange={() => {
+                              setTextScaleState(value);
+                              setTextScale(value);
+                            }}
+                          />
+                          {label}
+                        </label>
+                      ))}
+                    </div>
+                  </SettingsRow>
+                  <SwitchRow
+                    title="关闭窗口时最小化到托盘"
+                    description="点击关闭后保留托盘图标和本地路由。关闭此选项将退出软件。"
+                    checked={closeToTray}
+                    disabled={closeSettingsBusy}
+                    onToggle={() =>
+                      void save({
+                        minimizeToTrayOnClose: !closeToTray,
+                        lightweightOnClose: false,
+                      })
+                    }
+                  />
+                  <SwitchRow
+                    title="关闭时启用轻量模式"
+                    description="释放界面内存，保留托盘和本地路由。启用后同时打开最小化到托盘。"
+                    checked={lightweightOnClose}
+                    disabled={closeSettingsBusy}
+                    onToggle={() =>
+                      void save({
+                        minimizeToTrayOnClose: true,
+                        lightweightOnClose: !lightweightOnClose,
+                      })
+                    }
+                  />
+                  <SwitchRow
+                    title="启动时检测线路延迟与状态"
+                    description="启动时测试当前线路地址"
+                    checked={providerChecks}
+                    disabled={
+                      !settings || pendingKeys.has("checkProviderStatusOnStart")
+                    }
+                    onToggle={() =>
+                      void save({ checkProviderStatusOnStart: !providerChecks })
+                    }
+                  />
                   <SwitchRow
                     title="开机自启动"
                     description="登录系统后自动启动 Chimera++"
@@ -707,51 +820,6 @@ export function NewSettingsView({
                       )
                     }
                   />
-                  <SettingsRow
-                    title="关闭主窗口时"
-                    titleId="close-behavior-label"
-                    descriptionId="close-behavior-note"
-                    description={
-                      closeBehaviors.find(
-                        ([value]) => value === closeBehavior,
-                      )?.[2]
-                    }
-                  >
-                    <div
-                      className="settings-segment settings-close-options"
-                      role="radiogroup"
-                      aria-labelledby="close-behavior-label"
-                      aria-describedby="close-behavior-note"
-                    >
-                      {closeBehaviors.map(([value, label]) => (
-                        <label
-                          key={value}
-                          className={
-                            closeBehavior === value ? "is-active" : undefined
-                          }
-                        >
-                          <input
-                            type="radio"
-                            name="close-behavior"
-                            value={value}
-                            checked={closeBehavior === value}
-                            disabled={
-                              !settings ||
-                              pendingKeys.has("minimizeToTrayOnClose") ||
-                              pendingKeys.has("lightweightOnClose")
-                            }
-                            onChange={() =>
-                              void save({
-                                minimizeToTrayOnClose: value !== "exit",
-                                lightweightOnClose: value === "lightweight",
-                              })
-                            }
-                          />
-                          {label}
-                        </label>
-                      ))}
-                    </div>
-                  </SettingsRow>
                   <SwitchRow
                     title="显示线路余额"
                     description="仅部分服务商支持；开启后在当前线路卡上显示余额"
@@ -1052,17 +1120,6 @@ export function NewSettingsView({
                   }
                   onToggle={() =>
                     void save({ checkCodexUpdatesOnStart: !updateChecks })
-                  }
-                />
-                <SwitchRow
-                  title="自动检查线路状态"
-                  description="启动时测试当前线路地址"
-                  checked={providerChecks}
-                  disabled={
-                    !settings || pendingKeys.has("checkProviderStatusOnStart")
-                  }
-                  onToggle={() =>
-                    void save({ checkProviderStatusOnStart: !providerChecks })
                   }
                 />
                 <SettingsRow

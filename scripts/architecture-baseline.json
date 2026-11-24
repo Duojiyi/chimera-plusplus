@@ -16,9 +16,9 @@
     "provider->pi_config": 1,
     "proxy->commands": 1,
     "proxy->lib": 3,
-    "proxy->services": 6,
+    "proxy->services": 5,
     "proxy->store": 1,
-    "proxy->tray": 2,
+    "proxy->tray": 1,
     "services->commands": 1,
     "services->lib": 2,
     "settings->database": 1,
@@ -48,18 +48,16 @@
   "R5": {
     "claude_desktop_config.rs": 1,
     "commands/live_tools.rs": 1,
-    "commands/mcp.rs": 2,
     "commands/sync_support.rs": 3,
     "config_health.rs": 2,
     "proxy/response_processor.rs": 1,
     "services/live_backup.rs": 2,
     "services/mcp.rs": 2,
-    "services/pi_state.rs": 1,
     "services/prompt.rs": 8,
     "services/provider/live.rs": 2,
     "services/provider/mod.rs": 16,
     "services/provider/pi.rs": 1,
     "services/proxy.rs": 2,
-    "tray.rs": 6
+    "tray.rs": 1
   }
 }

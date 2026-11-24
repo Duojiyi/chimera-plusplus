@@ -15,8 +15,8 @@
 }
 
 .chimera-shell .settings-page-header h1 {
-  font-size: 24px;
-  line-height: 30px;
+  font-size: var(--fs-h1);
+  line-height: 1.25;
   font-weight: 700;
   letter-spacing: -0.01em;
   color: var(--text-1);
@@ -24,7 +24,7 @@
 
 .chimera-shell .settings-page-header p {
   margin: 2px 0 0;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   line-height: 16px;
   color: var(--text-2);
 }
@@ -52,20 +52,20 @@
 
 .chimera-shell .settings-page-nav button,
 .chimera-shell .settings-page-nav [role="tab"] {
-  height: 28px;
+  min-height: 34px;
   justify-content: flex-start;
   padding: 0 10px;
   border: 0;
   border-radius: 8px;
   background: transparent;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--text-2);
   text-align: left;
 }
 
 .chimera-shell .settings-page-nav button:hover {
-  background: #0b1c2a0a;
+  background: rgba(17, 19, 24, 0.04);
   color: var(--text-1);
 }
 
@@ -98,7 +98,7 @@
   border: 1px solid var(--v3-hairline);
   border-radius: 14px;
   background: var(--v3-glass-fill);
-  box-shadow: 0 1px 2px #1236680d;
+  box-shadow: 0 1px 2px rgba(17, 19, 24, 0.035);
   overflow: hidden;
 }
 
@@ -109,13 +109,13 @@
 
 .chimera-shell .settings-page-content h2,
 .chimera-shell .settings-page-content h3 {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--text-1);
 }
 
 .chimera-shell .settings-tools-description {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 16px;
   color: var(--text-2);
 }
@@ -129,7 +129,7 @@
   min-height: 36px;
   padding: 6px 14px;
   border-top: 1px solid var(--v3-hairline);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--text-2);
 }
 
@@ -181,14 +181,14 @@
   padding: 1px 6px;
   border-radius: 6px;
   background: #0b1c2a0f;
-  font-size: 9.5px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   color: var(--text-2);
 }
 
 .chimera-shell .settings-tool-details {
   margin-left: auto;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
 }
 
@@ -196,14 +196,14 @@
 .chimera-shell .settings-backup-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
 }
 
 .chimera-shell .settings-backup-table th {
-  height: 30px;
+  min-height: 36px;
   padding: 0 12px;
   text-align: left;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   letter-spacing: 0.04em;
   color: var(--text-3);
@@ -220,7 +220,7 @@
 
 .chimera-shell .settings-backups-database {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
 }
 
@@ -232,7 +232,7 @@
   gap: 2px;
   padding: 2px;
   border-radius: 9px;
-  background: #0b1c2a0a;
+  background: rgba(17, 19, 24, 0.04);
 }
 
 .chimera-shell .settings-segment button,
@@ -242,7 +242,7 @@
   border: 0;
   border-radius: 7px;
   background: transparent;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   color: var(--text-2);
 }
@@ -265,7 +265,7 @@
 }
 
 .chimera-shell .settings-licenses-link {
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--brand);
 }
 
@@ -297,7 +297,7 @@
   min-height: 28px;
   cursor: pointer;
   list-style: none;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--text-1);
 }
 
@@ -306,7 +306,7 @@
 }
 
 .chimera-shell .settings-tool-details {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
   margin: 2px 0 6px 15px;
 }
@@ -324,7 +324,7 @@
 .chimera-shell .settings-tools-preview-note {
   border-left: 0;
   padding: 6px 14px;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   line-height: 15px;
   color: var(--text-3);
   background: transparent;
@@ -349,14 +349,14 @@
 }
 
 .chimera-shell .settings-app-update-copy > :first-child {
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--text-1);
 }
 
 .chimera-shell .settings-app-update-copy > p {
   margin: 1px 0 0;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
 }
 
@@ -379,7 +379,7 @@
   overflow: hidden;
   padding: 18px 26px 0;
   background: transparent;
-  color: #0c1a24;
+  color: var(--text-1);
 }
 
 .chimera-shell .v3-settings-page .settings-page-header {
@@ -399,36 +399,47 @@
 }
 .chimera-shell .v3-settings-page .settings-page-header h1 {
   margin: 0;
-  font-size: 24px;
-  line-height: 30px;
+  font-size: var(--fs-h1);
+  line-height: 1.25;
   font-weight: 700;
   letter-spacing: -0.2px;
-  color: #0c1a24;
+  color: var(--text-1);
 }
 .chimera-shell .v3-settings-page .settings-page-header p {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 15px;
-  color: #454e58;
+  color: var(--text-3);
 }
 
+/* v5.2：设置页整块采用单一 18px 水晶舞台（左侧下沉雾钛栏 + 右侧晶白设置流） */
 .chimera-shell .v3-settings-page .settings-page-layout {
   display: grid;
-  grid-template-columns: 196px minmax(0, 1fr);
-  gap: 16px;
+  grid-template-columns: 204px minmax(0, 1fr);
+  gap: 0;
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
   align-items: stretch;
+  border: 1px solid var(--v3-glass-border);
+  border-radius: 18px;
+  background: var(--v3-glass-fill);
+  box-shadow:
+    var(--v3-shadow-inner-top), var(--v3-shadow-inner-bottom),
+    var(--v3-shadow-outer);
+  -webkit-backdrop-filter: blur(var(--v3-glass-blur)) saturate(150%);
+  backdrop-filter: blur(var(--v3-glass-blur)) saturate(150%);
 }
 
-/* ---------- 分区导航（无玻璃底；选中项白玻璃 + 左缘墨条） ---------- */
+/* ---------- 分区导航（下沉哑光账本侧栏 + 选中项白玻璃与 3px 石油绿左缘条） ---------- */
 .chimera-shell .v3-settings-page .settings-page-aside {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   min-height: 0;
-  padding-bottom: 18px;
+  padding: 14px 12px 16px;
+  background: var(--v5-ledger-glass);
+  border-right: 1px solid var(--v3-hairline);
 }
 .chimera-shell .v3-settings-page .settings-page-nav {
   display: flex;
@@ -445,15 +456,14 @@
   display: flex;
   align-items: center;
   gap: 9px;
-  height: 28px;
-  min-height: 28px;
+  min-height: 36px;
   padding: 0 12px;
   border: 1px solid transparent;
-  border-radius: 9px;
+  border-radius: 10px;
   background: transparent;
-  color: #33454f;
-  font-size: 11px;
-  font-weight: 400;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  font-weight: 500;
   text-decoration: none;
   transition: background-color 120ms cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -462,16 +472,16 @@
 }
 .chimera-shell .v3-settings-page .settings-page-nav a svg {
   flex: none;
-  color: #454e58;
+  color: var(--text-3);
 }
 .chimera-shell .v3-settings-page .settings-page-nav a:hover {
-  background: #0b1c2a0a;
-  color: #0c1a24;
+  background: rgba(17, 19, 24, 0.04);
+  color: var(--text-1);
 }
 .chimera-shell .v3-settings-page .settings-page-nav a[aria-current="location"] {
   background: #ffffffa6;
   border-color: #ffffffd9;
-  color: #0c1a24;
+  color: var(--text-1);
   font-weight: 600;
 }
 .chimera-shell
@@ -483,19 +493,19 @@
   left: -1px;
   top: 6px;
   bottom: 6px;
-  width: 2px;
-  border-radius: 1px;
-  background: #0c1a24;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent-petrol);
 }
 .chimera-shell
   .v3-settings-page
   .settings-page-nav
   a[aria-current="location"]
   svg {
-  color: #1f4d3a;
+  color: var(--accent-petrol);
 }
 .chimera-shell .v3-settings-page .settings-page-nav a:focus-visible {
-  outline: 2px solid #1f4d3a;
+  outline: 2px solid var(--accent-petrol);
   outline-offset: 2px;
 }
 
@@ -506,9 +516,9 @@
   gap: 4px;
   padding: 0 20px;
   font-family: var(--font-mono), ui-monospace, monospace;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   line-height: 16px;
-  color: #454e58;
+  color: var(--text-3);
 }
 .chimera-shell .v3-settings-page .settings-text-button {
   height: auto;
@@ -517,9 +527,9 @@
   border: 0;
   background: none;
   box-shadow: none;
-  color: #1f4d3a;
+  color: var(--accent-petrol);
   font-family: var(--font-cjk), system-ui, sans-serif;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   cursor: pointer;
 }
@@ -527,17 +537,17 @@
   text-decoration: underline;
 }
 .chimera-shell .v3-settings-page .settings-text-button:disabled {
-  color: #454e58;
+  color: var(--text-3);
   cursor: default;
 }
 
-/* ---------- 内容滚动区 ---------- */
+/* ---------- 内容滚动区（承载在统一水晶舞台右侧，无嵌套卡片堆砌） ---------- */
 .chimera-shell .v3-settings-page .settings-page-content {
   display: block;
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 4px 24px 0;
+  padding: 12px 24px 28px;
   scrollbar-gutter: stable;
 }
 .chimera-shell .v3-settings-page .settings-page-content:focus-visible {
@@ -547,14 +557,14 @@
 .chimera-shell .v3-settings-page .settings-group {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 18px;
 }
 .chimera-shell .v3-settings-page .settings-group:focus,
 .chimera-shell .v3-settings-page .settings-card:focus {
   outline: none;
 }
 
-/* ---------- 玻璃卡（§3.1）：卡头 44 + 发丝线，卡体行 ---------- */
+/* ---------- 设置分区（直接铺在水晶舞台上，用发丝线分节） ---------- */
 .chimera-shell .v3-settings-page .settings-card,
 .chimera-shell
   .v3-settings-page
@@ -562,28 +572,30 @@
   > section.settings-card {
   position: relative;
   padding: 0;
-  border: 1px solid #ffffff;
-  border-radius: 14px;
-  background: #ffffffd0;
-  box-shadow:
-    var(--v3-shadow-inner-top), var(--v3-shadow-inner-bottom),
-    var(--v3-shadow-outer);
-  -webkit-backdrop-filter: blur(30px) saturate(150%);
-  backdrop-filter: blur(30px) saturate(150%);
-  overflow: hidden;
-  scroll-margin-top: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  overflow: visible;
+  scroll-margin-top: 12px;
+}
+.chimera-shell .v3-settings-page .settings-card + .settings-card {
+  padding-top: 14px;
+  border-top: 1px solid var(--v3-hairline);
 }
 .chimera-shell .v3-settings-page .settings-card > h2 {
   display: flex;
   align-items: center;
-  min-height: 44px;
+  min-height: 46px;
   margin: 0;
-  padding: 0 19px;
-  border-bottom: 1px solid #0b1c2a12;
-  font-size: 12.5px;
-  line-height: 18px;
-  font-weight: 600;
-  color: #0c1a24;
+  padding: 0 4px;
+  border-bottom: 1px solid var(--v3-hairline);
+  font-size: var(--fs-md);
+  line-height: 22px;
+  font-weight: 650;
+  color: var(--text-1);
 }
 /* 卡头带副标时：标题与副标共用 44+ 的卡头，发丝线落在副标下面。 */
 .chimera-shell
@@ -597,10 +609,10 @@
 .chimera-shell .v3-settings-page .settings-card-lead {
   margin: 0;
   padding: 2px 19px 12px;
-  border-bottom: 1px solid #0b1c2a12;
-  font-size: 10.5px;
+  border-bottom: 1px solid rgba(17, 19, 24, 0.08);
+  font-size: var(--fs-xs);
   line-height: 15px;
-  color: #454e58;
+  color: var(--text-3);
 }
 
 /* ---------- 统一行：标题 + 说明 | 控件 ---------- */
@@ -624,11 +636,11 @@
   margin: 0;
   padding: 8px 0;
   border: 0;
-  border-top: 1px solid #0b1c2a12;
+  border-top: 1px solid rgba(17, 19, 24, 0.08);
   border-radius: 0;
   background: transparent;
   box-shadow: none;
-  color: #0c1a24;
+  color: var(--text-1);
   font: inherit;
   text-align: left;
 }
@@ -650,7 +662,7 @@
   .v3-settings-page
   button.settings-reference-row:hover:not(:disabled)
   b {
-  color: #1f4d3a;
+  color: var(--accent-petrol);
 }
 .chimera-shell .v3-settings-page .settings-reference-row:disabled {
   opacity: 1;
@@ -663,7 +675,7 @@
   opacity: 0.6;
 }
 .chimera-shell .v3-settings-page .settings-reference-row:focus-visible {
-  outline: 2px solid #1f4d3a;
+  outline: 2px solid var(--accent-petrol);
   outline-offset: -2px;
   border-radius: 8px;
 }
@@ -673,24 +685,24 @@
   gap: 2px;
   flex: 1 1 auto;
   min-width: 0;
-  color: #0c1a24;
+  color: var(--text-1);
 }
 .chimera-shell .v3-settings-page .settings-reference-row b {
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   line-height: 16px;
   font-weight: 500;
-  color: #0c1a24;
+  color: var(--text-1);
 }
 .chimera-shell .v3-settings-page .settings-reference-row small {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   line-height: 14px;
-  color: #454e58;
+  color: var(--text-3);
   overflow-wrap: anywhere;
 }
 .chimera-shell .v3-settings-page .settings-reference-row small code {
   font-family: var(--font-mono), ui-monospace, monospace;
-  font-size: 10px;
-  color: #33454f;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
 }
 .chimera-shell .v3-settings-page .settings-row-control {
   display: inline-flex;
@@ -701,40 +713,42 @@
 }
 .chimera-shell .v3-settings-page .settings-reference-row > svg {
   flex: none;
-  color: #454e58;
+  color: var(--text-3);
 }
 .chimera-shell .v3-settings-page .settings-disclosure-icon {
   transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* ---------- 次按钮（§3.2）：卡内与页头一致 ---------- */
+/* ---------- 次按钮：清晰发丝线边框 + 柔光浮起，杜绝白底隐形 ---------- */
 .chimera-shell .v3-settings-page button.secondary,
 .chimera-shell .v3-settings-page .settings-row-control > button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 30px;
-  min-height: 30px;
-  min-width: 56px;
+  min-height: 34px;
+  min-width: 58px;
   padding: 0 14px;
-  border: 1px solid #ffffffd9;
+  border: 1px solid var(--btn-secondary-border);
   border-radius: 9px;
-  background: #ffffffa8;
-  box-shadow: 0 0 0 1px #0b1c2a0d;
-  color: #33454f;
-  font-size: 11px;
-  font-weight: 500;
+  background: var(--btn-secondary-bg);
+  box-shadow: var(--v5-btn-shadow);
+  color: var(--text-1);
+  font-size: var(--fs-xs);
+  font-weight: 550;
   cursor: pointer;
-  transition: background-color 120ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition:
+    background-color 120ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 120ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .chimera-shell .v3-settings-page button.secondary:hover:not(:disabled),
 .chimera-shell
   .v3-settings-page
   .settings-row-control
   > button:hover:not(:disabled) {
-  background: #ffffff;
-  color: #0c1a24;
+  border-color: var(--btn-secondary-border-hover);
+  background: var(--btn-secondary-bg-hover);
+  color: var(--text-1);
 }
 .chimera-shell .v3-settings-page button.secondary:active:not(:disabled) {
   transform: scale(0.97);
@@ -745,41 +759,41 @@
   cursor: not-allowed;
 }
 .chimera-shell .v3-settings-page button.primary {
-  height: 30px;
+  min-height: 36px;
   padding: 0 14px;
   border: 0;
   border-radius: 9px;
-  background: #1f4d3a;
+  background: var(--brand);
   box-shadow: none;
   color: #ffffff;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
 }
 .chimera-shell .v3-settings-page button.primary:active:not(:disabled) {
   transform: scale(0.97);
 }
 
-/* ---------- 开关（§3.3：30×17，开 #0d7340，关 #0b1c2a1f，滑块 13） ---------- */
+/* ---------- 开关（§3.3：30×17，开 var(--success-fg)，关 rgba(17, 19, 24, 0.14)，滑块 13） ---------- */
 .chimera-shell .v3-settings-page .settings-switch {
   box-sizing: border-box;
   display: inline-flex;
   align-items: center;
-  flex: 0 0 30px;
-  width: 30px;
-  height: 17px;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 24px;
   padding: 0 2px;
   border: 0;
-  border-radius: 9px;
-  background: #0b1c2a1f;
+  border-radius: 999px;
+  background: #cbd2dc;
   box-shadow: none;
   filter: none;
   transition: background-color 120ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .chimera-shell .v3-settings-page .settings-switch > u {
   display: block;
-  flex: 0 0 13px;
-  width: 13px;
-  height: 13px;
+  flex: none;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   background: #ffffff;
   box-shadow: 0 1px 2px #0b1c2a33;
@@ -787,12 +801,12 @@
   transition: transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .chimera-shell .v3-settings-page .settings-switch.is-on {
-  background: #0d7340;
+  background: var(--switch-on-bg);
   border: 0;
   box-shadow: none;
 }
 .chimera-shell .v3-settings-page .settings-switch.is-on > u {
-  transform: translateX(13px);
+  transform: translateX(20px);
   background: #ffffff;
 }
 .chimera-shell
@@ -806,7 +820,7 @@
   filter: none;
 }
 
-/* ---------- 分段控件（§3.3：容器 #0b1c2a0a r9，选中白底 r7） ---------- */
+/* ---------- 分段控件（§3.3：容器 rgba(17, 19, 24, 0.04) r9，选中白底 r7） ---------- */
 .chimera-shell .v3-settings-page .settings-segment {
   display: inline-flex;
   flex: none;
@@ -816,7 +830,7 @@
   padding: 2px;
   border: 0;
   border-radius: 9px;
-  background: #0b1c2a0a;
+  background: rgba(17, 19, 24, 0.04);
   white-space: nowrap;
 }
 .chimera-shell .v3-settings-page .settings-segment button,
@@ -833,22 +847,22 @@
   border-radius: 7px;
   background: transparent;
   box-shadow: none;
-  color: #33454f;
-  font-size: 10.5px;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
   font-weight: 500;
   cursor: pointer;
   transition: background-color 120ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .chimera-shell .v3-settings-page .settings-segment button:hover:not(:disabled),
 .chimera-shell .v3-settings-page .settings-segment label:hover {
-  color: #0c1a24;
+  color: var(--text-1);
 }
 .chimera-shell .v3-settings-page .settings-segment button.is-active,
 .chimera-shell .v3-settings-page .settings-segment label.is-active {
   background: #ffffff;
-  color: #0c1a24;
+  color: var(--text-1);
   font-weight: 600;
-  box-shadow: 0 1px 2px #0b1c2a14;
+  box-shadow: 0 1px 2px rgba(17, 19, 24, 0.085);
 }
 .chimera-shell .v3-settings-page .settings-segment button:disabled {
   opacity: 0.55;
@@ -871,7 +885,7 @@
   .v3-settings-page
   .settings-close-options
   label:has(input:focus-visible) {
-  outline: 2px solid #1f4d3a;
+  outline: 2px solid var(--accent-petrol);
   outline-offset: 1px;
 }
 
@@ -881,9 +895,9 @@
   gap: 10px;
   padding: 4px 0 16px;
   border: 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 1.5;
-  color: #33454f;
+  color: var(--text-2);
 }
 .chimera-shell .v3-settings-page .settings-subpanel > .settings-reference-list {
   padding: 0;
@@ -891,45 +905,45 @@
 .chimera-shell .v3-settings-page .settings-subpanel h2,
 .chimera-shell .v3-settings-page .settings-subpanel h3 {
   margin: 0;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   font-weight: 600;
-  color: #0c1a24;
+  color: var(--text-1);
 }
 .chimera-shell .v3-settings-page .settings-subpanel button:not([class]) {
-  height: 30px;
+  min-height: 34px;
   padding: 0 14px;
-  border: 1px solid #ffffffd9;
+  border: 1px solid var(--btn-secondary-border);
   border-radius: 9px;
-  background: #ffffffa8;
-  box-shadow: 0 0 0 1px #0b1c2a0d;
-  color: #33454f;
-  font-size: 11px;
-  font-weight: 500;
+  background: var(--btn-secondary-bg);
+  box-shadow: var(--v5-btn-shadow);
+  color: var(--text-1);
+  font-size: var(--fs-xs);
+  font-weight: 550;
 }
 .chimera-shell
   .v3-settings-page
   .settings-subpanel
   :is(input:not([type="checkbox"]):not([type="radio"]), select):not([class]),
 .chimera-shell .v3-settings-page .settings-subpanel .config-dir-input {
-  height: 30px;
+  min-height: 36px;
   padding: 0 12px;
   border: 1px solid transparent;
   border-radius: 8px;
-  background: #0b1c2a08;
-  color: #0c1a24;
-  font-size: 11px;
+  background: rgba(17, 19, 24, 0.035);
+  color: var(--text-1);
+  font-size: var(--fs-xs);
 }
 .chimera-shell .v3-settings-page .settings-subpanel input:focus-visible,
 .chimera-shell .v3-settings-page .settings-subpanel select:focus-visible {
   outline: none;
-  border-color: #1f4d3a;
-  box-shadow: 0 0 0 0.5px #1f4d3a;
+  border-color: var(--accent-petrol);
+  box-shadow: 0 0 0 0.5px var(--accent-petrol);
 }
 .chimera-shell .v3-settings-page .settings-card-foot {
   margin: 0;
   padding: 8px 0 0;
-  font-size: 10px;
-  color: #454e58;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
 }
 
 /* 关于 → 支持的工具：中性竖条代替双字母徽标，不再画「+」号。 */
@@ -938,7 +952,7 @@
   min-height: 0;
   padding: 0;
   border: 0;
-  border-top: 1px solid #0b1c2a12;
+  border-top: 1px solid rgba(17, 19, 24, 0.08);
 }
 .chimera-shell .v3-settings-page .settings-tool-row > summary {
   display: flex;
@@ -948,15 +962,15 @@
   padding: 0;
   cursor: pointer;
   list-style: none;
-  font-size: 11.5px;
-  color: #0c1a24;
+  font-size: var(--fs-sm);
+  color: var(--text-1);
 }
 .chimera-shell .v3-settings-page .settings-tool-row > summary::before {
   content: none;
 }
 .chimera-shell .v3-settings-page .settings-tool-row > summary b {
   flex: 0 0 132px;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 .chimera-shell .v3-settings-page .settings-tool-mark {
@@ -972,37 +986,37 @@
   padding: 1px 7px;
   border: 0;
   border-radius: 9px;
-  background: #0b1c2a0a;
-  font-size: 10px;
-  color: #33454f;
+  background: rgba(17, 19, 24, 0.04);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
 }
 .chimera-shell .v3-settings-page .settings-tool-visibility {
   flex: 1;
-  font-size: 10.5px;
-  color: #454e58;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
 }
 .chimera-shell .v3-settings-page .settings-tool-details {
   margin: 0;
   padding: 0 0 10px 13px;
-  font-size: 10.5px;
-  color: #454e58;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
 }
 .chimera-shell .v3-settings-page .settings-tool-details code {
   font-family: var(--font-mono), ui-monospace, monospace;
-  font-size: 10px;
+  font-size: var(--fs-xs);
 }
 .chimera-shell .v3-settings-page .settings-tools-preview-note {
   margin: 0;
   padding: 0;
   border: 0;
   background: transparent;
-  font-size: 10.5px;
-  color: #454e58;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
 }
 .chimera-shell .v3-settings-page .settings-tools-description {
   margin: 0;
-  font-size: 10.5px;
-  color: #454e58;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
 }
 .chimera-shell .v3-settings-page .settings-tools-panel-title,
 .chimera-shell .v3-settings-page .settings-subpanel #settings-tools-heading {
@@ -1030,8 +1044,8 @@
   border: 0;
   background: none;
   box-shadow: none;
-  color: #1f4d3a;
-  font-size: 11px;
+  color: var(--accent-petrol);
+  font-size: var(--fs-xs);
   font-weight: 500;
   cursor: pointer;
 }
@@ -1049,17 +1063,17 @@
   border-radius: 14px;
   background: #ffffffd0;
   box-shadow: var(--v3-shadow-outer);
-  color: #b4342c;
-  font-size: 11px;
+  color: var(--danger-fg);
+  font-size: var(--fs-xs);
 }
 .chimera-shell .v3-settings-page .settings-load-error span {
   flex: 1;
-  color: #0c1a24;
+  color: var(--text-1);
 }
 .chimera-shell .v3-settings-page .settings-load-error small {
   display: block;
-  font-size: 10px;
-  color: #454e58;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
 }
 
 /* ---------- 备份与恢复（L45 节奏：工具条 → 表 → 数据库行） ---------- */
@@ -1070,69 +1084,69 @@
 .chimera-shell .v3-settings-page .live-backups-description,
 .chimera-shell .v3-settings-page .live-backups-note {
   margin: 0;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   line-height: 15px;
-  color: #454e58;
+  color: var(--text-3);
 }
 .chimera-shell .v3-settings-page .live-backups-toolbar {
   margin: 0;
 }
 .chimera-shell .v3-settings-page .live-backups-tool {
   gap: 8px;
-  font-size: 11px;
-  color: #33454f;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
 }
 .chimera-shell .v3-settings-page .live-backups-tool select {
-  height: 30px;
+  min-height: 36px;
   min-width: 148px;
   padding: 0 10px;
   border: 1px solid transparent;
   border-radius: 8px;
-  background: #0b1c2a08;
-  color: #0c1a24;
-  font-size: 11px;
+  background: rgba(17, 19, 24, 0.035);
+  color: var(--text-1);
+  font-size: var(--fs-xs);
 }
 .chimera-shell .v3-settings-page .live-backups-actions {
   gap: 8px;
 }
 .chimera-shell .v3-settings-page .live-backups-actions button {
-  height: 30px;
+  min-height: 36px;
   padding: 0 14px;
   border-radius: 9px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 500;
 }
 .chimera-shell .v3-settings-page .live-backups-actions button:not(:last-child) {
-  border: 1px solid #ffffffd9;
+  border: 1px solid var(--btn-secondary-border);
   background: #ffffffa8;
   box-shadow: 0 0 0 1px #0b1c2a0d;
-  color: #33454f;
+  color: var(--text-2);
 }
 .chimera-shell .v3-settings-page .live-backups-actions button:last-child {
   border: 0;
-  background: #1f4d3a;
+  background: var(--brand);
   box-shadow: none;
   color: #ffffff;
   font-weight: 600;
 }
 .chimera-shell .v3-settings-page .settings-backup-table {
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .chimera-shell .v3-settings-page .settings-backup-table th {
-  height: 30px;
+  min-height: 36px;
   padding: 0 10px;
-  border-bottom: 1px solid #0b1c2a12;
+  border-bottom: 1px solid rgba(17, 19, 24, 0.08);
   background: transparent;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   letter-spacing: 0;
-  color: #454e58;
+  color: var(--text-3);
 }
 .chimera-shell .v3-settings-page .settings-backup-table td {
   height: 44px;
   padding: 0 10px;
-  border-bottom: 1px solid #0b1c2a12;
-  color: #33454f;
+  border-bottom: 1px solid rgba(17, 19, 24, 0.08);
+  color: var(--text-2);
 }
 .chimera-shell .v3-settings-page .settings-backup-table th:first-child,
 .chimera-shell .v3-settings-page .settings-backup-table td:first-child {
@@ -1140,49 +1154,49 @@
 }
 .chimera-shell .v3-settings-page .settings-backup-table .is-size {
   font-family: var(--font-mono), ui-monospace, monospace;
-  font-size: 10px;
+  font-size: var(--fs-xs);
 }
 .chimera-shell .v3-settings-page .settings-backup-table .is-actions button {
-  color: #1f4d3a;
-  font-size: 11px;
+  color: var(--accent-petrol);
+  font-size: var(--fs-xs);
 }
 .chimera-shell
   .v3-settings-page
   .settings-backup-table
   .is-actions
   button.is-danger {
-  color: #b4342c;
+  color: var(--danger-fg);
 }
 .chimera-shell .v3-settings-page .live-backup-file {
-  font-size: 10px;
-  color: #33454f;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
 }
 .chimera-shell .v3-settings-page .live-backups-table .live-backups-empty {
   height: 96px;
-  font-size: 11px;
-  color: #454e58;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
 }
 .chimera-shell .v3-settings-page .live-backups-empty [role="alert"] {
-  color: #b4342c;
+  color: var(--danger-fg);
 }
 .chimera-shell .v3-settings-page .settings-backups-unavailable {
   min-height: 0;
   padding: 14px 19px 4px;
 }
 .chimera-shell .v3-settings-page .settings-backups-columns {
-  height: 30px;
-  border-bottom: 1px solid #0b1c2a12;
-  font-size: 10px;
-  color: #454e58;
+  min-height: 36px;
+  border-bottom: 1px solid rgba(17, 19, 24, 0.08);
+  font-size: var(--fs-xs);
+  color: var(--text-3);
 }
 .chimera-shell .v3-settings-page .settings-backups-notice {
   min-height: 120px;
-  font-size: 11px;
-  color: #454e58;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
 }
 .chimera-shell .v3-settings-page .settings-backups-notice b {
-  font-size: 12.5px;
-  color: #0c1a24;
+  font-size: var(--fs-base);
+  color: var(--text-1);
 }
 .chimera-shell .v3-settings-page .settings-backups-database {
   margin: 0;
@@ -1194,7 +1208,7 @@
   border: 0;
   background: transparent;
   padding: 0;
-  color: #b4342c;
+  color: var(--danger-fg);
 }
 
 /* ---------- 更新卡（L27 结构：标题 / 说明 / 动作，进度条 5 高） ---------- */
@@ -1218,69 +1232,69 @@
   width: auto;
   height: auto;
   background: transparent;
-  color: #1f4d3a;
+  color: var(--accent-petrol);
 }
 .chimera-shell
   .v3-settings-page
   .settings-app-update.is-ok
   .settings-app-update-icon {
   background: transparent;
-  color: #0d7340;
+  color: var(--success-fg);
 }
 .chimera-shell
   .v3-settings-page
   .settings-app-update.is-available
   .settings-app-update-icon {
   background: transparent;
-  color: #1f4d3a;
+  color: var(--accent-petrol);
 }
 .chimera-shell
   .v3-settings-page
   .settings-app-update.is-error
   .settings-app-update-icon {
   background: transparent;
-  color: #b4342c;
+  color: var(--danger-fg);
 }
 .chimera-shell .v3-settings-page .settings-app-update-copy b {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
-  color: #0c1a24;
+  color: var(--text-1);
 }
 .chimera-shell .v3-settings-page .settings-app-update-copy small {
-  font-size: 10.5px;
-  color: #454e58;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
 }
 .chimera-shell .v3-settings-page .settings-app-update-row > button {
   min-width: 96px;
-  height: 30px;
+  min-height: 36px;
 }
 .chimera-shell .v3-settings-page .settings-app-update-progress {
   padding: 0 19px 14px 47px;
   font-family: var(--font-mono), ui-monospace, monospace;
-  font-size: 10px;
-  color: #0d7340;
+  font-size: var(--fs-xs);
+  color: var(--success-fg);
 }
 .chimera-shell .v3-settings-page .settings-app-update-progress > i {
   height: 5px;
   border-radius: 3px;
-  background: #0b1c2a14;
+  background: rgba(17, 19, 24, 0.085);
 }
 .chimera-shell .v3-settings-page .settings-app-update-progress u {
-  background: #0d7340;
+  background: var(--success-fg);
 }
 .chimera-shell .v3-settings-page .settings-app-update-details {
   padding: 12px 19px 14px 47px;
-  border-top: 1px solid #0b1c2a12;
+  border-top: 1px solid rgba(17, 19, 24, 0.08);
   background: transparent;
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .chimera-shell .v3-settings-page .settings-app-update-details b {
   font-family: var(--font-mono), ui-monospace, monospace;
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .chimera-shell .v3-settings-page .settings-app-update-details small {
-  font-size: 10px;
-  color: #454e58;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
 }
 
 /* ---------- 导入（独立页，卡内留白与其他分区一致） ---------- */
@@ -1301,39 +1315,39 @@
   min-height: 44px;
   margin: 0 -19px 12px;
   padding: 0 19px;
-  border-bottom: 1px solid #0b1c2a12;
-  font-size: 12.5px;
+  border-bottom: 1px solid rgba(17, 19, 24, 0.08);
+  font-size: var(--fs-base);
   font-weight: 600;
-  color: #0c1a24;
+  color: var(--text-1);
 }
 .chimera-shell .v3-settings-page .settings-import-form label,
 .chimera-shell .v3-settings-page .settings-import-file-note h3 {
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   font-weight: 600;
-  color: #0c1a24;
+  color: var(--text-1);
 }
 .chimera-shell .v3-settings-page .settings-import-form input {
-  height: 30px;
+  min-height: 36px;
   padding: 0 12px;
   border: 1px solid transparent;
   border-radius: 8px;
-  background: #0b1c2a08;
+  background: rgba(17, 19, 24, 0.035);
   font-family: var(--font-mono), ui-monospace, monospace;
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .chimera-shell .v3-settings-page .settings-import-form input:focus-visible {
   outline: none;
-  border-color: #1f4d3a;
+  border-color: var(--accent-petrol);
 }
 .chimera-shell .v3-settings-page .settings-import-file-note {
   margin-top: 16px;
   padding-top: 14px;
-  border-top: 1px solid #0b1c2a12;
-  font-size: 11px;
-  color: #33454f;
+  border-top: 1px solid rgba(17, 19, 24, 0.08);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
 }
 .chimera-shell .v3-settings-page .settings-tools-description.is-error {
-  color: #b4342c;
+  color: var(--danger-fg);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1380,4 +1394,26 @@
 }
 .chimera-shell .v3-settings-page .settings-tool-mark[data-tool="pi"] {
   background: #54683f;
+}
+
+.chimera-shell .settings-current-language {
+  padding: 4px 12px;
+  background: var(--v3-glass-fill);
+  border: 1px solid var(--v3-hairline);
+  border-radius: 7px;
+  font-weight: 600;
+  font-size: var(--fs-xs);
+}
+
+/* General preferences use the tall reading rows in the approved desktop view. */
+@media (min-width: 1050px) {
+  .chimera-shell.v5-workbench
+    .v3-settings-page
+    .settings-standard-sections
+    > .settings-group:first-child
+    > .settings-card:first-child
+    .settings-reference-row {
+    min-block-size: 95px;
+    padding-block: 16px;
+  }
 }

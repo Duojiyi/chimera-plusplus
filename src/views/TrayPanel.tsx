@@ -14,13 +14,18 @@ import {
   X,
 } from "lucide-react";
 import { LineBadge } from "@/components/LineBadge";
+import appIcon from "@/assets/icons/app-icon.png";
 import {
   Root as Tabs,
   Content as TabsContent,
   List as TabsList,
   Trigger as TabsTrigger,
 } from "@radix-ui/react-tabs";
-import { trayPanelCopy, type TrayLanguage } from "@/i18n/trayPanel";
+import {
+  normalizeTrayLanguage,
+  trayPanelCopy,
+  type TrayLanguage,
+} from "@/i18n/trayPanel";
 import type { ProfileScope } from "@/lib/api/profiles";
 import { usageApi } from "@/lib/api/usage";
 import type { DailyStats, UsageSummary } from "@/types/usage";
@@ -33,6 +38,7 @@ import {
   usageWindow,
   type UsageRange,
 } from "@/utils/usageMetrics";
+import { version as APP_VERSION } from "../../package.json";
 import "./TrayPanel.css";
 
 interface TrayLine {
@@ -76,6 +82,180 @@ type Feedback = {
   details?: string[];
 };
 const ranges: UsageRange[] = ["today", "7d", "30d"];
+
+function getTrayPreviewMode(): "normal" | "notice" | null {
+  if (
+    !import.meta.env.DEV ||
+    typeof window === "undefined" ||
+    "__TAURI_INTERNALS__" in window
+  ) {
+    return null;
+  }
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("preview") !== "tray") return null;
+  return params.get("state") === "notice" ? "notice" : "normal";
+}
+
+const TRAY_PREVIEW_SNAPSHOT: Snapshot = {
+  language: "zh",
+  hasProjects: true,
+  lightweight: true,
+  tools: [
+    {
+      id: "codex",
+      name: "Codex",
+      currentId: "chimerahub",
+      autoFailover: true,
+      currentUsageSummary: "5h 24% · 7d 41%",
+      lines: [
+        {
+          id: "chimerahub",
+          name: "ChimeraHub 官方高速",
+          category: null,
+          iconColor: "#0e6470",
+          badgeText: "C",
+          blockedByTakeover: false,
+        },
+        {
+          id: "openai-official",
+          name: "OpenAI Official",
+          category: "official",
+          iconColor: "#16181d",
+          badgeText: "O",
+          blockedByTakeover: false,
+        },
+        {
+          id: "deepseek-relay",
+          name: "DeepSeek Relay",
+          category: null,
+          iconColor: "#537197",
+          badgeText: "D",
+          blockedByTakeover: false,
+        },
+      ],
+    },
+    {
+      id: "claude",
+      name: "Claude",
+      currentId: "anthropic-pro",
+      autoFailover: true,
+      currentUsageSummary: "5h 12%",
+      lines: [
+        {
+          id: "anthropic-pro",
+          name: "Anthropic Pro",
+          category: "official",
+          iconColor: "#2c7175",
+          badgeText: "A",
+          blockedByTakeover: false,
+        },
+      ],
+    },
+    {
+      id: "gemini",
+      name: "Gemini",
+      currentId: "google-ai",
+      autoFailover: false,
+      currentUsageSummary: null,
+      lines: [
+        {
+          id: "google-ai",
+          name: "Google AI Studio",
+          category: "official",
+          iconColor: "#357b7f",
+          badgeText: "G",
+          blockedByTakeover: false,
+        },
+      ],
+    },
+  ],
+};
+
+const TRAY_PREVIEW_USAGE: { summary: UsageSummary; trend: DailyStats[] } = {
+  summary: {
+    totalRequests: 1428,
+    totalCost: "34.60",
+    totalInputTokens: 9_820_000,
+    totalOutputTokens: 2_660_000,
+    totalCacheCreationTokens: 0,
+    totalCacheReadTokens: 6_400_000,
+    realTotalTokens: 12_480_000,
+    successRate: 99.6,
+    cacheHitRate: 0.684,
+  },
+  trend: [
+    {
+      date: "2026-11-17",
+      requestCount: 160,
+      totalCost: "3.90",
+      totalTokens: 1_520_000,
+      totalInputTokens: 1_120_000,
+      totalOutputTokens: 400_000,
+      totalCacheCreationTokens: 0,
+      totalCacheReadTokens: 0,
+    },
+    {
+      date: "2026-11-18",
+      requestCount: 142,
+      totalCost: "3.10",
+      totalTokens: 1_240_000,
+      totalInputTokens: 920_000,
+      totalOutputTokens: 320_000,
+      totalCacheCreationTokens: 0,
+      totalCacheReadTokens: 0,
+    },
+    {
+      date: "2026-11-19",
+      requestCount: 224,
+      totalCost: "5.20",
+      totalTokens: 1_960_000,
+      totalInputTokens: 1_510_000,
+      totalOutputTokens: 450_000,
+      totalCacheCreationTokens: 0,
+      totalCacheReadTokens: 0,
+    },
+    {
+      date: "2026-11-20",
+      requestCount: 196,
+      totalCost: "4.60",
+      totalTokens: 1_710_000,
+      totalInputTokens: 1_310_000,
+      totalOutputTokens: 400_000,
+      totalCacheCreationTokens: 0,
+      totalCacheReadTokens: 0,
+    },
+    {
+      date: "2026-11-21",
+      requestCount: 312,
+      totalCost: "7.80",
+      totalTokens: 2_640_000,
+      totalInputTokens: 2_040_000,
+      totalOutputTokens: 600_000,
+      totalCacheCreationTokens: 0,
+      totalCacheReadTokens: 0,
+    },
+    {
+      date: "2026-11-22",
+      requestCount: 215,
+      totalCost: "5.40",
+      totalTokens: 1_850_000,
+      totalInputTokens: 1_450_000,
+      totalOutputTokens: 400_000,
+      totalCacheCreationTokens: 0,
+      totalCacheReadTokens: 0,
+    },
+    {
+      date: "2026-11-23",
+      requestCount: 179,
+      totalCost: "4.60",
+      totalTokens: 1_560_000,
+      totalInputTokens: 1_200_000,
+      totalOutputTokens: 360_000,
+      totalCacheCreationTokens: 0,
+      totalCacheReadTokens: 0,
+    },
+  ],
+};
 const projectScopeNames: Record<ProfileScope, string> = {
   claude: "Claude",
   "claude-desktop": "Claude Desktop",
@@ -93,27 +273,52 @@ function TrayUsage({
   revision: number;
   language: TrayLanguage;
 }) {
-  const text = trayPanelCopy(language);
-  const number = new Intl.NumberFormat(language);
-  const compactTokens = new Intl.NumberFormat(language, {
+  const safeLanguage = normalizeTrayLanguage(language);
+  const text = trayPanelCopy(safeLanguage);
+  const number = new Intl.NumberFormat(safeLanguage);
+  const compactTokens = new Intl.NumberFormat(safeLanguage, {
     notation: "compact",
     maximumFractionDigits: 1,
   });
-  const pct = new Intl.NumberFormat(language, {
+  const pct = new Intl.NumberFormat(safeLanguage, {
     style: "percent",
     maximumFractionDigits: 1,
   });
-  const [range, setRange] = useState<UsageRange>("today");
-  const [data, setData] = useState<{
-    range: UsageRange;
-    summary: UsageSummary;
-    hourly: boolean;
-    trend: DailyStats[];
-  }>();
-  const [loading, setLoading] = useState(true);
+  const previewMode = getTrayPreviewMode();
+  const [range, setRange] = useState<UsageRange>(previewMode ? "7d" : "today");
+  const [data, setData] = useState<
+    | {
+        range: UsageRange;
+        summary: UsageSummary;
+        hourly: boolean;
+        trend: DailyStats[];
+      }
+    | undefined
+  >(() =>
+    previewMode
+      ? {
+          range: "7d",
+          summary: TRAY_PREVIEW_USAGE.summary,
+          trend: TRAY_PREVIEW_USAGE.trend,
+          hourly: false,
+        }
+      : undefined,
+  );
+  const [loading, setLoading] = useState(!previewMode);
   const [failed, setFailed] = useState(false);
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
+    if (previewMode) {
+      setData({
+        range,
+        summary: TRAY_PREVIEW_USAGE.summary,
+        trend: TRAY_PREVIEW_USAGE.trend,
+        hourly: false,
+      });
+      setLoading(false);
+      setFailed(false);
+      return;
+    }
     let active = true;
     const { start, end } = usageWindow(range);
     setLoading(true);
@@ -145,6 +350,15 @@ function TrayUsage({
   const summary = snapshot?.summary;
   const trend = snapshot?.trend ?? [];
   const maxTokens = Math.max(1, ...trend.map(totalDailyTokens));
+  const hasTrendData =
+    Boolean(summary) && trend.some((bucket) => totalDailyTokens(bucket) > 0);
+  const peakBucket = hasTrendData
+    ? trend.find((bucket) => totalDailyTokens(bucket) === maxTokens)
+    : undefined;
+  const formatCompactTokens = (value: number) =>
+    safeLanguage === "zh"
+      ? formatUsageTokens(value)
+      : compactTokens.format(value);
   const hourly = snapshot?.hourly ?? false;
   const firstBucket = trend[0];
   const lastBucket = trend.at(-1);
@@ -152,14 +366,7 @@ function TrayUsage({
   const metrics = [
     [text.cost, Number.isFinite(totalCost) ? cost.format(totalCost) : "—"],
     [text.requests, summary ? number.format(summary.totalRequests) : "—"],
-    [
-      text.tokens,
-      summary
-        ? language === "zh"
-          ? formatUsageTokens(summary.realTotalTokens)
-          : compactTokens.format(summary.realTotalTokens)
-        : "—",
-    ],
+    [text.tokens, summary ? formatCompactTokens(summary.realTotalTokens) : "—"],
     [text.hitRate, summary ? pct.format(summary.cacheHitRate) : "—"],
   ];
   return (
@@ -203,25 +410,35 @@ function TrayUsage({
       <div className="tray-plot">
         <div className="tray-plot-title">
           <strong>{text.trend}</strong>
-          <span>{text.ranges[range]}</span>
+          <span>
+            {peakBucket
+              ? `${usageBucketLabel(peakBucket.date, hourly)} · ${formatCompactTokens(maxTokens)}`
+              : text.ranges[range]}
+          </span>
         </div>
-        {summary && trend.some((bucket) => totalDailyTokens(bucket) > 0) ? (
+        {hasTrendData ? (
           <>
             <div
               className="tray-bars"
               role="img"
               aria-label={text.peak(number.format(maxTokens))}
             >
-              {trend.map((bucket) => (
-                <span
-                  key={bucket.date}
-                  title={`${usageBucketLabel(bucket.date, hourly)} · ${text.tokenCount(number.format(totalDailyTokens(bucket)))}`}
-                  aria-hidden="true"
-                  style={{
-                    height: `${(totalDailyTokens(bucket) / maxTokens) * 100}%`,
-                  }}
-                />
-              ))}
+              {trend.map((bucket) => {
+                const tokens = totalDailyTokens(bucket);
+                return (
+                  <span
+                    key={bucket.date}
+                    data-peak={
+                      tokens > 0 && tokens === maxTokens ? "true" : undefined
+                    }
+                    title={`${usageBucketLabel(bucket.date, hourly)} · ${text.tokenCount(number.format(tokens))}`}
+                    aria-hidden="true"
+                    style={{
+                      height: `${(tokens / maxTokens) * 100}%`,
+                    }}
+                  />
+                );
+              })}
             </div>
             {firstBucket && lastBucket && (
               <div className="tray-plot-axis" aria-hidden="true">
@@ -250,21 +467,60 @@ function TrayUsage({
 }
 
 export function TrayPanel() {
-  const [snapshot, setSnapshot] = useState<Snapshot>();
+  const previewMode = getTrayPreviewMode();
+  const [snapshot, setSnapshot] = useState<Snapshot | undefined>(() => {
+    if (!previewMode) return undefined;
+    if (previewMode === "notice") {
+      return {
+        ...TRAY_PREVIEW_SNAPSHOT,
+        tools: TRAY_PREVIEW_SNAPSHOT.tools.map((tool) =>
+          tool.id === "codex"
+            ? {
+                ...tool,
+                lines: tool.lines.map((line) =>
+                  line.id === "openai-official"
+                    ? { ...line, blockedByTakeover: true }
+                    : line,
+                ),
+              }
+            : tool,
+        ),
+      };
+    }
+    return TRAY_PREVIEW_SNAPSHOT;
+  });
   const [revision, setRevision] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState(false);
+  const [loading, setLoading] = useState(!previewMode);
+  const [loadError, setLoadError] = useState(previewMode === "notice");
   const [feedback, setFeedback] = useState<Feedback>();
   const [projectResults, setProjectResults] = useState<
     ReadonlyMap<ProfileScope, ProjectChange>
-  >(() => new Map());
+  >(() =>
+    previewMode === "notice"
+      ? new Map([
+          [
+            "codex",
+            {
+              operation: 1,
+              scope: "codex",
+              result: {
+                status: "partial",
+                warnings: ["Codex 已切换，Claude Desktop 未检测到运行目录"],
+              },
+            },
+          ],
+        ])
+      : new Map(),
+  );
   const [pending, setPending] = useState(false);
+  const [openTools, setOpenTools] = useState<ReadonlySet<string> | null>(null);
   const activeOperation = useRef(false);
-  const firstTab = useRef<HTMLButtonElement>(null);
-  const language = snapshot?.language ?? "zh";
+  const panelRef = useRef<HTMLElement>(null);
+  const language = normalizeTrayLanguage(snapshot?.language);
   const text = trayPanelCopy(language);
 
   useEffect(() => {
+    if (previewMode) return;
     let disposed = false;
     const refresh = () => {
       if (!disposed) setRevision((value) => value + 1);
@@ -303,7 +559,10 @@ export function TrayPanel() {
   }, []);
 
   useEffect(() => {
-    const refresh = () => setRevision((value) => value + 1);
+    const refresh = () => {
+      setFeedback(undefined);
+      setRevision((value) => value + 1);
+    };
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !event.defaultPrevented) {
         event.preventDefault();
@@ -312,7 +571,9 @@ export function TrayPanel() {
     };
     window.addEventListener("focus", refresh);
     window.addEventListener("keydown", escape);
-    firstTab.current?.focus();
+    // Focus the panel container (outline: none) so Escape works immediately
+    // without painting a focus ring around the "线路" tab on mouse open.
+    panelRef.current?.focus();
     return () => {
       window.removeEventListener("focus", refresh);
       window.removeEventListener("keydown", escape);
@@ -320,6 +581,7 @@ export function TrayPanel() {
   }, []);
 
   useEffect(() => {
+    if (previewMode) return;
     let active = true;
     setLoading(true);
     setLoadError(false);
@@ -336,7 +598,7 @@ export function TrayPanel() {
     return () => {
       active = false;
     };
-  }, [revision]);
+  }, [previewMode, revision]);
 
   async function perform(operation: () => Promise<void>) {
     if (activeOperation.current) return;
@@ -391,11 +653,33 @@ export function TrayPanel() {
     });
   }
   const tools = snapshot?.tools ?? [];
+  const defaultOpenId =
+    tools.find((tool) => tool.id === "codex")?.id ?? tools[0]?.id;
+  const effectiveOpenTools =
+    openTools ?? (defaultOpenId ? new Set([defaultOpenId]) : new Set<string>());
+  function toggleTool(toolId: string, isOpen: boolean) {
+    setOpenTools((previous) => {
+      const next = new Set(previous ?? effectiveOpenTools);
+      if (isOpen) next.add(toolId);
+      else next.delete(toolId);
+      return next;
+    });
+  }
   return (
-    <main className="tray-panel" lang={language} aria-label={text.panel}>
+    <main
+      ref={panelRef}
+      tabIndex={-1}
+      className="tray-panel"
+      lang={language}
+      aria-label={text.panel}
+    >
       <header className="tray-header">
         <span className="tray-brand">
-          <span aria-hidden="true">C</span>Chimera++
+          <span aria-hidden="true" className="tray-brand-logo">
+            <img src={appIcon} alt="" />
+          </span>
+          Chimera++
+          <small className="tray-version">v{APP_VERSION}</small>
         </span>
         <button
           type="button"
@@ -409,7 +693,7 @@ export function TrayPanel() {
       </header>
       <Tabs defaultValue="lines" className="tray-tabs">
         <TabsList className="tray-tablist" aria-label={text.views}>
-          <TabsTrigger ref={firstTab} value="lines">
+          <TabsTrigger value="lines">
             <Route size={15} aria-hidden="true" />
             {text.lines}
           </TabsTrigger>
@@ -448,7 +732,13 @@ export function TrayPanel() {
               <details
                 key={tool.id}
                 className="tray-tool"
-                open={tools.length === 1 ? true : undefined}
+                open={effectiveOpenTools.has(tool.id)}
+                onToggle={(event) => {
+                  const nextOpen = event.currentTarget.open;
+                  if (nextOpen !== effectiveOpenTools.has(tool.id)) {
+                    toggleTool(tool.id, nextOpen);
+                  }
+                }}
               >
                 <summary>
                   <span>
@@ -457,12 +747,17 @@ export function TrayPanel() {
                       {current?.name ?? text.noCurrent}
                     </small>
                     {tool.currentUsageSummary && (
-                      <small title={tool.currentUsageSummary}>
+                      <small
+                        className="tray-quota-chip"
+                        title={tool.currentUsageSummary}
+                      >
                         {tool.currentUsageSummary}
                       </small>
                     )}
                   </span>
-                  {tool.autoFailover && <small>{text.automatic}</small>}
+                  {tool.autoFailover && (
+                    <small className="tray-auto-chip">{text.automatic}</small>
+                  )}
                   <ChevronDown size={15} aria-hidden="true" />
                 </summary>
                 {tool.lines.length ? (
@@ -572,11 +867,12 @@ export function TrayPanel() {
           )}
           <button
             type="button"
+            className="tray-action-primary"
             disabled={pending}
             onClick={() => action("openMain")}
           >
-            <ArrowUpRight size={15} aria-hidden="true" />
             {text.open}
+            <ArrowUpRight size={15} aria-hidden="true" />
           </button>
           <button
             type="button"

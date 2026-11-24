@@ -49,9 +49,29 @@ use crate::app_config::AppType;
 use crate::provider::Provider;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use bytes::Bytes;
-use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+
+async fn read_request_body_limited(body: axum::body::Body) -> Result<Bytes, ProxyError> {
+    axum::body::to_bytes(body, super::server::MAX_REQUEST_BODY_BYTES)
+        .await
+        .map_err(|e| {
+            let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&e);
+            while let Some(err) = source {
+                if err
+                    .downcast_ref::<http_body_util::LengthLimitError>()
+                    .is_some()
+                {
+                    return ProxyError::PayloadTooLarge(format!(
+                        "Request body exceeds limit of {} bytes",
+                        super::server::MAX_REQUEST_BODY_BYTES
+                    ));
+                }
+                source = err.source();
+            }
+            ProxyError::Internal(format!("Failed to read request body: {e}"))
+        })
+}
 
 // ============================================================================
 // 健康检查和状态查询（简单端点）
@@ -96,7 +116,11 @@ pub async fn handle_models() -> Result<Json<Value>, ProxyError> {
     let catalog = if let Some(catalog_path) =
         active_catalog_path.as_ref().filter(|path| path.exists())
     {
-        let text = std::fs::read_to_string(catalog_path).unwrap_or_default();
+        let text = crate::security_limits::read_to_string_limited(
+            catalog_path,
+            crate::security_limits::MAX_CONFIG_FILE_BYTES,
+        )
+        .unwrap_or_default();
         serde_json::from_str(&text).unwrap_or(json!({"models": []}))
     } else {
         if active_catalog_path.is_none() {
@@ -170,11 +194,7 @@ async fn handle_messages_for_app(
     let uri = parts.uri;
     let headers = parts.headers;
     let extensions = parts.extensions;
-    let body_bytes = body
-        .collect()
-        .await
-        .map_err(|e| ProxyError::Internal(format!("Failed to read request body: {e}")))?
-        .to_bytes();
+    let body_bytes = read_request_body_limited(body).await?;
     let body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
@@ -742,11 +762,7 @@ async fn handle_codex_passthrough(
     let uri = parts.uri;
     let mut headers = parts.headers;
     let extensions = parts.extensions;
-    let body_bytes = req_body
-        .collect()
-        .await
-        .map_err(|e| ProxyError::Internal(format!("Failed to read request body: {e}")))?
-        .to_bytes();
+    let body_bytes = read_request_body_limited(req_body).await?;
     let body_bytes = decode_codex_request_body(&mut headers, body_bytes)?;
     let body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
@@ -1237,11 +1253,7 @@ async fn handle_responses_for_app(
     let uri = parts.uri;
     let mut headers = parts.headers;
     let extensions = parts.extensions;
-    let body_bytes = req_body
-        .collect()
-        .await
-        .map_err(|e| ProxyError::Internal(format!("Failed to read request body: {e}")))?
-        .to_bytes();
+    let body_bytes = read_request_body_limited(req_body).await?;
     let mut body_bytes = decode_codex_request_body(&mut headers, body_bytes)?;
     let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
@@ -1569,11 +1581,7 @@ async fn handle_responses_compact_for_app(
     let uri = parts.uri;
     let mut headers = parts.headers;
     let extensions = parts.extensions;
-    let body_bytes = req_body
-        .collect()
-        .await
-        .map_err(|e| ProxyError::Internal(format!("Failed to read request body: {e}")))?
-        .to_bytes();
+    let body_bytes = read_request_body_limited(req_body).await?;
     let mut body_bytes = decode_codex_request_body(&mut headers, body_bytes)?;
     let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
@@ -2728,6 +2736,7 @@ fn codex_proxy_error_code(error: &ProxyError) -> &'static str {
         ProxyError::ConfigError(_) => "cc_switch_config_error",
         ProxyError::TransformError(_) => "cc_switch_transform_error",
         ProxyError::InvalidRequest(_) => "cc_switch_invalid_request",
+        ProxyError::PayloadTooLarge(_) => "cc_switch_payload_too_large",
         ProxyError::AuthError(_) => "cc_switch_auth_error",
         ProxyError::UpstreamError { .. } => "cc_switch_upstream_error",
         ProxyError::DatabaseError(_) => "cc_switch_database_error",
@@ -2769,11 +2778,7 @@ pub async fn handle_gemini(
     let method = parts.method.clone();
     let headers = parts.headers;
     let extensions = parts.extensions;
-    let body_bytes = req_body
-        .collect()
-        .await
-        .map_err(|e| ProxyError::Internal(format!("Failed to read request body: {e}")))?
-        .to_bytes();
+    let body_bytes = read_request_body_limited(req_body).await?;
     // GET 类只读端点（/v1beta/models、/v1beta/models/<model> 等）没有请求体，
     // 不能强制 parse 为 JSON —— 否则空 body 会被拒绝。
     let body: Value = if body_bytes.is_empty() {

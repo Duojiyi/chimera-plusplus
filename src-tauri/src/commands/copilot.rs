@@ -13,6 +13,11 @@ use tokio::sync::RwLock;
 /// Copilot 认证状态
 pub struct CopilotAuthState(pub Arc<RwLock<CopilotAuthManager>>);
 
+fn require_managed_accounts() -> Result<(), String> {
+    crate::product_policy::require(crate::product_policy::Capability::ManagedAccounts)
+        .map_err(|e| e.to_string())
+}
+
 // ==================== 设备码流程 ====================
 
 /// 启动设备码流程
@@ -23,6 +28,7 @@ pub async fn copilot_start_device_flow(
     github_domain: Option<String>,
     state: State<'_, CopilotAuthState>,
 ) -> Result<GitHubDeviceCodeResponse, String> {
+    require_managed_accounts()?;
     let auth_manager = state.0.read().await;
     auth_manager
         .start_device_flow(github_domain.as_deref())
@@ -40,6 +46,7 @@ pub async fn copilot_poll_for_auth(
     github_domain: Option<String>,
     state: State<'_, CopilotAuthState>,
 ) -> Result<bool, String> {
+    require_managed_accounts()?;
     let auth_manager = state.0.write().await;
     match auth_manager
         .poll_for_token(&device_code, github_domain.as_deref())
@@ -69,6 +76,7 @@ pub async fn copilot_poll_for_account(
     github_domain: Option<String>,
     state: State<'_, CopilotAuthState>,
 ) -> Result<Option<GitHubAccount>, String> {
+    require_managed_accounts()?;
     let auth_manager = state.0.write().await;
     match auth_manager
         .poll_for_token(&device_code, github_domain.as_deref())
@@ -92,6 +100,7 @@ pub async fn copilot_poll_for_account(
 pub async fn copilot_list_accounts(
     state: State<'_, CopilotAuthState>,
 ) -> Result<Vec<GitHubAccount>, String> {
+    require_managed_accounts()?;
     let auth_manager = state.0.read().await;
     Ok(auth_manager.list_accounts().await)
 }
@@ -102,6 +111,7 @@ pub async fn copilot_remove_account(
     account_id: String,
     state: State<'_, CopilotAuthState>,
 ) -> Result<(), String> {
+    require_managed_accounts()?;
     let auth_manager = state.0.write().await;
     auth_manager
         .remove_account(&account_id)
@@ -115,6 +125,7 @@ pub async fn copilot_set_default_account(
     account_id: String,
     state: State<'_, CopilotAuthState>,
 ) -> Result<(), String> {
+    require_managed_accounts()?;
     let auth_manager = state.0.write().await;
     auth_manager
         .set_default_account(&account_id)
@@ -129,6 +140,7 @@ pub async fn copilot_set_default_account(
 pub async fn copilot_get_auth_status(
     state: State<'_, CopilotAuthState>,
 ) -> Result<CopilotAuthStatus, String> {
+    require_managed_accounts()?;
     let auth_manager = state.0.read().await;
     Ok(auth_manager.get_status().await)
 }
@@ -136,6 +148,7 @@ pub async fn copilot_get_auth_status(
 /// 检查是否已认证（有任意账号）
 #[tauri::command]
 pub async fn copilot_is_authenticated(state: State<'_, CopilotAuthState>) -> Result<bool, String> {
+    require_managed_accounts()?;
     let auth_manager = state.0.read().await;
     Ok(auth_manager.is_authenticated().await)
 }
@@ -143,6 +156,7 @@ pub async fn copilot_is_authenticated(state: State<'_, CopilotAuthState>) -> Res
 /// 注销所有 Copilot 认证
 #[tauri::command]
 pub async fn copilot_logout(state: State<'_, CopilotAuthState>) -> Result<(), String> {
+    require_managed_accounts()?;
     let auth_manager = state.0.write().await;
     auth_manager.clear_auth().await.map_err(|e| e.to_string())
 }
@@ -158,6 +172,7 @@ pub async fn copilot_logout(state: State<'_, CopilotAuthState>) -> Result<(), St
 pub async fn copilot_get_models(
     state: State<'_, CopilotAuthState>,
 ) -> Result<Vec<CopilotModel>, String> {
+    require_managed_accounts()?;
     let auth_manager = state.0.read().await;
     auth_manager.fetch_models().await.map_err(|e| e.to_string())
 }
@@ -168,6 +183,7 @@ pub async fn copilot_get_models_for_account(
     account_id: String,
     state: State<'_, CopilotAuthState>,
 ) -> Result<Vec<CopilotModel>, String> {
+    require_managed_accounts()?;
     let auth_manager = state.0.read().await;
     auth_manager
         .fetch_models_for_account(&account_id)
@@ -180,6 +196,7 @@ pub async fn copilot_get_models_for_account(
 pub async fn copilot_get_usage(
     state: State<'_, CopilotAuthState>,
 ) -> Result<CopilotUsageResponse, String> {
+    require_managed_accounts()?;
     let auth_manager = state.0.read().await;
     auth_manager.fetch_usage().await.map_err(|e| e.to_string())
 }
@@ -190,6 +207,7 @@ pub async fn copilot_get_usage_for_account(
     account_id: String,
     state: State<'_, CopilotAuthState>,
 ) -> Result<CopilotUsageResponse, String> {
+    require_managed_accounts()?;
     let auth_manager = state.0.read().await;
     auth_manager
         .fetch_usage_for_account(&account_id)

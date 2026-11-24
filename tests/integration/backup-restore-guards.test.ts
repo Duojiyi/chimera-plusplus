@@ -69,8 +69,8 @@ describe("backup restore safety wiring", () => {
     ordered(restore, [
       "Self::apply_schema_migrations_on_conn",
       "Self::validate_stopped_proxy_state_on_conn(&staging_conn)?",
-      "self.backup_database_file()?",
-      "Backup::new(&staged_conn, &mut main_conn)",
+      "Self::backup_database_snapshot(&main_snapshot)?",
+      "run_backup_to_completion(&staged_conn, &mut main_conn",
     ]);
     expect(database).toContain(
       "FROM main.proxy_config WHERE enabled != 0 OR proxy_enabled != 0",
@@ -85,16 +85,16 @@ describe("backup restore safety wiring", () => {
     );
     ordered(sql, [
       "Self::validate_basic_state(&temp_conn)?",
-      "Self::restore_tables(local_snapshot, &temp_conn, preserve_tables)?",
+      "Self::restore_tables(&main_conn, &temp_conn, preserve_tables)?",
       "Self::validate_stopped_proxy_state_on_conn(&temp_conn)?",
-      "self.backup_database_file()?",
-      "Backup::new(&temp_conn, &mut main_conn)",
+      "Self::backup_database_snapshot(&main_snapshot)?",
+      "run_backup_to_completion(&temp_conn, &mut main_conn",
     ]);
     expect(sql).not.toMatch(
       /if preserve_tables\.is_empty\(\) \{\s*Self::validate_stopped_proxy_state_on_conn\(&temp_conn\)\?;/,
     );
     expect(sql).toContain(
-      "Self::restore_tables(local_snapshot, &temp_conn, preserve_tables)?",
+      "Self::restore_tables(&main_conn, &temp_conn, preserve_tables)?",
     );
   });
 

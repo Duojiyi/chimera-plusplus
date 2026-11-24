@@ -61,6 +61,12 @@ pub struct CatalogSkin {
     pub installed: bool,
     #[serde(default)]
     pub applied: bool,
+    #[serde(default = "default_platform_supported")]
+    pub platform_supported: bool,
+}
+
+fn default_platform_supported() -> bool {
+    cfg!(target_os = "windows")
 }
 
 #[derive(Debug, Deserialize)]
@@ -246,6 +252,7 @@ pub async fn list_skin_catalog() -> Result<Vec<CatalogSkin>, String> {
         for skin in &mut catalog {
             skin.installed = installed.contains(&skin.id);
             skin.applied = active.as_deref() == Some(skin.id.as_str());
+            skin.platform_supported = cfg!(target_os = "windows");
         }
         Ok(catalog)
     })
@@ -456,14 +463,7 @@ pub async fn apply_skin_package(skin_id: String, confirm: bool) -> Result<(), St
     tauri::async_runtime::spawn_blocking(move || {
         let _selection_guard = super::codex_runtime::acquire_operation_lock("save_active_skin")
             .map_err(|reason| format!("皮肤已应用，但保存选择失败：{reason}"))?;
-        let temporary = active.with_extension("tmp");
-        std::fs::write(&temporary, &skin_id)
-            .and_then(|_| {
-                if active.exists() {
-                    std::fs::remove_file(&active)?;
-                }
-                std::fs::rename(&temporary, &active)
-            })
+        crate::config::atomic_write(&active, skin_id.as_bytes())
             .map_err(|error| format!("皮肤已应用，但保存选择失败：{error}"))
     })
     .await

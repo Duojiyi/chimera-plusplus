@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import {
   Dialog,
   DialogContent,
@@ -70,7 +71,9 @@ export function ClaudeBindingsCard({
   const [chosen, setChosen] = useState("");
   const mounted = useRef(true);
   const pending = useRef(false);
+  const loadSeq = useRef(0);
   useReturnFocus(adding !== null);
+  useLightweightCloseBlocker(busy !== null || adding !== null);
 
   useEffect(() => {
     mounted.current = true;
@@ -81,20 +84,22 @@ export function ClaudeBindingsCard({
 
   const load = useCallback(async () => {
     if (!native) return;
+    const seq = ++loadSeq.current;
     setError(null);
     try {
       const [list, saved] = await Promise.all([
         claudeAccountsApi.listBindings(),
         claudeAccountsApi.listCode(),
       ]);
-      if (!mounted.current) return;
+      if (!mounted.current || loadSeq.current !== seq) return;
       setBindings(Array.isArray(list) ? list : []);
       setAccounts(
         saved.supported && Array.isArray(saved.accounts) ? saved.accounts : [],
       );
       setSessionsSupported(saved.sessionsSupported);
     } catch (cause) {
-      if (mounted.current) setError(errorText(cause));
+      if (mounted.current && loadSeq.current === seq)
+        setError(errorText(cause));
     }
   }, [native]);
 
@@ -302,6 +307,7 @@ export function ClaudeBindingsCard({
                       .filter(
                         (a) =>
                           !a.unreadable &&
+                          a.kind !== "desktop_only" &&
                           (!a.disabled || a.id === binding.accountId),
                       )
                       .map((a) => (

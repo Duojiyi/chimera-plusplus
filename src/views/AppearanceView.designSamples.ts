@@ -14,6 +14,7 @@ export const isAppearanceDesignPreview = (): boolean =>
 export const APPEARANCE_DESIGN_SAMPLE = [
   {
     id: "aperture",
+    swatches: ["#181b20", "#0e6470", "#34d399"],
     name: "Aperture",
     description: "冷灰侧栏与石墨绿强调色，代码区保持高对比。",
     version: "1.4.0",
@@ -25,6 +26,7 @@ export const APPEARANCE_DESIGN_SAMPLE = [
   },
   {
     id: "graphite",
+    swatches: ["#1e232b", "#64748b"],
     name: "Graphite",
     description: "低饱和深色，适合长时间阅读日志。",
     version: "2.0.1",
@@ -36,6 +38,7 @@ export const APPEARANCE_DESIGN_SAMPLE = [
   },
   {
     id: "paper",
+    swatches: ["#fbf9f5", "#b45309"],
     name: "Paper",
     description: "纸张底色与细线分隔，浅色环境更柔和。",
     version: "1.1.0",
@@ -47,6 +50,7 @@ export const APPEARANCE_DESIGN_SAMPLE = [
   },
   {
     id: "terminal",
+    swatches: ["#090b10", "#10b981"],
     name: "Terminal",
     description: "终端绿与等宽字体，信息密度更高。",
     version: "0.9.2",
@@ -58,6 +62,7 @@ export const APPEARANCE_DESIGN_SAMPLE = [
   },
   {
     id: "ember",
+    swatches: ["#1c1815", "#f97316"],
     name: "Ember",
     description: "暖棕色调，降低夜间蓝光。",
     version: "1.0.3",

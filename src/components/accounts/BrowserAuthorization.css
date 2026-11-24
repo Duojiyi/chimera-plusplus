@@ -8,19 +8,19 @@
 .browser-auth-link label,
 .browser-auth-manual label {
   color: var(--text-2);
-  font-size: 12px;
-  font-weight: 500;
+  font-size: var(--fs-xs);
+  font-weight: 550;
 }
 .browser-auth-link input,
 .browser-auth-manual textarea {
   width: 100%;
   min-width: 0;
   padding: 9px 11px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-  background: var(--bg-subtle);
+  border: 1px solid var(--btn-secondary-border, rgba(17, 19, 24, 0.12));
+  border-radius: 9px;
+  background: var(--input-bg, #ffffff);
   color: var(--text-1);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   font-family: var(--font-mono, ui-monospace, monospace);
 }
@@ -54,7 +54,7 @@
 .browser-auth-manual p,
 .browser-auth-error {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.7;
   overflow-wrap: anywhere;
   color: var(--text-2);

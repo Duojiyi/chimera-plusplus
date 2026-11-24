@@ -10,7 +10,6 @@ import {
   Users,
 } from "lucide-react";
 import type { Provider } from "@/types";
-import type { CANONICAL_STATION } from "@/data/canonicalData";
 import {
   extractCodexBaseUrl,
   extractCodexModelName,
@@ -31,7 +30,14 @@ interface StationSignboardProps {
   lineName?: string;
   /** Shown as an empty plate when no line is current. */
   emptyState?: { title: string; detail: string; lineNote?: string };
-  designSample?: typeof CANONICAL_STATION;
+  designSample?: {
+    providerId: string;
+    latencyMs: number;
+    status: string;
+    runtimeLabel: string;
+    testedAt?: string;
+    receipt?: string;
+  };
   latencyMs?: number | null;
   testingLatency?: boolean;
   /** Message of the last failed connection test of this line. */
@@ -40,6 +46,7 @@ interface StationSignboardProps {
   /** Why testing is unavailable, when it is. */
   testSpeedUnavailable?: string;
   onEdit?: () => void;
+  onPreviewDraft?: () => void;
   /** Official lines are managed on the 官方账号 page instead of edited here. */
   onManageAccount?: () => void;
   undoReceipt?: {
@@ -134,6 +141,7 @@ export const StationSignboard: React.FC<StationSignboardProps> = ({
   onTestSpeed,
   testSpeedUnavailable,
   onEdit,
+  onPreviewDraft,
   onManageAccount,
   undoReceipt,
   runtimeLabel = "运行状态见 Codex 管理页",
@@ -165,7 +173,7 @@ export const StationSignboard: React.FC<StationSignboardProps> = ({
                 <CircleDashed size={20} />
               </span>
               <div className="station-title">
-                <span className="station-eyebrow">当前线路</span>
+                <span className="station-eyebrow">当前运行线路</span>
                 <p className="station-empty-title">{emptyState.title}</p>
                 <p className="station-empty-detail">{emptyState.detail}</p>
               </div>
@@ -215,6 +223,7 @@ export const StationSignboard: React.FC<StationSignboardProps> = ({
     designSample?.providerId === currentProvider.id
       ? designSample
       : undefined;
+  const editLine = sample ? onPreviewDraft : onEdit;
   const isTesting = !sample && testingLatency;
   const failed = !sample && !isTesting && Boolean(connectionError);
   const displayLatency = sample?.latencyMs ?? latencyMs;
@@ -302,7 +311,12 @@ export const StationSignboard: React.FC<StationSignboardProps> = ({
               {Array.from(lineName ?? currentProvider.name)[0]?.toUpperCase()}
             </span>
             <div className="station-title">
-              <span className="station-eyebrow">当前线路</span>
+              <div className="station-tags">
+                <span className="station-eyebrow">当前线路</span>
+                <span className="station-kind">
+                  {official ? "官方 · ChatGPT 登录" : "第三方 · API 密钥"}
+                </span>
+              </div>
               <div className="station-name-row">
                 <p
                   className="station-name"
@@ -316,9 +330,9 @@ export const StationSignboard: React.FC<StationSignboardProps> = ({
                 >
                   {lineName}
                 </p>
-                <span className="station-kind">
-                  {official ? "官方 · ChatGPT 登录" : "第三方 · API 密钥"}
-                </span>
+                {host && !official && (
+                  <code className="station-title-host">{host}</code>
+                )}
               </div>
             </div>
             <div className="station-reading">
@@ -365,8 +379,8 @@ export const StationSignboard: React.FC<StationSignboardProps> = ({
                 <button
                   type="button"
                   className="station-action"
-                  onClick={sample ? undefined : onEdit}
-                  disabled={Boolean(sample) || !onEdit}
+                  onClick={editLine}
+                  disabled={!editLine}
                 >
                   <Pencil size={16} aria-hidden="true" />
                   <span>编辑</span>

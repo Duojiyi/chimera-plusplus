@@ -32,7 +32,8 @@ pub async fn fetch_models_with_token(
     token: &str,
     account_id: &str,
 ) -> Result<Vec<FetchedModel>, String> {
-    let client = crate::proxy::http_client::get();
+    let client = crate::proxy::http_client::get_for_auth_probe()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
     let response = models_request(&client, token, account_id)
         .send()
         .await

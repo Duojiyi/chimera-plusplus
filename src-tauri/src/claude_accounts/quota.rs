@@ -590,7 +590,9 @@ pub async fn account_quota(id: String, force: bool) -> Result<QuotaView, AppErro
     super::validate_account_id(&id)?;
     let lock = code::account_lock(&id);
     let _guard = lock.lock().await;
-    let vault = CodeVault::open_default()?;
+    let vault = tauri::async_runtime::spawn_blocking(CodeVault::open_default)
+        .await
+        .map_err(|_| AppError::Message("后台任务未完成，请重试".to_string()))??;
     read_quota(
         &vault,
         &LivePaths::current(),
@@ -619,9 +621,57 @@ pub struct DesktopQuotaDto {
 pub(crate) const DEFAULT_DESKTOP_ID: &str = "default";
 const MAX_PROFILE_RESPONSE_BYTES: usize = 64 * 1024;
 
-/// Email and organization type from the OAuth profile endpoint.
+/// Resolve the authoritative plan from Anthropic's `/api/oauth/profile` payload.
+/// Explicit `has_claude_max` / `has_claude_pro` booleans take precedence over a
+/// stale `organization_type` (for example, a cancelled Pro account that reverted
+/// to Free).
+fn resolve_desktop_profile_plan(value: &Value) -> Option<String> {
+    let organization_type = value
+        .pointer("/organization/organization_type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty() && text.len() <= 320);
+    if matches!(organization_type, Some("claude_team" | "claude_enterprise")) {
+        return super::plan_label(organization_type, None).map(str::to_string);
+    }
+    let has_max = value
+        .pointer("/account/has_claude_max")
+        .and_then(Value::as_bool);
+    let has_pro = value
+        .pointer("/account/has_claude_pro")
+        .and_then(Value::as_bool);
+    if has_max == Some(true) {
+        return Some("Max".to_string());
+    }
+    if has_pro == Some(true) {
+        return Some("Pro".to_string());
+    }
+    if has_max == Some(false) && has_pro == Some(false) {
+        return Some("Free".to_string());
+    }
+    if organization_type.is_some_and(|v| v.eq_ignore_ascii_case("claude_free")) {
+        return Some("Free".to_string());
+    }
+    super::plan_label(organization_type, None).map(str::to_string)
+}
+
+/// Prefer the live profile API's plan over a cached token's `subscriptionType`,
+/// while keeping `Max 5x` / `Max 20x` tier detail when the live profile confirms
+/// the account is still Max.
+fn merge_desktop_plan(token_plan: Option<String>, profile_plan: Option<String>) -> Option<String> {
+    match (profile_plan, token_plan) {
+        (Some(live), Some(cached)) if live == "Max" && cached.starts_with("Max ") => Some(cached),
+        (Some(live), _) => Some(live),
+        (None, cached) => cached,
+    }
+}
+
+/// Email and authoritative plan from the OAuth profile endpoint.
 async fn desktop_profile(access_token: &str) -> (Option<String>, Option<String>) {
-    let response = crate::proxy::http_client::get()
+    let Ok(client) = crate::proxy::http_client::get_for_auth_probe() else {
+        return (None, None);
+    };
+    let response = client
         .get("https://api.anthropic.com/api/oauth/profile")
         .header("Authorization", format!("Bearer {access_token}"))
         .header("anthropic-beta", "oauth-2025-04-20")
@@ -641,18 +691,14 @@ async fn desktop_profile(access_token: &str) -> (Option<String>, Option<String>)
     let Ok(value) = serde_json::from_slice::<Value>(&body) else {
         return (None, None);
     };
-    let text = |pointer: &str| {
-        value
-            .pointer(pointer)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|text| !text.is_empty() && text.len() <= 320)
-            .map(str::to_string)
-    };
-    (
-        text("/account/email"),
-        text("/organization/organization_type"),
-    )
+    let email = value
+        .pointer("/account/email")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty() && text.len() <= 320)
+        .map(str::to_string);
+    let plan = resolve_desktop_profile_plan(&value);
+    (email, plan)
 }
 
 /// The default Desktop's stored reading belongs to whoever was signed in when
@@ -678,28 +724,36 @@ pub async fn desktop_quota(id: String, force: bool) -> Result<DesktopQuotaDto, A
 /// Saved Desktop sign-ins are read without refreshing or rotating their tokens.
 pub async fn desktop_account_quota(id: String, force: bool) -> Result<DesktopQuotaDto, AppError> {
     super::validate_account_id(&id)?;
-    let vault = CodeVault::open_default()?;
-    let slot = vault.read_slot(&id)?;
-    if slot.disabled() {
-        return Err(AppError::Message("账号已停用".to_string()));
-    }
-    let expected = code::account_uuid_of(&vault, &id)?;
-    let main = super::desktop_swap::main_data_dir();
-    let current = main.as_deref().is_some_and(|dir| {
-        let login = super::desktop_swap::login_of(dir);
-        login.signed_in
-            && login
-                .account_uuid
-                .as_deref()
-                .zip(expected.as_deref())
-                .is_some_and(|(have, want)| have.eq_ignore_ascii_case(want))
-    });
-    let user_data = if current {
-        main
-    } else {
-        super::desktop_swap::quota_data_dir(&vault, &id)?
-    };
-    if user_data.is_none() && slot.kind() == code::SlotKind::Oauth {
+    let id_for_lookup = id.clone();
+    let (expected, user_data, fallback_to_oauth) =
+        tauri::async_runtime::spawn_blocking(move || {
+            let vault = CodeVault::open_default()?;
+            let slot = vault.read_slot(&id_for_lookup)?;
+            if slot.disabled() {
+                return Err(AppError::Message("账号已停用".to_string()));
+            }
+            let expected = code::account_uuid_of(&vault, &id_for_lookup)?;
+            let main = super::desktop_swap::main_data_dir();
+            let current = main.as_deref().is_some_and(|dir| {
+                let login = super::desktop_swap::login_of(dir);
+                login.signed_in
+                    && login
+                        .account_uuid
+                        .as_deref()
+                        .zip(expected.as_deref())
+                        .is_some_and(|(have, want)| have.eq_ignore_ascii_case(want))
+            });
+            let user_data = if current {
+                main
+            } else {
+                super::desktop_swap::quota_data_dir(&vault, &id_for_lookup)?
+            };
+            let fallback_to_oauth = user_data.is_none() && slot.kind() == code::SlotKind::Oauth;
+            Ok((expected, user_data, fallback_to_oauth))
+        })
+        .await
+        .map_err(|_| AppError::Message("后台任务未完成，请重试".to_string()))??;
+    if fallback_to_oauth {
         return Ok(DesktopQuotaDto {
             account_uuid: expected,
             email: None,
@@ -729,12 +783,24 @@ async fn desktop_quota_at(
     use super::desktop_auth::{self, TokenRead};
     let lock = code::account_lock(&key);
     let _guard = lock.lock().await;
-    let vault = CodeVault::open_default()?;
     let now = now_ms();
-    let identity = user_data
-        .as_deref()
-        .map(super::desktop_swap::login_of)
-        .unwrap_or_default();
+    let key_for_prep = key.clone();
+    let user_data_for_prep = user_data.clone();
+    let (vault, identity, previous) = tauri::async_runtime::spawn_blocking(move || {
+        let vault = CodeVault::open_default()?;
+        let identity = user_data_for_prep
+            .as_deref()
+            .map(super::desktop_swap::login_of)
+            .unwrap_or_default();
+        let uuid = identity
+            .account_uuid
+            .as_deref()
+            .filter(|_| identity.signed_in);
+        let previous = snapshot_for_identity(read_snapshot(&vault, &key_for_prep), uuid);
+        Ok::<_, AppError>((vault, identity, previous))
+    })
+    .await
+    .map_err(|_| AppError::Message("后台任务未完成，请重试".to_string()))??;
     let uuid = identity.account_uuid.filter(|_| identity.signed_in);
     let unavailable = || DesktopQuotaDto {
         account_uuid: None,
@@ -748,7 +814,6 @@ async fn desktop_quota_at(
     }) {
         return Ok(unavailable());
     }
-    let previous = snapshot_for_identity(read_snapshot(&vault, &key), uuid.as_deref());
     let answer = |status: QuotaStatus, plan: Option<String>| DesktopQuotaDto {
         account_uuid: uuid.clone(),
         email: previous
@@ -765,11 +830,13 @@ async fn desktop_quota_at(
         return Ok(answer(QuotaStatus::Unavailable, None));
     }
     let token_data = user_data.clone();
-    let read =
-        tauri::async_runtime::spawn_blocking(move || desktop_auth::read_token(&token_data, now))
-            .await
-            .map_err(|_| AppError::Message("后台任务未完成，请重试".to_string()))?;
-    let current = super::desktop_swap::login_of(&user_data);
+    let (read, current) = tauri::async_runtime::spawn_blocking(move || {
+        let read = desktop_auth::read_token(&token_data, now);
+        let current = super::desktop_swap::login_of(&token_data);
+        (read, current)
+    })
+    .await
+    .map_err(|_| AppError::Message("后台任务未完成，请重试".to_string()))?;
     if current.signed_in != identity.signed_in || current.account_uuid.as_deref() != uuid.as_deref()
     {
         return Ok(unavailable());
@@ -796,11 +863,27 @@ async fn desktop_quota_at(
         Ok(quota) if is_auth_failure(&quota) => {
             return Ok(answer(QuotaStatus::LiveExpired, token_plan))
         }
-        _ => return Ok(answer(QuotaStatus::Unavailable, token_plan)),
+        _ => {
+            // Free accounts have no subscription usage windows and fail the
+            // usage endpoint; still refresh `/api/oauth/profile` so a downgraded
+            // or Free account is not stuck displaying a stale `Pro` badge.
+            let (profile_email, profile_plan) = desktop_profile(&entry.token).await;
+            let resolved_plan = merge_desktop_plan(token_plan, profile_plan);
+            return Ok(DesktopQuotaDto {
+                account_uuid: uuid.clone(),
+                email: profile_email.or_else(|| {
+                    previous
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.email.clone())
+                }),
+                plan: resolved_plan
+                    .or_else(|| previous.as_ref().and_then(|snapshot| snapshot.plan.clone())),
+                quota: view_of(previous.as_ref(), QuotaStatus::Unavailable, now),
+            });
+        }
     };
-    let (email, organization_type) = desktop_profile(&entry.token).await;
-    let plan = token_plan
-        .or_else(|| super::plan_label(organization_type.as_deref(), None).map(str::to_string));
+    let (email, profile_plan) = desktop_profile(&entry.token).await;
+    let plan = merge_desktop_plan(token_plan, profile_plan);
     let current = super::desktop_swap::login_of(&user_data);
     if !current.signed_in
         || current
@@ -1228,5 +1311,37 @@ mod tests {
         let slot = fx.vault.read_slot(&work.id).unwrap();
         assert!(!slot.needs_relogin());
         assert_eq!(slot.oauth()["accessToken"], "tok-work");
+    }
+
+    #[test]
+    fn desktop_profile_plan_overrides_stale_pro_for_free_accounts() {
+        let downgraded_free = serde_json::json!({
+            "account": {
+                "email": "free@example.com",
+                "has_claude_pro": false,
+                "has_claude_max": false
+            },
+            "organization": {
+                "organization_type": "claude_pro"
+            }
+        });
+        assert_eq!(
+            resolve_desktop_profile_plan(&downgraded_free).as_deref(),
+            Some("Free")
+        );
+        assert_eq!(
+            merge_desktop_plan(Some("Pro".into()), Some("Free".into())).as_deref(),
+            Some("Free")
+        );
+        assert_eq!(
+            merge_desktop_plan(Some("Max 5x".into()), Some("Max".into())).as_deref(),
+            Some("Max 5x")
+        );
+
+        let team = serde_json::json!({
+            "account": { "has_claude_pro": false, "has_claude_max": false },
+            "organization": { "organization_type": "claude_team" }
+        });
+        assert_eq!(resolve_desktop_profile_plan(&team).as_deref(), Some("Team"));
     }
 }

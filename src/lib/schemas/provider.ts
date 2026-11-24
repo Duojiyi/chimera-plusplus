@@ -1,4 +1,25 @@
 import { z } from "zod";
+import { settingsApi } from "@/lib/api/settings";
+
+export function isSafeHttpUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url.trim());
+    return (
+      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      Boolean(parsed.hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function openSafeExternalUrl(url: string): Promise<void> {
+  const trimmed = url.trim();
+  if (!isSafeHttpUrl(trimmed)) {
+    throw new Error("仅允许打开 http:// 或 https:// 链接");
+  }
+  await settingsApi.openExternal(trimmed);
+}
 
 /**
  * 解析 JSON 语法错误，提取位置信息
@@ -37,7 +58,12 @@ function parseJsonError(error: unknown): string {
 
 export const providerSchema = z.object({
   name: z.string(), // 必填校验移至 handleSubmit 中用 toast 提示
-  websiteUrl: z.string().url("请输入有效的网址").optional().or(z.literal("")),
+  websiteUrl: z
+    .string()
+    .url("请输入有效的网址")
+    .refine(isSafeHttpUrl, "仅允许 http:// 或 https:// 网址")
+    .optional()
+    .or(z.literal("")),
   notes: z.string().optional(),
   settingsConfig: z
     .string()

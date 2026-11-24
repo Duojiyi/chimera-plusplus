@@ -1,6 +1,16 @@
 import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
+import { useRegisterOpenDialog } from "@/hooks/useDialogFocus";
 import { cn } from "@/lib/utils";
+
+/**
+ * Rendered inside `<DialogPrimitive.Content>` so Radix's internal `<Presence>`
+ * mounts this sentinel ONLY while the dialog is actually open.
+ */
+function DialogOpenRegistration() {
+  useRegisterOpenDialog(true);
+  return null;
+}
 
 const Dialog = DialogPrimitive.Root;
 
@@ -88,6 +98,7 @@ const DialogContent = React.forwardRef<
           }}
           {...props}
         >
+          <DialogOpenRegistration />
           {children}
         </DialogPrimitive.Content>
       </DialogPortal>

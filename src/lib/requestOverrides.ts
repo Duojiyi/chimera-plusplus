@@ -69,7 +69,6 @@ export function isProtectedLocalProxyHeaderName(name: string): boolean {
 // Keep this aligned with Rust's http::HeaderValue runtime guard: only control
 // characters other than tab are rejected.
 export function isValidHttpHeaderValue(value: string): boolean {
-  // eslint-disable-next-line no-control-regex
   return !/[\x00-\x08\x0a-\x1f\x7f]/.test(value);
 }
 

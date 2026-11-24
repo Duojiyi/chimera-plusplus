@@ -180,4 +180,16 @@ describe("appearance loading and failure states", () => {
       screen.getByRole("heading", { level: 2, name: "第二皮肤" }),
     ).toBeVisible();
   });
+  it("disables skin write actions and explains why on non-Windows platforms", async () => {
+    vi.mocked(invoke).mockResolvedValue([
+      { ...skin, platformSupported: false },
+    ]);
+    render(<AppearanceView enabled onRequestSkinAction={vi.fn()} />);
+    expect(
+      await screen.findByText(/Codex 皮肤注入与应用目前仅支持 Windows 桌面端/),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "恢复默认" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重新应用" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "导入本地" })).toBeDisabled();
+  });
 });

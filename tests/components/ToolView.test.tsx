@@ -160,7 +160,8 @@ describe("native tool official entry", () => {
     });
     vi.mocked(providersApi.getCurrent).mockResolvedValue("official");
     render(<ToolView toolId="claude-code" />);
-    await screen.findByText("Saved official");
+    const lines = await screen.findByRole("region", { name: /线路列表$/ });
+    expect(within(lines).getByText("Saved official")).toBeVisible();
     expect(screen.queryByText("Claude Official")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "当前线路" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "打开登录终端" })).toBeVisible();
@@ -176,7 +177,8 @@ describe("native tool official entry", () => {
     });
     vi.mocked(providersApi.getCurrent).mockResolvedValue("claude-official");
     render(<ToolView toolId="claude-code" />);
-    await screen.findByText("Custom route");
+    const lines = await screen.findByRole("region", { name: /线路列表$/ });
+    expect(within(lines).getByText("Custom route")).toBeVisible();
     expect(screen.getByText("Claude Official")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "切换" }));
     await waitFor(() =>
@@ -352,9 +354,10 @@ describe("explicit native configuration import", () => {
       await screen.findByRole("button", { name: "导入本机配置" }),
     );
     fireEvent.click(screen.getByRole("button", { name: "确认保存导入" }));
-    expect(await screen.findByText("Local API")).toBeVisible();
-    expect(screen.getByText("https://api.example.test")).toBeVisible();
-    expect(screen.getByText("claude-test")).toBeVisible();
+    const lines = await screen.findByRole("region", { name: /线路列表$/ });
+    expect(within(lines).getByText("Local API")).toBeVisible();
+    expect(within(lines).getByText("https://api.example.test")).toBeVisible();
+    expect(within(lines).getByText("claude-test")).toBeVisible();
     expect(screen.getByText("1 条线路")).toBeVisible();
     expect(screen.getByRole("button", { name: "当前线路" })).toBeDisabled();
     expect(
@@ -518,10 +521,11 @@ describe("provider switch subscriptions", () => {
     b: { id: "b", name: "Line B", settingsConfig: { env: {} } },
   };
   const switchButton = (name: string) =>
-    within(screen.getByText(name).parentElement!.parentElement!).getByRole(
-      "button",
-      { name: /^(当前线路|切换)$/ },
-    );
+    within(
+      within(screen.getByRole("region", { name: /线路列表$/ }))
+        .getByText(name)
+        .parentElement!.parentElement!,
+    ).getByRole("button", { name: /^(当前线路|切换)$/ });
   const emit = (event: ProviderSwitchEvent) => {
     const [handler] = vi.mocked(providersApi.onSwitched).mock.calls.at(-1)!;
     act(() => handler(event));
@@ -532,11 +536,16 @@ describe("provider switch subscriptions", () => {
     vi.mocked(providersApi.getCurrent).mockResolvedValue("a");
   });
 
+  const findSavedLine = async (name: string) => {
+    const region = await screen.findByRole("region", { name: /线路列表$/ });
+    return within(region).findByText(name);
+  };
+
   it("refreshes the selected app after a tray switch and ignores other apps", async () => {
     const dispose = vi.fn();
     vi.mocked(providersApi.onSwitched).mockResolvedValue(dispose);
     const view = render(<ToolView toolId="claude-code" native />);
-    await screen.findByText("Line A");
+    await findSavedLine("Line A");
     await waitFor(() => expect(providersApi.getAll).toHaveBeenCalledTimes(2));
     expect(switchButton("Line A")).toBeDisabled();
     emit({ appType: "gemini", providerId: "b" });
@@ -567,7 +576,7 @@ describe("provider switch subscriptions", () => {
     render(<ToolView toolId="claude-code" native />);
     expect(providersApi.getAll).toHaveBeenCalledTimes(1);
     await act(async () => subscription.resolve(vi.fn()));
-    await screen.findByText("Line B");
+    await findSavedLine("Line B");
     expect(switchButton("Line B")).toBeDisabled();
     await act(async () =>
       initial.resolve({ a: { ...lines.a, name: "Stale initial line" } }),
@@ -578,7 +587,7 @@ describe("provider switch subscriptions", () => {
 
   it("keeps the newest event refresh when older requests finish last", async () => {
     render(<ToolView toolId="claude-code" native />);
-    await screen.findByText("Line A");
+    await findSavedLine("Line A");
     await waitFor(() => expect(providersApi.getAll).toHaveBeenCalledTimes(2));
     const old = deferred<Record<string, Provider>>();
     vi.mocked(providersApi.getAll).mockReturnValueOnce(old.promise);
@@ -599,7 +608,7 @@ describe("provider switch subscriptions", () => {
       const dispose = vi.fn();
       vi.mocked(providersApi.onSwitched).mockReturnValueOnce(pending.promise);
       const view = render(<ToolView toolId="claude-code" native />);
-      await screen.findByText("Line A");
+      await findSavedLine("Line A");
       const [oldHandler] = vi.mocked(providersApi.onSwitched).mock.calls[0];
       if (action === "unmount") {
         view.unmount();
@@ -612,7 +621,7 @@ describe("provider switch subscriptions", () => {
         await waitFor(() =>
           expect(providersApi.getAll).toHaveBeenCalledTimes(5),
         );
-        await screen.findByText("Line A");
+        await findSavedLine("Line A");
       }
       const reads = vi.mocked(providersApi.getAll).mock.calls.length;
       await act(async () => pending.resolve(dispose));
@@ -627,7 +636,7 @@ describe("provider switch subscriptions", () => {
       new Error("listen failed"),
     );
     render(<ToolView toolId="claude-code" native />);
-    await screen.findByText("Line A");
+    await findSavedLine("Line A");
     expect(toast.error).toHaveBeenCalledWith(
       "无法订阅线路切换，请手动刷新或重新加载应用",
     );
@@ -640,7 +649,7 @@ describe("provider switch subscriptions", () => {
     const pending = deferred<() => void>();
     vi.mocked(providersApi.onSwitched).mockReturnValue(pending.promise);
     const view = render(<ToolView toolId="claude-code" native />);
-    await screen.findByText("Line A");
+    await findSavedLine("Line A");
     view.unmount();
     await act(async () => pending.reject(new Error("late failure")));
     expect(toast.error).not.toHaveBeenCalled();
@@ -648,7 +657,7 @@ describe("provider switch subscriptions", () => {
 
   it("does not subscribe in a browser preview", async () => {
     render(<ToolView toolId="claude-code" />);
-    await screen.findByText("Line A");
+    await findSavedLine("Line A");
     expect(providersApi.onSwitched).not.toHaveBeenCalled();
   });
 });

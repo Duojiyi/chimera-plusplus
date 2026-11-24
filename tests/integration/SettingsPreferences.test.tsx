@@ -87,7 +87,7 @@ describe("atomic preference saves", () => {
     const { container } = renderSettings();
     openSection("备份与恢复");
     await waitFor(() =>
-      expect(screen.getByRole("radio", { name: "退出软件" })).toBeEnabled(),
+      expect(screen.getByRole("switch", { name: /关闭窗口时最小化到托盘/ })).toBeEnabled(),
     );
     const sections = [
       ...container.querySelectorAll(".settings-standard-sections > section"),
@@ -105,22 +105,28 @@ describe("atomic preference saves", () => {
     // Every section starts with its own heading, controls follow.
     for (const section of sections)
       expect(section.firstElementChild?.tagName).toBe("H2");
-    // The 通用 card (L13): four rows in design order. 数据与目录 follows it
-    // inside the same group.
+    // The 通用 card: read-only language label, v5.2 text scale radiogroup,
+    // and six preference switches in design order.
     const rows = container.querySelectorAll(
       "#settings-general > section:first-of-type .settings-reference-row",
     );
-    // The language row is gone: a setting with one possible value is noise.
-    // So is the theme row: the app ships one light theme.
-    expect(rows).toHaveLength(4);
+    expect(rows).toHaveLength(8);
     expect(container.querySelector("#settings-general select")).toBeNull();
-    expect(rows[0]).toHaveAttribute("role", "switch");
-    expect(rows[0]).toHaveTextContent("开机自启动");
-    expect(rows[1]).toHaveAttribute("role", "switch");
-    expect(rows[1]).toHaveTextContent("静默启动");
-    expect(rows[2].querySelector('[role="radiogroup"]')).not.toBeNull();
+    expect(rows[0]).toHaveTextContent("界面语言");
+    expect(rows[1]).toHaveTextContent("字号与阅读舒适度");
+    expect(rows[1].querySelector('[role="radiogroup"]')).not.toBeNull();
+    expect(rows[2]).toHaveAttribute("role", "switch");
+    expect(rows[2]).toHaveTextContent("关闭窗口时最小化到托盘");
     expect(rows[3]).toHaveAttribute("role", "switch");
-    expect(rows[3]).toHaveTextContent("显示线路余额");
+    expect(rows[3]).toHaveTextContent("关闭时启用轻量模式");
+    expect(rows[4]).toHaveAttribute("role", "switch");
+    expect(rows[4]).toHaveTextContent("启动时检测线路延迟与状态");
+    expect(rows[5]).toHaveAttribute("role", "switch");
+    expect(rows[5]).toHaveTextContent("开机自启动");
+    expect(rows[6]).toHaveAttribute("role", "switch");
+    expect(rows[6]).toHaveTextContent("静默启动");
+    expect(rows[7]).toHaveAttribute("role", "switch");
+    expect(rows[7]).toHaveTextContent("显示线路余额");
     expect(screen.getByText("备份功能尚未开放")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "打开备份目录" })).toBeDisabled();
     expect(container.querySelector("#settings-backups tbody")).toBeNull();
@@ -188,7 +194,7 @@ describe("atomic preference saves", () => {
     renderSettings();
     openSection("通用");
     await waitFor(() =>
-      expect(screen.getByRole("radio", { name: "退出软件" })).toBeEnabled(),
+      expect(screen.getByRole("switch", { name: /关闭窗口时最小化到托盘/ })).toBeEnabled(),
     );
     expect(i18n.language).toBe("zh");
     expect(screen.queryByRole("combobox", { name: "界面语言" })).toBeNull();
@@ -329,26 +335,22 @@ describe("atomic preference saves", () => {
     });
   });
 
-  it("saves all three close behaviors atomically", async () => {
+  it("saves the tray and lightweight switches together", async () => {
     mocks.patch.mockImplementation(async (patch) => ({ ...initial, ...patch }));
     renderSettings();
     openSection("通用");
-    const exit = screen.getByRole("radio", { name: "退出软件" });
-    await waitFor(() => expect(exit).toBeEnabled());
-    expect(exit).toBeChecked();
-    for (const [label, tray, lightweight] of [
-      ["轻量模式", true, true],
-      ["最小化到托盘", true, false],
-      ["退出软件", false, false],
+    const tray = screen.getByRole("switch", { name: /关闭窗口时最小化到托盘/ });
+    const light = screen.getByRole("switch", { name: /关闭时启用轻量模式/ });
+    await waitFor(() => expect(tray).toBeEnabled());
+    expect(tray).not.toBeChecked();
+    for (const [control, minimize, lightweight] of [
+      [light, true, true], [light, true, false], [light, true, true], [tray, false, false], [tray, true, false],
     ] as const) {
-      const radio = screen.getByRole("radio", { name: label });
-      fireEvent.click(radio);
-      await waitFor(() => expect(radio).toBeChecked());
-      expect(mocks.patch).toHaveBeenLastCalledWith({
-        minimizeToTrayOnClose: tray,
-        lightweightOnClose: lightweight,
-      });
-      await waitFor(() => expect(radio).toBeEnabled());
+      fireEvent.click(control);
+      await waitFor(() => expect(mocks.patch).toHaveBeenLastCalledWith({ minimizeToTrayOnClose: minimize, lightweightOnClose: lightweight }));
+      await waitFor(() => expect(control).toBeEnabled());
+      expect(tray).toHaveAttribute("aria-checked", String(minimize));
+      expect(light).toHaveAttribute("aria-checked", String(lightweight));
     }
   });
 

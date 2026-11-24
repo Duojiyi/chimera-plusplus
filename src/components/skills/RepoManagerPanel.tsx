@@ -159,7 +159,7 @@ export function RepoManagerPanel({
                   <div className="mt-1 text-xs text-muted-foreground">
                     {t("skills.repo.branch")}: {repo.branch || "main"}
                     {skills && (
-                      <span className="ml-3 inline-flex items-center rounded-full border border-border-default px-2 py-0.5 text-[11px]">
+                      <span className="ml-3 inline-flex items-center rounded-full border border-border-default px-2 py-0.5 text-xs">
                         {t("skills.repo.skillCount", {
                           count: getSkillCount(repo, skills),
                         })}
@@ -173,20 +173,22 @@ export function RepoManagerPanel({
                     size="icon"
                     type="button"
                     onClick={() => handleOpenRepo(repo.owner, repo.name)}
+                    aria-label={`${t("common.view", { defaultValue: "查看" })} ${repo.owner}/${repo.name}`}
                     title={t("common.view", { defaultValue: "查看" })}
                     className="hover:bg-black/5 dark:hover:bg-white/5"
                   >
-                    <ExternalLink className="h-4 w-4" />
+                    <ExternalLink className="h-4 w-4" aria-hidden="true" />
                   </Button>
                   <Button
                     variant="ghost"
                     size="icon"
                     type="button"
                     onClick={() => onRemove(repo.owner, repo.name)}
+                    aria-label={`${t("common.delete")} ${repo.owner}/${repo.name}`}
                     title={t("common.delete")}
                     className="hover:text-red-500 hover:bg-red-100 dark:hover:text-red-400 dark:hover:bg-red-500/10"
                   >
-                    <Trash2 className="h-4 w-4" />
+                    <Trash2 className="h-4 w-4" aria-hidden="true" />
                   </Button>
                 </div>
               </div>

@@ -63,11 +63,13 @@ pub(crate) fn get_pi_models_path() -> Result<PathBuf, AppError> {
     Ok(get_pi_agent_dir()?.join("models.json"))
 }
 
+#[cfg(test)]
 pub(crate) fn get_pi_settings_path() -> Result<PathBuf, AppError> {
     Ok(get_pi_agent_dir()?.join("settings.json"))
 }
 
 /// Pi's global default provider (`settings.json` `defaultProvider`), read-only.
+#[cfg(test)]
 pub(crate) fn read_pi_default_provider() -> Result<Option<String>, AppError> {
     let path = get_pi_settings_path()?;
     if !path.exists() {
@@ -289,6 +291,7 @@ fn read_models_document_with_revision(path: &Path) -> Result<(Value, String), Ap
     Ok((document, revision))
 }
 
+#[cfg(test)]
 fn read_json5_value(path: &Path, label: &str) -> Result<Value, AppError> {
     parse_json5_value(path, label, read_file_limited(path, label)?)
 }
@@ -432,6 +435,7 @@ fn ensure_private_models_parent(path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
+#[cfg(test)]
 fn optional_string(
     object: &Map<String, Value>,
     key: &str,

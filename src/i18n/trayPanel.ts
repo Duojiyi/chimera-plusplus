@@ -198,6 +198,13 @@ const copy: Record<string, Copy> = {
 
 export type TrayLanguage = "zh" | "zh-TW" | "en" | "ja";
 
-export function trayPanelCopy(language: TrayLanguage): Copy {
-  return copy[language];
+export function normalizeTrayLanguage(raw?: string | null): TrayLanguage {
+  if (typeof raw === "string" && Object.hasOwn(copy, raw)) {
+    return raw as TrayLanguage;
+  }
+  return "zh";
+}
+
+export function trayPanelCopy(language?: string | null): Copy {
+  return copy[normalizeTrayLanguage(language)];
 }

@@ -579,15 +579,14 @@ export function ClaudeUsageCard({
           <div className="claude-usage-controls">
             <div
               className="claude-usage-range"
-              role="radiogroup"
+              role="group"
               aria-label="时间范围"
             >
               {RANGES.map((range) => (
                 <button
                   key={range.label}
                   type="button"
-                  role="radio"
-                  aria-checked={rangeDays === range.days}
+                  aria-pressed={rangeDays === range.days}
                   onClick={() => setRangeDays(range.days)}
                 >
                   {range.label}
@@ -698,15 +697,14 @@ export function ClaudeUsageCard({
               <div className="claude-usage-breakdown">
                 <div
                   className="claude-usage-tabs"
-                  role="tablist"
+                  role="group"
                   aria-label="分组方式"
                 >
                   {BREAKDOWNS.map((item) => (
                     <button
                       key={item.id}
                       type="button"
-                      role="tab"
-                      aria-selected={tab === item.id}
+                      aria-pressed={tab === item.id}
                       onClick={() => setTab(item.id)}
                     >
                       {item.label}

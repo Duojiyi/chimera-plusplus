@@ -822,11 +822,11 @@ fn rebuild_codex_usage_from_dir(
         rusqlite::Connection::open_in_memory().map_err(|e| AppError::Database(e.to_string()))?;
     {
         let conn = lock_conn!(db.conn);
-        let backup = rusqlite::backup::Backup::new(&conn, &mut staging)
-            .map_err(|e| AppError::Database(e.to_string()))?;
-        backup
-            .run_to_completion(128, std::time::Duration::from_millis(1), None)
-            .map_err(|e| AppError::Database(e.to_string()))?;
+        crate::database::backup::run_backup_to_completion(
+            &conn,
+            &mut staging,
+            "复制用量暂存数据库失败",
+        )?;
     }
     reset_codex_usage_on_conn(&staging, codex_dir)?;
     let staging = Database {

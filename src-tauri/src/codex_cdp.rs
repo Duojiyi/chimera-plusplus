@@ -337,6 +337,10 @@ fn model_unlock_matches_config(
         && status.config.as_ref() == expected
 }
 
+pub(crate) fn has_model_unlock_config() -> bool {
+    matches!(load_model_unlock_config(), Ok(Some(_)))
+}
+
 fn load_model_unlock_config() -> Result<Option<CodexRendererModelUnlockConfig>, String> {
     let Some(catalog) = crate::codex_config::read_codex_model_catalog_simplified_from_live()
         .map_err(|error| format!("无法读取 Chimera 模型目录：{error}"))?

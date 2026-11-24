@@ -12,7 +12,7 @@ import type { Provider } from "@/types";
 import { createTestQueryClient } from "../utils/testQueryClient";
 
 const dismissUpdateMock = vi.fn();
-const installUpdateMock = vi.fn().mockResolvedValue(true);
+const installUpdateMock = vi.fn().mockResolvedValue("started");
 const { useUpdateMock } = vi.hoisted(() => ({
   useUpdateMock: vi.fn(),
 }));

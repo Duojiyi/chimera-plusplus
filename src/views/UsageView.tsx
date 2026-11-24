@@ -38,6 +38,7 @@ import {
 import { HelpTip } from "@/components/ui/help-tip";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import { ConversationUsageSection } from "@/components/usage/ConversationUsageSection";
 import { UsageCalendar } from "@/components/usage/UsageCalendar";
 import { UsageCoverageNote } from "@/components/usage/UsageCoverageNote";
@@ -130,20 +131,22 @@ const listTokens = (value: number, max: number) =>
 /** 0 / step / … / top, with a round step so the axis reads 0.4M, 0.8M … */
 function axisScale(max: number): { top: number; ticks: number[] } {
   if (max <= 0) return { top: 1, ticks: [0] };
-  const raw = max / 4;
+  const divisions = max >= 1e6 ? 3 : 4;
+  const raw = max / divisions;
   const magnitude = 10 ** Math.floor(Math.log10(raw));
   const step =
     [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]
       .map((m) => m * magnitude)
       .find((s) => s >= raw) ?? raw;
-  return { top: step * 4, ticks: [0, 1, 2, 3, 4].map((i) => i * step) };
+  return {
+    top: step * divisions,
+    ticks: Array.from({ length: divisions + 1 }, (_, i) => i * step),
+  };
 }
 const axisLabel = (value: number, top: number) =>
-  value === 0
-    ? "0"
-    : top >= 1e6
-      ? `${Number((value / 1e6).toFixed(2))}M`
-      : compactTokens(value);
+  top >= 1e6
+    ? `${(value / 1e6).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 2 })}M`
+    : compactTokens(value);
 const usd = (value: string | undefined) => {
   const amount = Number(value);
   return Number.isFinite(amount) ? `$${amount.toFixed(2)}` : "—";
@@ -168,9 +171,9 @@ export function UsageView() {
   const [allModelsOpen, setAllModelsOpen] = useState(false);
   const [displayMode, setDisplayMode] = useState<
     "calendar" | "chart" | "table"
-  >("calendar");
+  >("chart");
   const tableMode = displayMode === "table";
-  const [loadedRange, setLoadedRange] = useState<UsageRange>("30d");
+  const [loadedRange, setLoadedRange] = useState<UsageRange>("7d");
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   const [trends, setTrends] = useState<DailyStats[]>([]);
   const [models, setModels] = useState<ModelStats[]>([]);
@@ -179,7 +182,7 @@ export function UsageView() {
   const [allProvidersOpen, setAllProvidersOpen] = useState(false);
   // When the numbers on screen were read, not when the page last rendered.
   const [loadedAt, setLoadedAt] = useState<number | null>(null);
-  const [range, setRange] = useState<UsageRange>("30d");
+  const [range, setRange] = useState<UsageRange>("7d");
   const [statsError, setStatsError] = useState("");
   const [loadedHourly, setLoadedHourly] = useState(false);
   const [syncing, setSyncing] = useState(runningInTauri);
@@ -187,6 +190,15 @@ export function UsageView() {
   const [sessionFiles, setSessionFiles] = useState<number | null>(null);
   const [coverage, setCoverage] = useState<SessionSyncResult | null>(null);
   const [rebuilding, setRebuilding] = useState(false);
+  const rebuildingRef = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  useLightweightCloseBlocker(rebuilding);
   const [rebuildDialogOpen, setRebuildDialogOpen] = useState(false);
   const [rebuildResult, setRebuildResult] =
     useState<CodexUsageRebuildResult | null>(null);
@@ -332,7 +344,7 @@ export function UsageView() {
         setProviders(sample ? USAGE_SAMPLE_PROVIDERS : null);
         setSessionFiles(sample ? USAGE_SAMPLE_SESSION_FILES : null);
         if (sample) {
-          setLoadedRange("30d");
+          setLoadedRange("7d");
           setLoadedAt(Date.now());
         }
         setSyncing(false);
@@ -380,13 +392,15 @@ export function UsageView() {
   }, [conversationQuery, loadConversations]);
 
   const rebuildUsage = useCallback(async () => {
-    if (!runningInTauri || rebuilding) return;
+    if (!runningInTauri || rebuildingRef.current) return;
+    rebuildingRef.current = true;
     setRebuildDialogOpen(false);
     setRebuilding(true);
     setRebuildError("");
     setRebuildResult(null);
     try {
       const result = await usageApi.rebuildCodexUsage();
+      if (!mountedRef.current) return;
       setRebuildResult(result);
       setSessionFiles(result.filesScanned);
       setCoverage(result);
@@ -396,6 +410,7 @@ export function UsageView() {
       });
       await loadUsage(range, false);
     } catch (reason) {
+      if (!mountedRef.current) return;
       const message = String(reason);
       setRebuildError(message);
       toast.error("Codex 用量重建失败", {
@@ -403,9 +418,10 @@ export function UsageView() {
         closeButton: true,
       });
     } finally {
-      setRebuilding(false);
+      rebuildingRef.current = false;
+      if (mountedRef.current) setRebuilding(false);
     }
-  }, [loadUsage, range, rebuilding]);
+  }, [loadUsage, range]);
 
   const preview = !runningInTauri && isUsageDesignPreview();
   const busy = syncing || rangeLoading || rebuilding;
@@ -438,10 +454,6 @@ export function UsageView() {
         .filter((row) => row.totalTokens > 0)
         .sort((a, b) => b.totalTokens - a.totalTokens)
     : [];
-  const providerTotal = providerRows.reduce(
-    (sum, row) => sum + row.totalTokens,
-    0,
-  );
   const shownProviders = allProvidersOpen
     ? providerRows
     : providerRows.slice(0, USAGE_TOP_PROVIDER_COUNT);
@@ -550,6 +562,14 @@ export function UsageView() {
     bad?: boolean;
   }[] = [
     {
+      label: "总词元",
+      value: summary ? listTokens(total, total) : "—",
+      title: summary ? exact(total) : undefined,
+      note: summary
+        ? `输入 ${compactTokens(summary.totalInputTokens)} · 输出 ${compactTokens(summary.totalOutputTokens)}`
+        : undefined,
+    },
+    {
       label: "估算成本",
       value: summary ? usd(summary.totalCost) : "—",
       title: summary ? "按本机计价表估算；未计价的模型不计入" : undefined,
@@ -560,14 +580,6 @@ export function UsageView() {
       value: summary ? n(summary.totalRequests) : "—",
       note: summary ? `失败 ${n(failures)} 次` : undefined,
       bad: failures > 0,
-    },
-    {
-      label: "总词元",
-      value: summary ? compactTokens(total) : "—",
-      title: summary ? exact(total) : undefined,
-      note: summary
-        ? `输入 ${compactTokens(summary.totalInputTokens)} · 输出 ${compactTokens(summary.totalOutputTokens)}`
-        : undefined,
     },
     {
       label: "缓存命中率",
@@ -945,6 +957,9 @@ export function UsageView() {
               </ol>
               <div
                 className={`usage-bars${dense ? " is-dense" : ""}`}
+                style={{
+                  backgroundSize: `100% calc((100% - 22px) / ${Math.max(1, axis.ticks.length - 1)})`,
+                }}
                 role="img"
                 aria-label={`${usageRangeTitles[loadedRange]}${loadedHourly ? "每小时" : "每日"}词元柱状图${
                   peak
@@ -965,7 +980,7 @@ export function UsageView() {
                     day.totalCacheCreationTokens + day.totalCacheReadTokens;
                   return (
                     <div
-                      className={`usage-bar-column${current ? " is-current" : ""}`}
+                      className={`usage-bar-column${day === peak ? " is-peak" : ""}`}
                       key={day.date}
                     >
                       {!dense && (
@@ -977,7 +992,13 @@ export function UsageView() {
                         className="usage-bar"
                         style={{ height: `${height}%` }}
                         title={`${label} · ${exact(value)}（输入 ${n(day.totalInputTokens)} · 输出 ${n(day.totalOutputTokens)} · 缓存 ${n(cache)}）`}
-                      />
+                      >
+                        {day === peak && !dense && (
+                          <b className="usage-peak-label">
+                            峰值 {compactTokens(value)}
+                          </b>
+                        )}
+                      </div>
                       <small>
                         {axisLabels.has(day.date)
                           ? isToday
@@ -1027,40 +1048,92 @@ export function UsageView() {
         <div
           className={`usage-analysis-grid usage-breakdown${providerRows.length ? "" : " is-single"}`}
         >
+          <aside
+            className="usage-rank-card usage-model-card"
+            aria-label="按模型排行"
+          >
+            <header className="usage-ranking-title">
+              <strong>按模型消耗</strong>
+              <span>共 {models.length} 个活跃模型</span>
+            </header>
+            {topModels.length ? (
+              <table className="usage-ranking-table" aria-label="模型消耗明细">
+                <thead>
+                  <tr>
+                    <th scope="col">模型标识</th>
+                    <th scope="col">消耗量 / 占比</th>
+                    <th scope="col">估算费用</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topModels.map((model) => (
+                    <tr key={model.model}>
+                      <th scope="row">
+                        <code title={model.model}>{model.model}</code>
+                      </th>
+                      <td
+                        title={`${exact(model.totalTokens)} · ${n(model.requestCount)} 次请求`}
+                      >
+                        {listTokens(model.totalTokens, modelMax)}{" "}
+                        <small>{share(model.totalTokens, modelTotal)}</small>
+                      </td>
+                      <td>{usd(model.totalCost)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p className="usage-model-empty">暂无模型统计</p>
+            )}
+            <button
+              type="button"
+              className="usage-view-all"
+              onClick={() => setAllModelsOpen(true)}
+              disabled={!models.length}
+            >
+              查看全部 {models.length} 个模型
+              <ChevronRight size={14} aria-hidden="true" />
+            </button>
+          </aside>
           {providerRows.length > 0 && (
             <section
               className="usage-rank-card usage-provider-card"
               aria-labelledby="usage-provider-title"
             >
-              <header className="usage-card-head is-tall">
-                <div>
-                  <strong id="usage-provider-title">按线路</strong>
-                  <p>按词元总量 · {providerRows.length} 条线路</p>
-                </div>
+              <header className="usage-ranking-title">
+                <strong id="usage-provider-title">按线路消耗</strong>
+                <span>共 {providerRows.length} 条线路</span>
               </header>
-              <ul className="usage-provider-rank">
-                {shownProviders.map((row) => (
-                  <li key={row.providerId}>
-                    <i className="usage-line-bar" aria-hidden="true" />
-                    <span className="usage-rank-name" title={row.providerName}>
-                      {row.providerName}
-                    </span>
-                    <b className="usage-mono" title={exact(row.totalTokens)}>
-                      {listTokens(row.totalTokens, providerMax)}
-                    </b>
-                    <span className="usage-share-track" aria-hidden="true">
-                      <span
-                        style={{
-                          width: `${providerTotal ? (row.totalTokens / providerTotal) * 100 : 0}%`,
-                        }}
-                      />
-                    </span>
-                    <em className="usage-mono">
-                      {share(row.totalTokens, providerTotal)}
-                    </em>
-                  </li>
-                ))}
-              </ul>
+              <table
+                className="usage-ranking-table"
+                aria-labelledby="usage-provider-title"
+              >
+                <thead>
+                  <tr>
+                    <th scope="col">线路名称</th>
+                    <th scope="col">调用频次</th>
+                    <th scope="col">消耗 Tokens</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shownProviders.map((row) => (
+                    <tr key={row.providerId}>
+                      <th scope="row">
+                        <span
+                          className="usage-line-name"
+                          title={row.providerName}
+                        >
+                          {row.providerName}
+                        </span>
+                      </th>
+                      <td>{n(row.requestCount)} 次</td>
+                      <td title={exact(row.totalTokens)}>
+                        {listTokens(row.totalTokens, providerMax)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
               {providerRows.length > USAGE_TOP_PROVIDER_COUNT && (
                 <button
                   type="button"
@@ -1076,56 +1149,6 @@ export function UsageView() {
               )}
             </section>
           )}
-          <aside
-            className="usage-rank-card usage-model-card"
-            aria-label="按模型排行"
-          >
-            <header className="usage-card-head is-tall">
-              <div>
-                <strong>按模型</strong>
-                <p>
-                  前 {Math.min(models.length, USAGE_TOP_MODEL_COUNT)} 个模型 ·
-                  按词元排序
-                </p>
-              </div>
-            </header>
-            {topModels.length ? (
-              <ul className="usage-model-rank">
-                {topModels.map((model) => (
-                  <li className="usage-model-item" key={model.model}>
-                    <strong title={model.model}>{model.model}</strong>
-                    <span
-                      className="usage-mono"
-                      title={`${exact(model.totalTokens)} · ${n(model.requestCount)} 次请求`}
-                    >
-                      {listTokens(model.totalTokens, modelMax)}
-                    </span>
-                    <em className="usage-mono">
-                      {share(model.totalTokens, modelTotal)}
-                    </em>
-                    <span className="usage-share-track" aria-hidden="true">
-                      <span
-                        style={{
-                          width: `${modelTotal ? (model.totalTokens / modelTotal) * 100 : 0}%`,
-                        }}
-                      />
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="usage-model-empty">暂无模型统计</p>
-            )}
-            <button
-              type="button"
-              className="usage-view-all"
-              onClick={() => setAllModelsOpen(true)}
-              disabled={!models.length}
-            >
-              查看全部 {models.length} 个模型
-              <ChevronRight size={14} aria-hidden="true" />
-            </button>
-          </aside>
         </div>
       )}
 

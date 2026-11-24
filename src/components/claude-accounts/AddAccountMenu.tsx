@@ -27,6 +27,7 @@ import {
   ManualAuthorization,
 } from "@/components/accounts/BrowserAuthorization";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import {
   claudeAccountsApi,
   type ClaudeLoginImportReport,
@@ -160,6 +161,9 @@ export function AddAccountMenu({
   const anyDialog =
     browser.phase !== "idle" || report !== null || confirmExport || addOpen;
   useReturnFocus(anyDialog);
+  useLightweightCloseBlocker(
+    browser.phase !== "idle" || working !== null || detecting,
+  );
 
   const waitingId = browser.phase === "waiting" ? browser.id : null;
 
@@ -365,15 +369,34 @@ export function AddAccountMenu({
               : "登录只保存在本机，加密存放；添加不会改动 Claude Code 当前的登录。"}
           </DialogDescription>
           <div className="claude-add-tabs" role="tablist" aria-label="添加方式">
-            {tabs.map((item) => (
+            {tabs.map((item, index) => (
               <button
                 key={item.id}
                 type="button"
                 role="tab"
                 id={`${tabsId}-${item.id}`}
+                tabIndex={activeTab === item.id ? 0 : -1}
                 aria-selected={activeTab === item.id}
                 aria-controls={`${tabsId}-${item.id}-panel`}
                 onClick={() => setTab(item.id)}
+                onKeyDown={(event) => {
+                  const last = tabs.length - 1;
+                  let nextIndex: number | null = null;
+                  if (event.key === "ArrowRight") {
+                    nextIndex = index === last ? 0 : index + 1;
+                  } else if (event.key === "ArrowLeft") {
+                    nextIndex = index === 0 ? last : index - 1;
+                  } else if (event.key === "Home") {
+                    nextIndex = 0;
+                  } else if (event.key === "End") {
+                    nextIndex = last;
+                  }
+                  if (nextIndex === null) return;
+                  event.preventDefault();
+                  const nextTab = tabs[nextIndex];
+                  setTab(nextTab.id);
+                  document.getElementById(`${tabsId}-${nextTab.id}`)?.focus();
+                }}
               >
                 {item.id === "local" ? (
                   <MonitorCheck size={14} aria-hidden="true" />

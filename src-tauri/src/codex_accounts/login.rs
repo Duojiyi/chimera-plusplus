@@ -39,23 +39,7 @@ pub(crate) struct DevicePrompt {
 }
 
 fn strip_ansi(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\x1b' {
-            // CSI sequences: ESC [ ... final byte in @..~
-            if chars.next() == Some('[') {
-                for next in chars.by_ref() {
-                    if ('@'..='~').contains(&next) {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        out.push(ch);
-    }
-    out
+    crate::oauth_callback::plain_terminal_text(text)
 }
 
 fn is_user_code(line: &str) -> bool {

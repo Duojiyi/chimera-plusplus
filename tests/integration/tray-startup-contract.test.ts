@@ -17,7 +17,9 @@ describe("tray and startup source contracts (not Rust runtime tests)", () => {
       'USE_NATIVE_TRAY_MENU: bool = !cfg!(target_os = "windows")',
     );
     expect(tray).toMatch(/if USE_NATIVE_TRAY_MENU \{[\s\S]*?tray\.set_menu/);
-    expect(lib).toContain("tray::update_tray_menu(&app, state.inner())");
+    expect(lib).toContain(
+      "tray::update_tray_menu_async(&app, state.inner()).await",
+    );
     for (const path of [
       "src-tauri/src/commands/failover.rs",
       "src-tauri/src/proxy/failover_switch.rs",

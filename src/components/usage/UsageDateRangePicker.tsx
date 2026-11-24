@@ -411,6 +411,10 @@ export function UsageDateRangePicker({
                 size="icon"
                 variant="ghost"
                 className="h-7 w-7"
+                aria-label={t("usage.previousMonth", {
+                  defaultValue: "上个月",
+                })}
+                title={t("usage.previousMonth", { defaultValue: "上个月" })}
                 onClick={() =>
                   setDisplayMonth(
                     new Date(
@@ -421,7 +425,7 @@ export function UsageDateRangePicker({
                   )
                 }
               >
-                <ChevronLeft className="h-3.5 w-3.5" />
+                <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
               </Button>
               <button
                 type="button"
@@ -439,6 +443,8 @@ export function UsageDateRangePicker({
                 size="icon"
                 variant="ghost"
                 className="h-7 w-7"
+                aria-label={t("usage.nextMonth", { defaultValue: "下个月" })}
+                title={t("usage.nextMonth", { defaultValue: "下个月" })}
                 onClick={() =>
                   setDisplayMonth(
                     new Date(
@@ -449,7 +455,7 @@ export function UsageDateRangePicker({
                   )
                 }
               >
-                <ChevronRight className="h-3.5 w-3.5" />
+                <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
               </Button>
             </div>
 

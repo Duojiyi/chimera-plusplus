@@ -1,21 +1,21 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   Gauge,
-  GitBranch,
   Pencil,
   Plus,
   RefreshCw,
   Search,
+  Shield,
   type LucideIcon,
 } from "lucide-react";
 import type { Provider } from "@/types";
 import { useDialogFocus } from "@/hooks/useDialogFocus";
 import { isOfficialLine } from "@/utils/lineBadge";
+import { isMac } from "@/lib/platform";
 import {
   extractCodexBaseUrl,
   extractCodexModelName,
 } from "@/utils/providerConfigUtils";
-import { lineIdentityColor } from "@/components/LineBadge";
 import "./CommandPalette.css";
 import "@/theme/v3/command-palette.css";
 
@@ -48,6 +48,7 @@ interface PaletteItem {
   title: string;
   subtitle?: string;
   keywords?: string;
+  location?: string;
   line?: Provider;
   icon?: LucideIcon;
   current?: boolean;
@@ -115,7 +116,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         group: "线路",
         title: `切换到 ${name}`,
         subtitle: lineSubtitle(provider),
-        keywords: provider.name,
+        keywords: `Codex ${provider.name}`,
         line: provider,
         current: provider.id === currentProviderId,
         onSelect: run(() => onSwitchProvider(provider.id)),
@@ -135,10 +136,19 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       }
     }
     for (const page of pages) {
+      const description =
+        page.id === "health"
+          ? "检查 ~/.codex/config.toml 失效引用"
+          : page.label === "Codex 管理"
+            ? "本机 · 安装、更新、诊断与回滚"
+            : undefined;
       list.push({
         id: `page-${page.id}`,
         group: "页面",
         title: page.label,
+        subtitle: description,
+        location: description ? "Codex / 本机" : undefined,
+        keywords: page.id === "health" ? "Codex config.toml" : undefined,
         icon: page.icon,
         onSelect: run(() => onNavigate(page.id)),
       });
@@ -148,6 +158,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         id: "action-speedtest-all",
         group: "命令",
         title: "测速全部线路",
+        keywords: "Codex",
         subtitle: "检查每个请求地址能否连通",
         icon: Gauge,
         onSelect: run(onSpeedTestAll),
@@ -157,6 +168,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       id: "action-add-provider",
       group: "命令",
       title: "添加线路",
+      keywords: "Codex",
       subtitle: "填写请求地址、密钥和模型",
       icon: Plus,
       onSelect: run(onAddProvider),
@@ -189,12 +201,15 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   const filteredItems = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return items.filter((item) => !item.searchOnly);
-    return items.filter((item) =>
+    const matches = items.filter((item) =>
       [item.title, item.subtitle, item.keywords, item.group]
         .filter(Boolean)
         .join(" ")
         .toLowerCase()
         .includes(q),
+    );
+    return matches.sort(
+      (a, b) => Number(Boolean(b.current)) - Number(Boolean(a.current)),
     );
   }, [items, query]);
 
@@ -215,6 +230,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
   // Escape and focus return are handled by useDialogFocus.
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.nativeEvent.isComposing) return;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       if (!filteredItems.length) return;
@@ -232,8 +248,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       e.preventDefault();
       const current = filteredItems[selectedIndex];
       if (!current) return;
-      if ((e.ctrlKey || e.metaKey) && current.onAltSelect) {
-        current.onAltSelect();
+      if (e.ctrlKey || e.metaKey) {
+        current.onAltSelect?.();
       } else {
         current.onSelect();
       }
@@ -294,7 +310,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
             onClick={onClose}
             aria-label="关闭命令面板"
           >
-            Esc
+            ESC 关闭
           </button>
         </div>
 
@@ -315,7 +331,10 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                   id={`${idPrefix}-${group.name}`}
                   role="presentation"
                 >
-                  {group.name}
+                  {group.name === "命令" ? "快捷命令" : group.name}
+                  <span className="command-palette-count" aria-hidden="true">
+                    · {group.entries.length}
+                  </span>
                 </div>
                 {group.entries.map((index) => {
                   const item = filteredItems[index];
@@ -338,27 +357,36 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                     >
                       {/* v3：线路不用双字母徽标，用线路图标 + 线路色（与线路表同一身份色）。 */}
                       <span
-                        className="command-palette-icon"
-                        data-line={item.line ? "" : undefined}
-                        style={
+                        className="command-palette-icon command-palette-glyph"
+                        data-kind={
                           item.line
-                            ? ({
-                                "--line-color": isOfficialLine(item.line)
-                                  ? "var(--text-3)"
-                                  : lineIdentityColor(item.line),
-                              } as React.CSSProperties)
-                            : undefined
+                            ? isOfficialLine(item.line)
+                              ? "official"
+                              : "line"
+                            : "action"
                         }
+                        aria-hidden="true"
                       >
                         {item.line ? (
-                          <GitBranch size={15} aria-hidden="true" />
-                        ) : (
-                          Icon && <Icon size={15} aria-hidden="true" />
-                        )}
+                          isOfficialLine(item.line) ? (
+                            <Shield size={16} />
+                          ) : (
+                            Array.from(lineName(item.line).trim())[0] || "•"
+                          )
+                        ) : Icon ? (
+                          <Icon size={16} />
+                        ) : null}
                       </span>
                       <span className="command-palette-text">
                         <span className="command-palette-title">
-                          {item.title}
+                          {item.line ? (
+                            <>
+                              <span className="sr-only">切换到 </span>
+                              {lineName(item.line)}
+                            </>
+                          ) : (
+                            item.title
+                          )}
                         </span>
                         {item.subtitle && (
                           <span className="command-palette-subtitle">
@@ -366,17 +394,29 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                           </span>
                         )}
                       </span>
+                      {item.location && (
+                        <span className="command-palette-location">
+                          {item.location}
+                        </span>
+                      )}
                       {item.current && (
                         <span className="command-palette-current">
                           当前线路
                         </span>
                       )}
-                      {selected && (
+                      {(selected || item.line) && (
                         <span
-                          className="command-palette-keycap"
+                          className="command-palette-hints"
                           aria-hidden="true"
                         >
-                          Enter
+                          <kbd className="command-palette-keycap">
+                            {item.line ? "↵ 切换" : "↵ 执行"}
+                          </kbd>
+                          {selected && item.onAltSelect && (
+                            <kbd className="command-palette-keycap">
+                              {isMac() ? "⌘↵ 编辑" : "Ctrl+↵ 编辑"}
+                            </kbd>
+                          )}
                         </span>
                       )}
                     </div>
@@ -392,11 +432,13 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
             <kbd className="command-palette-keycap">↑ ↓</kbd>选择
           </span>
           <span>
-            <kbd className="command-palette-keycap">Enter</kbd>执行
+            <kbd className="command-palette-keycap">↵</kbd>执行/切换
           </span>
           {onEditProvider && (
             <span>
-              <kbd className="command-palette-keycap">Ctrl Enter</kbd>
+              <kbd className="command-palette-keycap">
+                {isMac() ? "⌘↵" : "Ctrl+↵"}
+              </kbd>
               编辑线路
             </span>
           )}

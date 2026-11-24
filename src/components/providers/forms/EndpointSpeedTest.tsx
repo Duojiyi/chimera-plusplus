@@ -546,8 +546,11 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
               onClick={handleAddEndpoint}
               variant="outline"
               size="icon"
+              aria-label={t("endpointTest.addEndpoint", {
+                defaultValue: "添加自定义端点",
+              })}
             >
-              <Plus className="h-4 w-4" />
+              <Plus className="h-4 w-4" aria-hidden="true" />
             </Button>
           </div>
           {addError && (
@@ -568,7 +571,16 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
               return (
                 <div
                   key={entry.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={isSelected}
                   onClick={() => handleSelect(entry.url)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      handleSelect(entry.url);
+                    }
+                  }}
                   className={`group flex cursor-pointer items-center justify-between px-3 py-2.5 rounded-lg border transition text-foreground ${
                     isSelected
                       ? "border-primary/70 bg-primary/5 shadow-sm"
@@ -580,7 +592,7 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
                     <div
                       className={`h-1.5 w-1.5 flex-shrink-0 rounded-full transition ${
                         isSelected
-                          ? "bg-blue-500 dark:bg-blue-400"
+                          ? "bg-[var(--accent-petrol)]"
                           : "bg-gray-300 dark:bg-gray-700"
                       }`}
                     />

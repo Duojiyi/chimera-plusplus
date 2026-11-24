@@ -1,4 +1,6 @@
 import { RetainedToolPage } from "@/components/RetainedToolPage";
+import { AlertConfirmDialog } from "@/components/AlertConfirmDialog";
+import { ViewErrorBoundary } from "@/components/ViewErrorBoundary";
 import { ToolVisibilityView } from "./views/ToolVisibilityView";
 import { isProductToolVisible } from "@/lib/productCapabilities";
 import { WindowControls } from "@/components/WindowControls";
@@ -20,6 +22,8 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Activity,
+  ArrowRight,
+  LockKeyhole,
   BarChart3,
   Check,
   ChevronDown,
@@ -70,6 +74,7 @@ import {
   type FetchedModel,
 } from "@/lib/api/model-fetch";
 import { getChimeraHubTemplate } from "@/config/codexTemplates";
+import { toolDisplayNames } from "@/components/settings/toolBadges";
 import { CodexContextWindowField } from "@/components/providers/CodexContextWindowField";
 import type { PresetDraftSeed } from "@/utils/codexPresetDraft";
 import {
@@ -88,7 +93,8 @@ import {
   codexRemoteCompactionAllowed,
 } from "@/utils/providerConfigUtils";
 import { subscriptionApi, type BalanceResult } from "@/lib/api/subscription";
-import { useQuery } from "@tanstack/react-query";
+import { QueryClientContext, useQuery } from "@tanstack/react-query";
+import { useContext } from "react";
 import { generateUUID } from "@/utils/uuid";
 import { openDialogCount, useDialogFocus } from "@/hooks/useDialogFocus";
 import {
@@ -140,7 +146,6 @@ import {
 import { autoLineBadgeText } from "@/utils/lineBadge";
 import { describeCodexRouting } from "@/utils/codexRouting";
 import { readContextWindowState } from "@/utils/codexContextWindow";
-import { Empty } from "@/components/Empty";
 import { type ReceiptTone } from "@/components/OperationReceipt";
 import {
   CODEX_CLOSE_SCOPE,
@@ -170,8 +175,9 @@ import {
   type ClaudeModelField,
 } from "@/utils/toolProviderConfig";
 import { useSettingsQuery } from "@/lib/query/queries";
-import routeGateIcon from "@/assets/icons/chimera-dragon-mark.png";
+import appIcon from "@/assets/icons/app-icon.png";
 import "./chimera.css";
+import "./theme/v3/recovery.css";
 import "./components/ProviderEditorPage.css";
 import "@/theme/v3/shell.css";
 import { TOOL_SECTIONS, TOOLS_WITH_ACCOUNTS } from "./views/ToolSectionNav";
@@ -233,11 +239,14 @@ const UsageView = lazy(() =>
   })),
 );
 import {
-  CANONICAL_LINES,
-  CANONICAL_PROVIDERS,
-  CANONICAL_STATION,
+  DESIGN_LINES,
+  DESIGN_PROVIDERS,
+  DESIGN_STATION,
 } from "@/data/canonicalData";
-import { ProviderLineTable } from "@/components/ProviderLineTable";
+import {
+  ProviderLineLoading,
+  ProviderLineTable,
+} from "@/components/ProviderLineTable";
 import { StationSignboard } from "@/components/StationSignboard";
 import { CommandPalette } from "@/components/CommandPalette";
 import { LineBadge } from "@/components/LineBadge";
@@ -1058,6 +1067,22 @@ export default function ChimeraApp({
   const [deletingProviderId, setDeletingProviderId] = useState<string | null>(
     null,
   );
+  const [switchingLineId, setSwitchingLineId] = useState<string | null>(null);
+  const [lineUndoReceipt, setLineUndoReceipt] = useState<{
+    fromName: string;
+    toName: string;
+    backupId: string;
+    timestamp: string;
+    switchedAt?: number;
+    onUndo: () => void;
+  } | null>(null);
+  const lineUndoTimerRef = useRef<NodeJS.Timeout | null>(null);
+  useEffect(
+    () => () => {
+      if (lineUndoTimerRef.current) clearTimeout(lineUndoTimerRef.current);
+    },
+    [],
+  );
   const providerDeleteInFlightRef = useRef(false);
   const [pendingProviderDelete, setPendingProviderDelete] =
     useState<Provider | null>(null);
@@ -1077,6 +1102,23 @@ export default function ChimeraApp({
   // The discard question was raised by the window's close button, so a
   // confirmed discard also closes the window.
   const [closeWindowAfterDiscard, setCloseWindowAfterDiscard] = useState(false);
+  const [pendingWindowClose, setPendingWindowClose] = useState(false);
+  const queryClient = useContext(QueryClientContext);
+
+  useEffect(() => {
+    if (
+      !pendingWindowClose ||
+      editor !== null ||
+      pendingEditorDiscard ||
+      commonConfigDirty
+    ) {
+      return;
+    }
+    setPendingWindowClose(false);
+    void getCurrentWindow()
+      .close()
+      .catch(() => {});
+  }, [pendingWindowClose, editor, pendingEditorDiscard, commonConfigDirty]);
   // Editor-local connection test result: the home banner reflects the active
   // line only and must never change because a draft was tested.
   const [draftConnection, setDraftConnection] = useState<ConnectionState>({
@@ -1219,6 +1261,7 @@ export default function ChimeraApp({
     editorRef.current = null;
     editorBaselineRef.current = null;
     setPendingEditorDiscard(false);
+    setCommonConfigDirty(false);
     setEditor(null);
   };
 
@@ -1291,8 +1334,8 @@ export default function ChimeraApp({
     }
     if (titlebarHasUpdate) {
       try {
-        const installed = await titlebarInstallUpdate();
-        if (!installed) {
+        const outcome = await titlebarInstallUpdate();
+        if (outcome === "unavailable") {
           toast.info("该更新已不可用", {
             description: "已重新检查更新。",
           });
@@ -1330,7 +1373,7 @@ export default function ChimeraApp({
 
   const handleTitlebarMouseDown = useCallback(
     (event: React.MouseEvent<HTMLElement>) => {
-      if (event.button !== 0 || event.detail !== 1) {
+      if (!runningInTauri || event.button !== 0 || event.detail !== 1) {
         return;
       }
 
@@ -1367,8 +1410,8 @@ export default function ChimeraApp({
     if (!runningInTauri) {
       if (designPreview) {
         if (seq !== providerLoadSeqRef.current) return;
-        setProviders(CANONICAL_PROVIDERS);
-        setCurrentId(CANONICAL_LINES.find((line) => line.isCurrent)?.id ?? "");
+        setProviders(DESIGN_PROVIDERS);
+        setCurrentId(DESIGN_LINES.find((line) => line.isCurrent)?.id ?? "");
         setCurrentSource("stored");
         setLoading(false);
         return;
@@ -1664,10 +1707,20 @@ export default function ChimeraApp({
             : current,
         );
       },
-    );
+    ).catch(() => () => {});
+    const unlistenOfficialWarning = listen<{
+      appType?: string;
+      providerName?: string;
+    }>("proxy-official-warning", (event) => {
+      const name = event.payload?.providerName || "官方线路";
+      toast.warning(`当前${name}不支持本地代理接管`, {
+        description: "建议切换至第三方或中转线路后再开启代理接管。",
+      });
+    }).catch(() => () => {});
     return () => {
       active = false;
-      void unlisten.then((dispose) => dispose());
+      void unlisten.then((dispose) => dispose()).catch(() => {});
+      void unlistenOfficialWarning.then((dispose) => dispose()).catch(() => {});
     };
   }, []);
 
@@ -1763,6 +1816,53 @@ export default function ChimeraApp({
       );
       toast.error("切换失败", { description: String(error) });
       return false;
+    }
+  };
+
+  const activateCodexLine = async (provider: Provider) => {
+    if (
+      provider.id === activeProvider?.id ||
+      switchingLineId ||
+      deletingProviderId
+    )
+      return;
+    const previous = activeProvider;
+    setSwitchingLineId(provider.id);
+    try {
+      const switched = await switchProvider(provider.id);
+      if (switched === false) return;
+      if (previous && previous.id !== provider.id) {
+        if (lineUndoTimerRef.current) {
+          clearTimeout(lineUndoTimerRef.current);
+        }
+        setLineUndoReceipt({
+          fromName: lineName(previous),
+          toName: lineName(provider),
+          backupId: `sw-${Date.now()}`,
+          timestamp: "刚刚",
+          switchedAt: Date.now(),
+          onUndo: () => {
+            if (switchingLineId || deletingProviderId) return;
+            if (lineUndoTimerRef.current) {
+              clearTimeout(lineUndoTimerRef.current);
+              lineUndoTimerRef.current = null;
+            }
+            setSwitchingLineId(previous.id);
+            void switchProvider(previous.id)
+              .then((reverted) => {
+                if (reverted !== false) setLineUndoReceipt(null);
+              })
+              .catch(() => {})
+              .finally(() => setSwitchingLineId(null));
+          },
+        });
+        lineUndoTimerRef.current = setTimeout(() => {
+          setLineUndoReceipt(null);
+          lineUndoTimerRef.current = null;
+        }, LINE_UNDO_WINDOW_MS);
+      }
+    } finally {
+      setSwitchingLineId(null);
     }
   };
 
@@ -2151,6 +2251,9 @@ export default function ChimeraApp({
             await providersApi.add(provider, editorAppId, false);
           }
           await loadProviders();
+          void queryClient?.invalidateQueries({
+            queryKey: ["provider-balance"],
+          });
           window.dispatchEvent(
             new CustomEvent("chimera-provider-mutated", {
               detail: { appId: editorAppId },
@@ -2222,6 +2325,9 @@ export default function ChimeraApp({
           return;
         }
         await loadProviders();
+        void queryClient?.invalidateQueries({
+          queryKey: ["provider-balance"],
+        });
         window.dispatchEvent(
           new CustomEvent("chimera-provider-mutated", {
             detail: { appId: editorAppId },
@@ -2337,6 +2443,10 @@ export default function ChimeraApp({
   };
 
   const fetchModels = async (options: { refetch?: boolean } = {}) => {
+    if (designPreview) {
+      toast.info("设计示例不连接模型服务");
+      return;
+    }
     if (!editor?.baseUrl.trim() || !editor.apiKey.trim()) {
       toast.error("请先填写 API 请求地址和 API Key");
       return;
@@ -2522,20 +2632,37 @@ export default function ChimeraApp({
     await Promise.all([loadRuntime(), loadCodexProcess()]);
   };
 
+  const proxySettingsTimerRef = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (proxySettingsTimerRef.current !== null) {
+        window.clearTimeout(proxySettingsTimerRef.current);
+      }
+    },
+    [],
+  );
+
   // 设置页挂载后才监听 hashchange，等“代理与故障转移”分区出现再跳过去。
   const openProxySettings = () => {
     setView("settings");
+    if (proxySettingsTimerRef.current !== null) {
+      window.clearTimeout(proxySettingsTimerRef.current);
+      proxySettingsTimerRef.current = null;
+    }
     const deadline = Date.now() + 3000;
     const jump = () => {
       if (document.getElementById("settings-connections")) {
-        window.setTimeout(() => {
+        proxySettingsTimerRef.current = window.setTimeout(() => {
+          proxySettingsTimerRef.current = null;
           window.location.hash = "settings-connections";
         }, 50);
       } else if (Date.now() < deadline) {
-        window.setTimeout(jump, 50);
+        proxySettingsTimerRef.current = window.setTimeout(jump, 50);
+      } else {
+        proxySettingsTimerRef.current = null;
       }
     };
-    window.setTimeout(jump, 50);
+    proxySettingsTimerRef.current = window.setTimeout(jump, 50);
   };
 
   const diagnose = async () => {
@@ -2755,6 +2882,41 @@ export default function ChimeraApp({
     setView(target);
   };
 
+  const handleSidebarNavKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (
+      event.key !== "ArrowDown" &&
+      event.key !== "ArrowUp" &&
+      event.key !== "Home" &&
+      event.key !== "End"
+    ) {
+      return;
+    }
+    const buttons = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>(
+        "button.v3-nav-item:not(:disabled)",
+      ),
+    );
+    if (!buttons.length) return;
+    const currentIndex = buttons.indexOf(
+      document.activeElement as HTMLButtonElement,
+    );
+    let nextIndex = 0;
+    if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = buttons.length - 1;
+    } else if (event.key === "ArrowDown") {
+      nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % buttons.length;
+    } else {
+      nextIndex =
+        currentIndex === -1
+          ? buttons.length - 1
+          : (currentIndex - 1 + buttons.length) % buttons.length;
+    }
+    event.preventDefault();
+    buttons[nextIndex]?.focus();
+  };
+
   const renderNavItem = (id: View) => {
     const label = viewLabels[id];
     const Icon = navIconFor(id);
@@ -2768,6 +2930,7 @@ export default function ChimeraApp({
         disabled={!available}
         aria-current={active ? "page" : undefined}
         title={available ? undefined : `${label}：此版本未开放`}
+        aria-label={label}
         data-pencil-name={`能力 · ${label}`}
         className="v3-nav-item"
       >
@@ -2803,7 +2966,7 @@ export default function ChimeraApp({
         disabled={!available}
         aria-current={currentToolSection === item.id ? "page" : undefined}
         aria-label={
-          resources ? `管理 ${currentToolName} 的 Skills 与 MCP` : undefined
+          resources ? `管理 ${currentToolName} 的 Skills 与 MCP` : item.label
         }
         data-pencil-name={`分区 · ${item.label}`}
         className="v3-nav-item"
@@ -2827,6 +2990,7 @@ export default function ChimeraApp({
           setFootTool(from);
         }}
         aria-current={active ? "page" : undefined}
+        aria-label={label}
         data-pencil-name={label}
         className="v3-nav-item"
       >
@@ -2836,18 +3000,87 @@ export default function ChimeraApp({
     );
   };
   return (
-    <div className="chimera-shell">
+    <div className={`chimera-shell v5-workbench${editor ? " has-editor" : ""}`}>
       {/* The sidebar alone is eighteen tab stops; this jumps past it. */}
       <a
         className="skip-link"
-        href="#chimera-content"
+        href={editor ? "#provider-editor-title" : "#chimera-content"}
         onClick={(event) => {
           event.preventDefault();
-          contentRef.current?.focus();
+          if (editor) document.getElementById("provider-editor-title")?.focus();
+          else contentRef.current?.focus();
         }}
       >
         跳到主要内容
       </a>
+      {/* 标题栏 52px：左面包屑，右搜索胶囊与窗口按钮。 */}
+      {!editor && (
+        <header
+          data-pencil-name="标题栏"
+          className="chimera-titlebar"
+          onMouseDown={handleTitlebarMouseDown}
+          onDoubleClick={preventTitlebarDoubleClick}
+        >
+          <div className="v3-crumb" {...DRAG_REGION_ATTR}>
+            {isMac() && <WindowControls onBeforeClose={guardWindowClose} />}
+            <span className="v3-crumb-tool">{currentToolName}</span>
+            <span aria-hidden="true" className="v3-crumb-sep">
+              /
+            </span>
+            <span className="v3-crumb-page">{crumbPage}</span>
+            <span className="v5-version">v{APP_VERSION.replace(/^v/, "")}</span>
+            {!runningInTauri && (
+              <span
+                className="v3-preview-chip"
+                title={
+                  designPreview
+                    ? "设计示例 · 非本机数据 · 写入及测速已禁用"
+                    : "浏览器预览 · 未连接本机，不读取或修改本机配置"
+                }
+              >
+                {designPreview ? "设计示例" : "浏览器预览 · 未连接本机"}
+              </span>
+            )}
+          </div>
+
+          <span
+            className="v5-window-name"
+            aria-hidden="true"
+            {...DRAG_REGION_ATTR}
+          >
+            CHIMERA++
+          </span>
+          <button
+            type="button"
+            aria-label="搜索线路、页面或命令"
+            data-pencil-name="搜索"
+            onClick={() => setCmdPaletteOpen(true)}
+            className="v3-search"
+            data-tauri-no-drag
+          >
+            <Search size={14} aria-hidden="true" />
+            <span className="v3-search-placeholder">搜索线路、页面或命令</span>
+            <span aria-hidden="true" className="v3-kbd">
+              {isMac() ? "⌘ K" : "Ctrl K"}
+            </span>
+          </button>
+
+          <div className="v3-window-controls" data-tauri-no-drag>
+            {titlebarHasUpdate && (
+              <button
+                type="button"
+                onClick={() => void runTitlebarUpdateCheck()}
+                title={`发现新版本 ${titlebarUpdateInfo?.availableVersion ?? ""}，点击更新`}
+                className="v3-update-chip"
+              >
+                <Download size={13} aria-hidden="true" />
+                <span>更新</span>
+              </button>
+            )}
+            {!isMac() && <WindowControls onBeforeClose={guardWindowClose} />}
+          </div>
+        </header>
+      )}
       {/* 216px Sidebar (Frame 01 HdG9j). The graphite chrome is dark in both
           themes, so its tokens resolve as dark (designer-notes §31). */}
       {!editor && (
@@ -2858,15 +3091,16 @@ export default function ChimeraApp({
             className="v3-sidebar-brand"
             {...DRAG_REGION_ATTR}
           >
-            {isMac() && <WindowControls onBeforeClose={guardWindowClose} />}
             <span aria-hidden="true" className="v3-sidebar-logo">
-              C
+              <img src={appIcon} alt="" />
             </span>
             <span className="v3-sidebar-brandtext">
               <span data-pencil-name="字标" className="v3-sidebar-wordmark">
                 Chimera++
               </span>
-              <span className="v3-sidebar-version">{APP_VERSION}</span>
+              <span className="v3-sidebar-version">
+                v{APP_VERSION.replace(/^v/, "")}
+              </span>
             </span>
           </div>
 
@@ -2879,14 +3113,17 @@ export default function ChimeraApp({
                 aria-label={`切换工具，当前：${currentToolName}`}
                 className="v3-tool-switch"
               >
-                <span
-                  aria-hidden="true"
-                  className="v3-tool-bar"
-                  data-tool={currentToolKey}
-                />
+                <span className="v3-tool-switch-sub">当前工具</span>
                 <span className="v3-tool-switch-text">
+                  <span
+                    aria-hidden="true"
+                    className="v3-tool-bar"
+                    data-tool={currentToolKey}
+                  />
                   <span className="v3-tool-switch-name">{currentToolName}</span>
-                  <span className="v3-tool-switch-sub">当前工具</span>
+                  <span className="v5-tool-selected" aria-hidden="true">
+                    活跃
+                  </span>
                 </span>
                 <ChevronsUpDown size={14} aria-hidden="true" />
               </button>
@@ -2897,7 +3134,14 @@ export default function ChimeraApp({
               className="v3-tool-menu"
               aria-label="切换工具"
             >
-              <div className="v3-tool-menu-list" role="group" aria-label="工具">
+              <div className="v3-tool-menu-heading" id="tool-switcher-heading">
+                切换运行工具
+              </div>
+              <div
+                className="v3-tool-menu-list"
+                role="group"
+                aria-labelledby="tool-switcher-heading"
+              >
                 <button
                   type="button"
                   className="v3-tool-menu-item"
@@ -2911,7 +3155,9 @@ export default function ChimeraApp({
                     data-tool="codex"
                   />
                   <span className="v3-tool-menu-name">Codex</span>
-                  <span className="v3-tool-menu-kind">切换型</span>
+                  <span className="v3-tool-menu-kind" title="切换型">
+                    CLI
+                  </span>
                   {!toolView && <Check size={13} aria-hidden="true" />}
                 </button>
                 {/* Tools hidden in 管理工具 are left out; tools this build or
@@ -2945,12 +3191,17 @@ export default function ChimeraApp({
                       <span className="v3-tool-menu-name">
                         {viewLabels[id]}
                       </span>
-                      <span className="v3-tool-menu-kind">
-                        {id === "tool-opencode" || id === "tool-pi"
-                          ? "累加型"
-                          : id === "tool-omp"
-                            ? "独立配置"
-                            : "切换型"}
+                      <span
+                        className="v3-tool-menu-kind"
+                        title={
+                          id === "tool-opencode" || id === "tool-pi"
+                            ? "累加型"
+                            : id === "tool-omp"
+                              ? "独立配置"
+                              : "切换型"
+                        }
+                      >
+                        {id === "tool-claude-desktop" ? "App" : "CLI"}
                       </span>
                       {toolView === id && (
                         <Check size={13} aria-hidden="true" />
@@ -2971,7 +3222,11 @@ export default function ChimeraApp({
             </PopoverContent>
           </Popover>
 
-          <nav className="chimera-navigation" aria-label="工具与功能">
+          <nav
+            className="chimera-navigation"
+            aria-label="工具与功能"
+            onKeyDown={handleSidebarNavKeyDown}
+          >
             {toolSectionList ? (
               <div className="v3-nav-group">
                 <div className="v3-nav-group-label">工作区</div>
@@ -3029,69 +3284,6 @@ export default function ChimeraApp({
       <main
         className={`chimera-main${view === "usage" ? " is-usage-view" : ""}${editor ? " is-editing-provider" : ""}`}
       >
-        {/* 标题栏 52px：左面包屑，右搜索胶囊与窗口按钮。 */}
-        <header
-          data-pencil-name="标题栏"
-          className="chimera-titlebar"
-          onMouseDown={handleTitlebarMouseDown}
-          onDoubleClick={preventTitlebarDoubleClick}
-        >
-          <div className="v3-crumb" {...DRAG_REGION_ATTR}>
-            {isMac() && editor && (
-              <WindowControls onBeforeClose={guardWindowClose} />
-            )}
-            <span className="v3-crumb-tool">{currentToolName}</span>
-            <span aria-hidden="true" className="v3-crumb-sep">
-              /
-            </span>
-            <span className="v3-crumb-page">
-              {editor ? (editor.original ? "编辑线路" : "添加线路") : crumbPage}
-            </span>
-            {!runningInTauri && (
-              <span
-                className="v3-preview-chip"
-                title={
-                  designPreview
-                    ? "设计示例 · 非本机数据 · 写入及测速已禁用"
-                    : "浏览器预览 · 未连接本机，不读取或修改本机配置"
-                }
-              >
-                {designPreview ? "设计示例" : "浏览器预览 · 未连接本机"}
-              </span>
-            )}
-          </div>
-
-          <button
-            type="button"
-            aria-label="搜索线路、页面或命令"
-            data-pencil-name="搜索"
-            onClick={() => setCmdPaletteOpen(true)}
-            className="v3-search"
-            data-tauri-no-drag
-          >
-            <Search size={14} aria-hidden="true" />
-            <span className="v3-search-placeholder">搜索线路、页面或命令</span>
-            <span aria-hidden="true" className="v3-kbd">
-              {isMac() ? "⌘ K" : "Ctrl K"}
-            </span>
-          </button>
-
-          <div className="v3-window-controls" data-tauri-no-drag>
-            {titlebarHasUpdate && (
-              <button
-                type="button"
-                onClick={() => void runTitlebarUpdateCheck()}
-                title={`发现新版本 ${titlebarUpdateInfo?.availableVersion ?? ""}，点击更新`}
-                className="v3-update-chip"
-              >
-                <Download size={13} aria-hidden="true" />
-                <span>更新</span>
-              </button>
-            )}
-            {!isMac() && <WindowControls onBeforeClose={guardWindowClose} />}
-          </div>
-        </header>
-
         {view === "providers" && (
           <h1 className="sr-only">
             {editor
@@ -3149,39 +3341,73 @@ export default function ChimeraApp({
               </div>
             </section>
           )}
-          {view === "providers" && !loadError && (
-            <NewProvidersView
-              providers={providers}
-              currentId={currentId}
-              currentSource={currentSource}
-              connection={connection}
-              loading={loading}
-              codexProcess={codexProcess}
-              rendererUnlock={rendererUnlock}
-              launchingCodex={launchingCodex}
-              restartRequired={codexRestartRequired}
-              onOpenCodex={openCodex}
-              onSwitch={switchProvider}
-              onEdit={(provider) => openEditor(providerDraft(provider))}
-              onDelete={(provider) => {
-                setEditorAppId("codex");
-                setPendingProviderDelete(provider);
-              }}
-              deletingProviderId={deletingProviderId}
-              onAdd={() =>
-                openEditor(
-                  providerDraft(
-                    null,
-                    providers.length ? NEW_LINE_NAME : "默认线路",
-                  ),
-                )
-              }
-              onTestSpeed={testConnection}
-              testAllRequested={speedTestRequested}
-              onTestAllHandled={() => setSpeedTestRequested(false)}
-            />
-          )}
-          {view === "runtime" && (
+          <ViewErrorBoundary viewKey={view} viewLabel={viewLabels[view]}>
+            {view === "providers" && !loadError && (
+              <NewProvidersView
+                providers={providers}
+                currentId={currentId}
+                currentSource={currentSource}
+                connection={connection}
+                loading={loading}
+                codexProcess={codexProcess}
+                rendererUnlock={rendererUnlock}
+                launchingCodex={launchingCodex}
+                restartRequired={codexRestartRequired}
+                onOpenCodex={openCodex}
+                onSwitch={switchProvider}
+                externalSwitchingId={switchingLineId}
+                externalUndoReceipt={lineUndoReceipt}
+                onActivateLine={activateCodexLine}
+                onEdit={(provider) => openEditor(providerDraft(provider))}
+                onDelete={(provider) => {
+                  setEditorAppId("codex");
+                  setPendingProviderDelete(provider);
+                }}
+                deletingProviderId={deletingProviderId}
+                onAdd={() =>
+                  openEditor(
+                    providerDraft(
+                      null,
+                      providers.length ? NEW_LINE_NAME : "默认线路",
+                    ),
+                  )
+                }
+                onTestSpeed={testConnection}
+                testAllRequested={speedTestRequested}
+                onTestAllHandled={() => setSpeedTestRequested(false)}
+              />
+            )}
+            {view === "runtime" && (
+              <Suspense
+                fallback={
+                  <div className="route-loading" role="status">
+                    正在加载模块…
+                  </div>
+                }
+              >
+                <NewRuntimeView
+                  runtime={runtime}
+                  runtimeError={runtimeError}
+                  release={release}
+                  progress={downloadProgress}
+                  operation={runtimeOperation}
+                  receipt={runtimeReceipt}
+                  onCheck={checkRuntime}
+                  onDiagnose={diagnose}
+                  diagnosing={diagnosing}
+                  onAction={(action, preferences) =>
+                    setPendingAction({ action, preferences })
+                  }
+                  onRuntimeChanged={refreshRuntimeAfterInstall}
+                  onOperationFinished={() => setDownloadProgress(null)}
+                  onRetryRuntime={() => void loadRuntime()}
+                  onRefreshStatus={loadRuntime}
+                  onPortableRootChanged={refreshAfterPortableSelection}
+                  onReceipt={setRuntimeReceipt}
+                  onOpenProxySettings={openProxySettings}
+                />
+              </Suspense>
+            )}
             <Suspense
               fallback={
                 <div className="route-loading" role="status">
@@ -3189,158 +3415,134 @@ export default function ChimeraApp({
                 </div>
               }
             >
-              <NewRuntimeView
-                runtime={runtime}
-                runtimeError={runtimeError}
-                release={release}
-                progress={downloadProgress}
-                operation={runtimeOperation}
-                receipt={runtimeReceipt}
-                onCheck={checkRuntime}
-                onDiagnose={diagnose}
-                diagnosing={diagnosing}
-                onAction={(action, preferences) =>
-                  setPendingAction({ action, preferences })
-                }
-                onRuntimeChanged={refreshRuntimeAfterInstall}
-                onOperationFinished={() => setDownloadProgress(null)}
-                onRetryRuntime={() => void loadRuntime()}
-                onRefreshStatus={loadRuntime}
-                onPortableRootChanged={refreshAfterPortableSelection}
-                onReceipt={setRuntimeReceipt}
-                onOpenProxySettings={openProxySettings}
-              />
-            </Suspense>
-          )}
-          <Suspense
-            fallback={
-              <div className="route-loading" role="status">
-                正在加载模块…
-              </div>
-            }
-          >
-            {view === "usage" && <UsageView />}
-            {view === "appearance" && (
-              <AppearanceView
-                enabled={skinEnabled}
-                onRequestSkinAction={setPendingSkinAction}
-              />
-            )}
-            {view === "sessions" && (
-              <div className="chimera-sessions-host">
-                <SessionManagerPage
-                  appId={multiToolEnabled ? "all" : "codex"}
+              {view === "usage" && <UsageView />}
+              {view === "appearance" && (
+                <AppearanceView
+                  enabled={skinEnabled}
+                  onRequestSkinAction={setPendingSkinAction}
                 />
-              </div>
-            )}
-            {view === "official-accounts" && (
-              <OfficialAccountsView
-                onAccountSwitched={() => void loadProviders()}
-              />
-            )}
-            {view === "prompts" && (
-              <PromptsView
-                key={promptsTool ? promptsAppId : "codex"}
-                initialApp={promptsTool ? promptsAppId : "codex"}
-                refreshVersion={providerRefreshVersion}
-                visibleApps={toolSettings?.visibleApps}
-              />
-            )}
-            {view === "skills-mcp" && (
-              <SkillsMcpView
-                key={skillsAppId}
-                initialApp={skillsAppId}
-                refreshVersion={providerRefreshVersion}
-              />
-            )}
-            {view === "health" && <ConfigHealthView />}
-            {view === "settings" && (
-              <NewSettingsView
-                onImported={() => void loadProviders()}
-                liveBackupsEnabled={hasEnabledCapability(
-                  capabilities,
-                  "live_backups",
-                )}
-              />
-            )}
-            {view === "tool-settings" && (
-              <ToolVisibilityView native={runningInTauri} />
-            )}
-            {view === "tool-claude-desktop" && (
-              <ToolView
-                toolId="claude-desktop"
-                section={toolSections["claude-desktop"]}
-                onSectionChange={sectionChangeFor("claude-desktop")}
-                native={runningInTauri}
-                refreshVersion={providerRefreshVersion}
-              />
-            )}
-            {view === "tool-grokbuild" && (
-              <ToolView
-                toolId="grokbuild"
-                section={toolSections["grokbuild"]}
-                onSectionChange={sectionChangeFor("grokbuild")}
-                onManageResources={manageToolResources}
-                native={runningInTauri}
-                refreshVersion={providerRefreshVersion}
-              />
-            )}
+              )}
+              {view === "sessions" && (
+                <div className="chimera-sessions-host">
+                  <SessionManagerPage
+                    appId={multiToolEnabled ? "all" : "codex"}
+                  />
+                </div>
+              )}
+              {view === "official-accounts" && (
+                <OfficialAccountsView
+                  onAccountSwitched={() => void loadProviders()}
+                />
+              )}
+              {view === "prompts" && (
+                <PromptsView
+                  key={promptsTool ? promptsAppId : "codex"}
+                  initialApp={promptsTool ? promptsAppId : "codex"}
+                  refreshVersion={providerRefreshVersion}
+                  visibleApps={toolSettings?.visibleApps}
+                />
+              )}
+              {view === "skills-mcp" && (
+                <SkillsMcpView
+                  key={skillsAppId}
+                  initialApp={skillsAppId}
+                  refreshVersion={providerRefreshVersion}
+                />
+              )}
+              {view === "health" && <ConfigHealthView />}
+              {view === "settings" && (
+                <NewSettingsView
+                  onImported={() => void loadProviders()}
+                  liveBackupsEnabled={hasEnabledCapability(
+                    capabilities,
+                    "live_backups",
+                  )}
+                />
+              )}
+              {view === "tool-settings" && (
+                <ToolVisibilityView native={runningInTauri} />
+              )}
+              {view === "tool-claude-desktop" && (
+                <ToolView
+                  toolId="claude-desktop"
+                  section={toolSections["claude-desktop"]}
+                  onSectionChange={sectionChangeFor("claude-desktop")}
+                  native={runningInTauri}
+                  refreshVersion={providerRefreshVersion}
+                />
+              )}
+              {view === "tool-grokbuild" && (
+                <ToolView
+                  toolId="grokbuild"
+                  section={toolSections["grokbuild"]}
+                  onSectionChange={sectionChangeFor("grokbuild")}
+                  onManageResources={manageToolResources}
+                  native={runningInTauri}
+                  refreshVersion={providerRefreshVersion}
+                />
+              )}
 
-            {view === "tool-claude" && (
+              {view === "tool-claude" && (
+                <ToolView
+                  refreshVersion={providerRefreshVersion}
+                  toolId="claude-code"
+                  section={toolSections["claude-code"]}
+                  onSectionChange={sectionChangeFor("claude-code")}
+                  onEditLine={openToolEditor}
+                  native={runningInTauri}
+                  onManageResources={manageToolResources}
+                />
+              )}
+              {view === "tool-gemini" && (
+                <ToolView
+                  refreshVersion={providerRefreshVersion}
+                  toolId="gemini-cli"
+                  section={toolSections["gemini-cli"]}
+                  onSectionChange={sectionChangeFor("gemini-cli")}
+                  onEditLine={openToolEditor}
+                  native={runningInTauri}
+                  onManageResources={manageToolResources}
+                />
+              )}
+              {view === "tool-opencode" && (
+                <ToolView
+                  refreshVersion={providerRefreshVersion}
+                  toolId="opencode"
+                  section={toolSections["opencode"]}
+                  onSectionChange={sectionChangeFor("opencode")}
+                  onEditLine={openToolEditor}
+                  native={runningInTauri}
+                  onManageResources={manageToolResources}
+                />
+              )}
+            </Suspense>
+            <RetainedToolPage active={view === "tool-omp"}>
+              <OmpView
+                native={runningInTauri}
+                section={toolSections.omp}
+                onSectionChange={sectionChangeFor("omp")}
+              />
+            </RetainedToolPage>
+            <RetainedToolPage active={view === "tool-pi"}>
               <ToolView
                 refreshVersion={providerRefreshVersion}
-                toolId="claude-code"
-                section={toolSections["claude-code"]}
-                onSectionChange={sectionChangeFor("claude-code")}
+                toolId="pi"
+                section={toolSections.pi}
+                onSectionChange={sectionChangeFor("pi")}
                 onEditLine={openToolEditor}
                 native={runningInTauri}
-                onManageResources={manageToolResources}
               />
-            )}
-            {view === "tool-gemini" && (
-              <ToolView
-                refreshVersion={providerRefreshVersion}
-                toolId="gemini-cli"
-                section={toolSections["gemini-cli"]}
-                onSectionChange={sectionChangeFor("gemini-cli")}
-                onEditLine={openToolEditor}
-                native={runningInTauri}
-                onManageResources={manageToolResources}
-              />
-            )}
-            {view === "tool-opencode" && (
-              <ToolView
-                refreshVersion={providerRefreshVersion}
-                toolId="opencode"
-                section={toolSections["opencode"]}
-                onSectionChange={sectionChangeFor("opencode")}
-                onEditLine={openToolEditor}
-                native={runningInTauri}
-                onManageResources={manageToolResources}
-              />
-            )}
-          </Suspense>
-          <RetainedToolPage active={view === "tool-omp"}>
-            <OmpView
-              native={runningInTauri}
-              section={toolSections.omp}
-              onSectionChange={sectionChangeFor("omp")}
-            />
-          </RetainedToolPage>
-          <RetainedToolPage active={view === "tool-pi"}>
-            <ToolView
-              refreshVersion={providerRefreshVersion}
-              toolId="pi"
-              section={toolSections.pi}
-              onSectionChange={sectionChangeFor("pi")}
-              onEditLine={openToolEditor}
-              native={runningInTauri}
-            />
-          </RetainedToolPage>
+            </RetainedToolPage>
+          </ViewErrorBoundary>
         </section>
         {editor && (
           <div className="provider-editor-page">
             <ProviderEditor
+              windowFrame={{
+                onMouseDown: handleTitlebarMouseDown,
+                onDoubleClick: preventTitlebarDoubleClick,
+                controls: <WindowControls onBeforeClose={guardWindowClose} />,
+              }}
               appId={editorAppId}
               editor={editor}
               setEditor={(value) => {
@@ -3414,7 +3616,11 @@ export default function ChimeraApp({
         pages={nav
           .filter(([id]) => canNavigate(id))
           .map(([id, label, icon]) => ({ id, label, icon }))}
-        onSwitchProvider={(id) => void switchProvider(id)}
+        onSwitchProvider={(id) => {
+          const target = providers.find((item) => item.id === id);
+          if (target) void activateCodexLine(target);
+          else void switchProvider(id);
+        }}
         onNavigate={(targetView) => setView(targetView as View)}
         onAddProvider={() => {
           if (editor) {
@@ -3492,21 +3698,25 @@ export default function ChimeraApp({
             const closeWindow = closeWindowAfterDiscard;
             setCloseWindowAfterDiscard(false);
             closeEditor();
-            if (closeWindow)
-              void getCurrentWindow()
-                .close()
-                .catch(() => {});
+            if (closeWindow) setPendingWindowClose(true);
           }}
         />
       )}
       {pendingProviderDelete && (
         <ConfirmProviderDelete
           provider={pendingProviderDelete}
+          toolName={
+            (toolDisplayNames as Record<string, string>)[editorAppId] ??
+            "当前工具"
+          }
+          busy={Boolean(deletingProviderId)}
           onCancel={() => setPendingProviderDelete(null)}
           onConfirm={async () => {
             if (await deleteProvider(pendingProviderDelete, editorAppId)) {
               setPendingProviderDelete(null);
-              closeEditor();
+              if (editor?.original?.id === pendingProviderDelete.id) {
+                closeEditor();
+              }
             }
           }}
         />
@@ -3559,6 +3769,7 @@ export default function ChimeraApp({
       )}
       {pendingAction && (
         <ConfirmOperation
+          key={pendingAction.action}
           action={pendingAction.action}
           installed={runtime?.installed !== false}
           currentVersion={runtime?.installed ? runtime.version : null}
@@ -3692,6 +3903,9 @@ export function NewProvidersView({
   onTestSpeed,
   testAllRequested = false,
   onTestAllHandled,
+  externalSwitchingId,
+  externalUndoReceipt,
+  onActivateLine,
 }: {
   providers: Provider[];
   currentId: string;
@@ -3712,6 +3926,16 @@ export function NewProvidersView({
   /** Set by the command palette's 全部测速; forwarded to the line table. */
   testAllRequested?: boolean;
   onTestAllHandled?: () => void;
+  externalSwitchingId?: string | null;
+  externalUndoReceipt?: {
+    fromName: string;
+    toName: string;
+    backupId: string;
+    timestamp: string;
+    switchedAt?: number;
+    onUndo: () => void;
+  } | null;
+  onActivateLine?: (provider: Provider) => Promise<void>;
 }) {
   const {
     hasUpdate,
@@ -3727,8 +3951,8 @@ export function NewProvidersView({
   const [toolbarContainer, setToolbarContainer] =
     useState<HTMLDivElement | null>(null);
   const [query, setQuery] = useState("");
-  const [switchingId, setSwitchingId] = useState<string | null>(null);
-  const [undoReceipt, setUndoReceipt] = useState<{
+  const [localSwitchingId, setLocalSwitchingId] = useState<string | null>(null);
+  const [localUndoReceipt, setLocalUndoReceipt] = useState<{
     fromName: string;
     toName: string;
     backupId: string;
@@ -3737,6 +3961,10 @@ export function NewProvidersView({
     switchedAt?: number;
     onUndo: () => void;
   } | null>(null);
+  const switchingId =
+    externalSwitchingId !== undefined ? externalSwitchingId : localSwitchingId;
+  const undoReceipt =
+    externalUndoReceipt !== undefined ? externalUndoReceipt : localUndoReceipt;
   const undoTimerRef = useRef<NodeJS.Timeout | null>(null);
   const managerTriggerRef = useRef<HTMLButtonElement>(null);
   useEffect(
@@ -3787,7 +4015,7 @@ export function NewProvidersView({
     !!balanceBaseUrl &&
     !!balanceApiKey;
   const balanceQuery = useQuery({
-    queryKey: ["provider-balance", current?.id ?? "none"],
+    queryKey: ["provider-balance", current?.id ?? "none", balanceBaseUrl ?? ""],
     queryFn: () =>
       subscriptionApi.getBalance(
         balanceBaseUrl as string,
@@ -3832,7 +4060,7 @@ export function NewProvidersView({
                   balanceData.remaining ?? balanceData.total ?? 0
                 }${balanceData.unit ?? ""}`
           : "暂无余额数据";
-  if (loading) return <Empty label="正在读取线路…" />;
+  if (loading) return <ProviderLineLoading />;
   if (!providers.length)
     return (
       <section className="provider-page">
@@ -3859,10 +4087,14 @@ export function NewProvidersView({
     return haystack.includes(query.trim().toLowerCase());
   });
   const activateLine = async (provider: Provider) => {
+    if (onActivateLine) {
+      await onActivateLine(provider);
+      return;
+    }
     if (provider.id === current?.id || switchingId || deletingProviderId)
       return;
     const previous = current;
-    setSwitchingId(provider.id);
+    setLocalSwitchingId(provider.id);
     try {
       const switched = await onSwitch(provider.id);
       if (switched === false) return;
@@ -3870,7 +4102,7 @@ export function NewProvidersView({
         if (undoTimerRef.current) {
           clearTimeout(undoTimerRef.current);
         }
-        setUndoReceipt({
+        setLocalUndoReceipt({
           fromName: lineName(previous),
           toName: lineName(provider),
           backupId: `sw-${Date.now()}`,
@@ -3882,17 +4114,17 @@ export function NewProvidersView({
               undoTimerRef.current = null;
             }
             void onSwitch(previous.id);
-            setUndoReceipt(null);
+            setLocalUndoReceipt(null);
           },
         });
         // 用户定调：切线路不弹确认框，靠撤销条兜底，撤销窗口 10 分钟。
         undoTimerRef.current = setTimeout(() => {
-          setUndoReceipt(null);
+          setLocalUndoReceipt(null);
           undoTimerRef.current = null;
         }, LINE_UNDO_WINDOW_MS);
       }
     } finally {
-      setSwitchingId(null);
+      setLocalSwitchingId(null);
     }
   };
 
@@ -3922,7 +4154,7 @@ export function NewProvidersView({
   // The design sample never starts a process, so the detection branch would
   // show "正在检测…" forever; the sample mirrors a running CLI instead.
   const codexButtonLabel = designPreview
-    ? "打开 Codex"
+    ? "启动 Codex"
     : launchingCodex
       ? "正在启动…"
       : codexProcess === null
@@ -4003,12 +4235,7 @@ export function NewProvidersView({
             className="provider-page-heading-tools"
             ref={setToolbarContainer}
           />
-          <button
-            type="button"
-            className="provider-add"
-            onClick={onAdd}
-            disabled={designPreview}
-          >
+          <button type="button" className="provider-add" onClick={onAdd}>
             <Plus size={16} />
             添加线路
           </button>
@@ -4027,7 +4254,7 @@ export function NewProvidersView({
         )}
         <StationSignboard
           currentProvider={current}
-          designSample={designPreview ? CANONICAL_STATION : undefined}
+          designSample={designPreview ? DESIGN_STATION : undefined}
           runtimeLabel={
             designPreview ? "设计预览 · 未检测本机" : codexStatusLabel
           }
@@ -4065,6 +4292,9 @@ export function NewProvidersView({
               : undefined
           }
           onEdit={!designPreview && current ? () => onEdit(current) : undefined}
+          onPreviewDraft={
+            designPreview && current ? () => onEdit(current) : undefined
+          }
           undoReceipt={undoReceipt}
           onRestartCodex={
             !designPreview && codexProcess?.running && restartRequired
@@ -4099,7 +4329,7 @@ export function NewProvidersView({
       )}
       <ProviderLineTable
         readOnly={designPreview}
-        designSamples={designPreview ? CANONICAL_LINES : undefined}
+        designSamples={designPreview ? DESIGN_LINES : undefined}
         toolbarContainer={toolbarContainer}
         onManage={designPreview ? undefined : () => setManagerOpen(true)}
         managerTriggerRef={managerTriggerRef}
@@ -4113,6 +4343,7 @@ export function NewProvidersView({
         onTestAllHandled={onTestAllHandled}
         onSwitch={activateLine}
         onEdit={onEdit}
+        onPreviewDraft={designPreview ? onEdit : undefined}
         onDelete={onDelete}
       />
       {managerOpen && (
@@ -4323,6 +4554,7 @@ function reasoningSummary(item: {
 }
 
 export function ProviderEditor({
+  windowFrame,
   appId = "codex",
   editor,
   setEditor,
@@ -4350,6 +4582,12 @@ export function ProviderEditor({
   deleteBlockedReason = null,
   inUse = false,
 }: {
+  windowFrame?: Pick<
+    React.HTMLAttributes<HTMLElement>,
+    "onMouseDown" | "onDoubleClick"
+  > & {
+    controls: React.ReactNode;
+  };
   appId?: AppId;
   editor: ReturnType<typeof providerDraft>;
   setEditor: (value: ReturnType<typeof providerDraft> | null) => void;
@@ -4485,6 +4723,11 @@ export function ProviderEditor({
     setEditor({
       ...providerDraft(null, editor.name || NEW_LINE_NAME, appId),
       id: editor.id,
+      original: editor.original,
+      notes: editor.notes,
+      iconColor: editor.iconColor,
+      badgeText: editor.badgeText,
+      commonConfigEnabled: editor.commonConfigEnabled,
     });
     setRestorePending(false);
   };
@@ -4672,6 +4915,79 @@ export function ProviderEditor({
     isCodex &&
     editor.original?.category !== "official" &&
     typeof preserveOfficialLogin === "boolean";
+  const appearanceControl = (
+    <details className="editor-appearance">
+      <summary
+        aria-label="修改线路外观"
+        aria-disabled={savingProvider}
+        onClick={(event) => {
+          if (savingProvider) event.preventDefault();
+        }}
+      >
+        外观
+        <LineBadge
+          line={{ ...badgeSource, iconColor: editor.iconColor }}
+          size="sm"
+        />
+        <span>
+          {lineColors.find(
+            ([color]) =>
+              color.toLowerCase() === editor.iconColor?.toLowerCase(),
+          )?.[1] ?? (editor.iconColor ? "自定义" : "默认")}
+          {editor.badgeText.trim() ? " · 自定义简称" : " · 自动简称"}
+        </span>
+        修改 <ChevronDown size={14} />
+      </summary>
+      <div className="editor-appearance-panel">
+        <EditorField
+          label="简称"
+          htmlFor="provider-badge-text-input"
+          hint="最多 2 个汉字或 3 个字母，留空则按名称生成。"
+          hintId="provider-badge-text-hint"
+        >
+          <input
+            id="provider-badge-text-input"
+            name="provider-badge-text"
+            autoComplete="off"
+            spellCheck={false}
+            aria-describedby="provider-badge-text-hint"
+            value={editor.badgeText}
+            onChange={(event) => patch("badgeText", event.target.value)}
+            placeholder={autoLineBadgeText(badgeSource)}
+          />
+        </EditorField>
+        <EditorField label="线路颜色" htmlFor="provider-line-color-input">
+          <EditorSelect
+            id="provider-line-color-input"
+            value={editor.iconColor ?? ""}
+            disabled={savingProvider}
+            onChange={(value) =>
+              setEditor({
+                ...editor,
+                iconColor: value || undefined,
+              })
+            }
+            options={[
+              ["", lineColorOption(lineColors[0][0], "默认（钴蓝）")],
+              ...(editor.iconColor &&
+              !lineColors.some(([color]) => color === editor.iconColor)
+                ? [
+                    [
+                      editor.iconColor,
+                      lineColorOption(editor.iconColor, "当前自定义颜色"),
+                    ] as const,
+                  ]
+                : []),
+              ...lineColors.map(
+                ([color, name]) =>
+                  [color, lineColorOption(color, name)] as const,
+              ),
+            ]}
+          />
+        </EditorField>
+      </div>
+    </details>
+  );
   return (
     <section
       ref={pageRef}
@@ -4680,44 +4996,81 @@ export function ProviderEditor({
       aria-labelledby="provider-editor-title"
       tabIndex={-1}
     >
-      <header className="editor-page-header">
+      <header
+        className={`editor-page-header${windowFrame ? " editor-window-header" : ""}`}
+        data-pencil-name={windowFrame ? "标题栏" : undefined}
+        onMouseDown={windowFrame?.onMouseDown}
+        onDoubleClick={windowFrame?.onDoubleClick}
+      >
+        {windowFrame && isMac() && (
+          <div className="editor-window-controls" data-tauri-no-drag>
+            {windowFrame.controls}
+          </div>
+        )}
         <button
           type="button"
           className="secondary editor-back"
           aria-label="返回线路"
+          data-tauri-no-drag
           onClick={onRequestClose}
           disabled={savingProvider}
         >
-          <ChevronLeft size={16} /> 线路
+          <ChevronLeft size={16} aria-hidden="true" /> 返回线路
         </button>
-        <div className="editor-heading">
+        <div className="editor-heading" {...DRAG_REGION_ATTR}>
+          {windowFrame && <span>{toolName} /</span>}
           <h2
             id="provider-editor-title"
             ref={headingRef}
             tabIndex={-1}
             aria-label={editor.original ? "编辑线路" : "新建线路"}
           >
+            {windowFrame && (editor.original ? "编辑线路 · " : "新建线路 · ")}
             {editor.name.trim() || "未命名线路"}
           </h2>
-          <span>
-            {toolName} · {editor.original ? "编辑线路" : "新建线路"}
-          </span>
+          {!windowFrame && (
+            <span>
+              {toolName} · {editor.original ? "编辑线路" : "新建线路"}
+            </span>
+          )}
         </div>
         <span className="editor-draft-status" role="status">
           {savingProvider ? "正在保存…" : dirty ? "未保存修改" : ""}
         </span>
-        {editor.original && (
-          <DisabledReason reason={deleteBlockedReason ?? undefined} align="end">
-            <button
-              type="button"
-              className="danger"
-              onClick={onDelete}
-              disabled={savingProvider}
-            >
-              <Trash2 size={15} /> 删除线路
-            </button>
-          </DisabledReason>
+        {windowFrame && (
+          <span
+            className="editor-app-mark"
+            aria-hidden="true"
+            {...DRAG_REGION_ATTR}
+          >
+            CHIMERA++ <small>v{APP_VERSION.replace(/^v/, "")}</small>
+          </span>
         )}
+        <div className="editor-window-end" data-tauri-no-drag>
+          {windowFrame && designPreview && (
+            <span className="v3-preview-chip" title="设计示例，不写入本机配置">
+              设计示例
+            </span>
+          )}
+          {editor.original && (
+            <DisabledReason
+              reason={deleteBlockedReason ?? undefined}
+              align="end"
+            >
+              <button
+                type="button"
+                className="danger"
+                onClick={onDelete}
+                disabled={designPreview || savingProvider}
+              >
+                <Trash2 size={15} /> 删除线路
+              </button>
+            </DisabledReason>
+          )}
+          {windowFrame && !isMac() && (
+            <div className="editor-window-controls">{windowFrame.controls}</div>
+          )}
+        </div>
       </header>
       <div className="editor-scroll">
         <fieldset className="editor-form" disabled={savingProvider}>
@@ -4739,7 +5092,7 @@ export function ProviderEditor({
                   : "请填写标有 * 的必填项。"}
               </p>
             )}
-          {!editor.original && (
+          {!isCodex && !editor.original && (
             <EditorTemplateCard
               name={getChimeraHubTemplate().name}
               onRestore={() => setRestorePending(true)}
@@ -4752,6 +5105,7 @@ export function ProviderEditor({
             <div className="editor-section-head">
               <h3 id="editor-basic-title">基础</h3>
               <SectionStatus missing={basicMissing} />
+              {isCodex && appearanceControl}
             </div>
             <div className="editor-basic-grid">
               <div className="editor-name-row">
@@ -4762,93 +5116,21 @@ export function ProviderEditor({
                   onChange={(value) => patch("name", value)}
                   placeholder="例如 默认线路或备用线路"
                 />
-                <details className="editor-appearance">
-                  <summary
-                    aria-label="修改线路外观"
-                    aria-disabled={savingProvider}
-                    onClick={(event) => {
-                      if (savingProvider) event.preventDefault();
-                    }}
-                  >
-                    外观
-                    <LineBadge
-                      line={{ ...badgeSource, iconColor: editor.iconColor }}
-                      size="sm"
-                    />
-                    <span>
-                      {lineColors.find(
-                        ([color]) =>
-                          color.toLowerCase() ===
-                          editor.iconColor?.toLowerCase(),
-                      )?.[1] ?? (editor.iconColor ? "自定义" : "默认")}
-                      {editor.badgeText.trim()
-                        ? " · 自定义简称"
-                        : " · 自动简称"}
-                    </span>
-                    修改 <ChevronDown size={14} />
-                  </summary>
-                  <div className="editor-appearance-panel">
-                    <EditorField
-                      label="简称"
-                      htmlFor="provider-badge-text-input"
-                      hint="最多 2 个汉字或 3 个字母，留空则按名称生成。"
-                      hintId="provider-badge-text-hint"
+                {isCodex ? (
+                  <div className="editor-quick-template">
+                    <span>快速填充模板</span>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => setRestorePending(true)}
                     >
-                      <input
-                        id="provider-badge-text-input"
-                        name="provider-badge-text"
-                        autoComplete="off"
-                        spellCheck={false}
-                        aria-describedby="provider-badge-text-hint"
-                        value={editor.badgeText}
-                        onChange={(event) =>
-                          patch("badgeText", event.target.value)
-                        }
-                        placeholder={autoLineBadgeText(badgeSource)}
-                      />
-                    </EditorField>
-                    <EditorField
-                      label="线路颜色"
-                      htmlFor="provider-line-color-input"
-                    >
-                      <EditorSelect
-                        id="provider-line-color-input"
-                        value={editor.iconColor ?? ""}
-                        disabled={savingProvider}
-                        onChange={(value) =>
-                          setEditor({
-                            ...editor,
-                            iconColor: value || undefined,
-                          })
-                        }
-                        options={[
-                          [
-                            "",
-                            lineColorOption(lineColors[0][0], "默认（钴蓝）"),
-                          ],
-                          ...(editor.iconColor &&
-                          !lineColors.some(
-                            ([color]) => color === editor.iconColor,
-                          )
-                            ? [
-                                [
-                                  editor.iconColor,
-                                  lineColorOption(
-                                    editor.iconColor,
-                                    "当前自定义颜色",
-                                  ),
-                                ] as const,
-                              ]
-                            : []),
-                          ...lineColors.map(
-                            ([color, name]) =>
-                              [color, lineColorOption(color, name)] as const,
-                          ),
-                        ]}
-                      />
-                    </EditorField>
+                      <Plus size={15} aria-hidden="true" /> 从{" "}
+                      {getChimeraHubTemplate().name} 模板填充
+                    </button>
                   </div>
-                </details>
+                ) : (
+                  appearanceControl
+                )}
               </div>
 
               <Field
@@ -5896,7 +6178,7 @@ export function ProviderEditor({
           <EditorTestAction
             connection={connection}
             onTest={onTest}
-            disabled={savingProvider}
+            disabled={designPreview || savingProvider}
           />
           <EditorSaveActions
             onCancel={onRequestClose}
@@ -5907,7 +6189,7 @@ export function ProviderEditor({
                 type="button"
                 className="secondary"
                 onClick={() => submit(secondarySave.activate)}
-                disabled={savingProvider || fetchingModels}
+                disabled={designPreview || savingProvider || fetchingModels}
               >
                 {secondarySave.label}
               </button>
@@ -5915,7 +6197,7 @@ export function ProviderEditor({
             <button
               className="primary"
               onClick={() => submit(primarySave.activate)}
-              disabled={savingProvider || fetchingModels}
+              disabled={designPreview || savingProvider || fetchingModels}
             >
               <SaveLabel busy={savingProvider} label={primarySave.label} />
             </button>
@@ -5939,31 +6221,18 @@ function ConfirmRestoreTemplate({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const ref = useDialogFocus<HTMLElement>(onCancel);
   return (
-    <div className="modal-backdrop">
-      <section
-        ref={ref}
-        className="confirm-dialog"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="restore-template-title"
-        tabIndex={-1}
-      >
-        <h2 id="restore-template-title">恢复默认模板？</h2>
-        <p>
-          这会重置当前线路的地址、密钥、模型映射和高级设置。线路名称与共享通用配置保持不变。
-        </p>
-        <footer>
-          <button onClick={onCancel} data-autofocus>
-            继续编辑
-          </button>
-          <button className="danger" onClick={onConfirm}>
-            恢复模板
-          </button>
-        </footer>
-      </section>
-    </div>
+    <AlertConfirmDialog
+      titleId="restore-template-title"
+      title="恢复默认模板？"
+      description="这会重置当前线路的地址、密钥、模型映射和高级设置。线路名称与共享通用配置保持不变。"
+      cancelLabel="继续编辑"
+      confirmLabel="恢复模板"
+      confirmTone="danger"
+      autoFocusCancel
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    />
   );
 }
 
@@ -5986,7 +6255,6 @@ function ConfirmOperation({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const dialogRef = useDialogFocus<HTMLElement>(onCancel);
   const label =
     action === "update"
       ? "下载并安装更新"
@@ -6018,37 +6286,33 @@ function ConfirmOperation({
             : "Codex 安装文件会被替换，"
         }供应商配置与 ~/.codex 用户数据不会被删除。`;
   return (
-    <div className="modal-backdrop">
-      <section
-        ref={dialogRef}
-        className="confirm-dialog"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="runtime-confirm-title"
-        tabIndex={-1}
-      >
-        <CircleAlert size={26} />
-        <h2 id="runtime-confirm-title">确认{label}？</h2>
-        {facts.length > 0 && (
-          <p className="confirm-facts">
-            {facts.map((fact, index) => (
+    <AlertConfirmDialog
+      titleId="runtime-confirm-title"
+      icon={<CircleAlert size={26} />}
+      title={`确认${label}？`}
+      facts={
+        facts.length > 0
+          ? facts.map((fact, index) => (
               <Fragment key={fact}>
                 {index > 0 && " · "}
                 {/* A fact never breaks inside: "788.0 MB" stays whole. */}
                 <span className="runtime-confirm-fact">{fact}</span>
               </Fragment>
-            ))}
-          </p>
-        )}
-        <p>{consequence}</p>
-        <footer>
-          <button onClick={onCancel}>取消</button>
-          <button className="primary" onClick={onConfirm}>
-            确认继续
-          </button>
-        </footer>
-      </section>
-    </div>
+            ))
+          : undefined
+      }
+      description={consequence}
+      acknowledgement={
+        action === "uninstall"
+          ? "我已保存当前工作，确认仅移除程序文件"
+          : undefined
+      }
+      autoFocusCancel={action === "uninstall"}
+      confirmLabel={action === "uninstall" ? "确认卸载" : "确认继续"}
+      confirmTone={action === "uninstall" ? "danger" : "primary"}
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    />
   );
 }
 
@@ -6059,30 +6323,19 @@ function ConfirmDiscardEditor({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const dialogRef = useDialogFocus<HTMLElement>(onCancel);
   return (
-    <div className="modal-backdrop">
-      <section
-        ref={dialogRef}
-        className="confirm-dialog"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="editor-discard-title"
-        tabIndex={-1}
-      >
-        <CircleAlert size={26} />
-        <h2 id="editor-discard-title">放弃未保存的修改？</h2>
-        <p>离开后，本次未保存的线路设置与通用配置修改将丢失。</p>
-        <footer>
-          <button onClick={onCancel} data-autofocus>
-            继续编辑
-          </button>
-          <button className="danger" onClick={onConfirm}>
-            放弃修改
-          </button>
-        </footer>
-      </section>
-    </div>
+    <AlertConfirmDialog
+      titleId="editor-discard-title"
+      icon={<CircleAlert size={26} />}
+      title="放弃未保存的修改？"
+      description="离开后，本次未保存的线路设置与通用配置修改将丢失。"
+      cancelLabel="继续编辑"
+      confirmLabel="放弃修改"
+      confirmTone="danger"
+      autoFocusCancel
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    />
   );
 }
 
@@ -6097,63 +6350,46 @@ function ConfirmSkinOperation({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const dialogRef = useDialogFocus<HTMLElement>(onCancel);
   return (
-    <div className="modal-backdrop">
-      <section
-        ref={dialogRef}
-        className="confirm-dialog"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="skin-confirm-title"
-        tabIndex={-1}
-      >
-        <Paintbrush size={26} />
-        <h2 id="skin-confirm-title">确认{label}？</h2>
-        {detail && <p className="confirm-facts">{detail}</p>}
-        <p>该操作会关闭并重新启动 Codex。供应商配置和用户数据不会被修改。</p>
-        <footer>
-          <button onClick={onCancel}>取消</button>
-          <button className="primary" onClick={onConfirm}>
-            确认继续
-          </button>
-        </footer>
-      </section>
-    </div>
+    <AlertConfirmDialog
+      titleId="skin-confirm-title"
+      icon={<Paintbrush size={26} />}
+      title={`确认${label}？`}
+      facts={detail}
+      description="该操作会关闭并重新启动 Codex。供应商配置和用户数据不会被修改。"
+      confirmLabel="确认继续"
+      confirmTone="primary"
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    />
   );
 }
 
 function ConfirmProviderDelete({
   provider,
+  toolName,
+  busy = false,
   onCancel,
   onConfirm,
 }: {
   provider: Provider;
+  toolName: string;
+  busy?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const dialogRef = useDialogFocus<HTMLElement>(onCancel);
   return (
-    <div className="modal-backdrop">
-      <section
-        ref={dialogRef}
-        className="confirm-dialog"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="provider-delete-title"
-        tabIndex={-1}
-      >
-        <CircleAlert size={26} />
-        <h2 id="provider-delete-title">确认删除“{provider.name}”？</h2>
-        <p>该线路会从 Chimera++ 中移除。当前 Codex 用户数据不会被删除。</p>
-        <footer>
-          <button onClick={onCancel}>取消</button>
-          <button className="danger" onClick={onConfirm}>
-            删除线路
-          </button>
-        </footer>
-      </section>
-    </div>
+    <AlertConfirmDialog
+      titleId="provider-delete-title"
+      icon={<CircleAlert size={26} />}
+      title={`确认删除“${provider.name}”？`}
+      description={`该线路会从 Chimera++ 中移除。当前 ${toolName} 用户数据不会被删除。`}
+      confirmLabel="删除线路"
+      confirmTone="danger"
+      busy={busy}
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    />
   );
 }
 
@@ -6171,46 +6407,30 @@ function ConfirmModelReload({
   // the first one's runtime lock and surfaced as "another Chimera++ operation
   // is in progress" even though only one window was open.
   const [restarting, setRestarting] = useState(false);
-  const dialogRef = useDialogFocus<HTMLElement>(onCancel, !restarting);
   return (
-    <div className="modal-backdrop">
-      <section
-        ref={dialogRef}
-        className="confirm-dialog"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="model-reload-title"
-        tabIndex={-1}
-      >
-        <RefreshCw size={26} />
-        <h2 id="model-reload-title">重新加载模型列表？</h2>
-        <p>
-          默认模型“{model}”已写入。Codex
-          只在启动时读取模型目录，当前窗口可能仍显示上一条线路的模型。完整重启会中断正在进行的任务，请确认后继续。
-        </p>
-        <footer>
-          <button onClick={onCancel} disabled={restarting}>
-            稍后重启
-          </button>
-          <button
-            className="primary"
-            disabled={restarting}
-            onClick={() => {
-              setRestarting(true);
-              void onConfirm().finally(() => setRestarting(false));
-            }}
-          >
-            {restarting ? (
-              <>
-                <LoaderCircle className="spin" size={15} /> 正在重启 Codex…
-              </>
-            ) : (
-              "立即重启 Codex"
-            )}
-          </button>
-        </footer>
-      </section>
-    </div>
+    <AlertConfirmDialog
+      titleId="model-reload-title"
+      icon={<RefreshCw size={26} />}
+      title="重新加载模型列表？"
+      description={`默认模型“${model}”已写入。Codex 只在启动时读取模型目录，当前窗口可能仍显示上一条线路的模型。完整重启会中断正在进行的任务，请确认后继续。`}
+      cancelLabel="稍后重启"
+      confirmLabel={
+        restarting ? (
+          <>
+            <LoaderCircle className="spin" size={15} /> 正在重启 Codex…
+          </>
+        ) : (
+          "立即重启 Codex"
+        )
+      }
+      confirmTone="primary"
+      busy={restarting}
+      onCancel={onCancel}
+      onConfirm={() => {
+        setRestarting(true);
+        void onConfirm().finally(() => setRestarting(false));
+      }}
+    />
   );
 }
 
@@ -6268,6 +6488,22 @@ function DiagnosticsDialog({
       detail: detail || "建议先修复安装后再次诊断。",
     };
   };
+  const passed = diagnostics.filter((item) => item.result === "pass").length;
+  const attention = diagnostics.length - passed;
+  const copySummary = async () => {
+    const summary = diagnostics
+      .map((item) => {
+        const { status, detail } = describeDiagnostic(item);
+        return `${diagnosticNames[item.name] ?? item.name} · ${status} · ${detail}`;
+      })
+      .join("\n");
+    try {
+      await navigator.clipboard.writeText(summary);
+      toast.success("诊断摘要已复制");
+    } catch {
+      toast.error("未能复制诊断摘要");
+    }
+  };
   return (
     <div
       className="modal-backdrop"
@@ -6287,7 +6523,9 @@ function DiagnosticsDialog({
         <header>
           <div>
             <h2 id="diagnostics-title">Codex 诊断结果</h2>
-            <p>检测结果来自当前系统的 Codex 安装状态。</p>
+            <span className="diagnostics-summary">
+              {passed} 项通过 · {attention} 项需关注
+            </span>
           </div>
           <button
             className="icon-button"
@@ -6321,11 +6559,22 @@ function DiagnosticsDialog({
         <footer>
           {/* A failed check is actionable: offer the repair or install the
               backend says is available, instead of only closing the dialog. */}
+          <span className="diagnostics-count">
+            共 {diagnostics.length} 项检查
+          </span>
+          <button onClick={() => void copySummary()}>复制诊断摘要</button>
           {onInstall && runtime?.installed === false && (
             <button onClick={onInstall}>安装 Codex</button>
           )}
-          {onRepair && <button onClick={onRepair}>修复安装</button>}
-          <button className="primary" onClick={onClose}>
+          {onRepair && (
+            <button className="primary" onClick={onRepair}>
+              修复安装
+            </button>
+          )}
+          <button
+            className={onRepair ? "secondary" : "primary"}
+            onClick={onClose}
+          >
             完成
           </button>
         </footer>
@@ -6337,7 +6586,7 @@ function Onboarding({ onAdd }: { onAdd: () => void }) {
   return (
     <section className="onboarding">
       <div className="onboarding-brand">
-        <img src={routeGateIcon} alt="" /> Chimera++
+        <img src={appIcon} alt="" /> Chimera++
       </div>
       <h2>开始配置你的 Codex</h2>
       <p>
@@ -6386,47 +6635,61 @@ function StandaloneOnboarding({
       <div className="onboarding-titlebar" {...DRAG_REGION_ATTR}>
         <WindowControls />
       </div>
-      <section className="onboarding onboarding-card">
-        <div className="onboarding-brand">
-          <img src={routeGateIcon} alt="" /> Chimera++
-        </div>
-        <h1>开始配置你的 Codex</h1>
-        <p>
-          只需填写一次 Chimera 中转站密钥，之后可在首页快速切换线路。Chimera++
-          会自动识别本机 Codex 安装方式并同步模型列表。
-        </p>
+      <section
+        className="onboarding onboarding-card"
+        aria-labelledby="welcome-title"
+      >
+        <header className="welcome-heading">
+          <span className="welcome-mark" aria-hidden="true">
+            <img src={appIcon} alt="" />
+          </span>
+          <div>
+            <div className="welcome-title">
+              <h1 id="welcome-title">欢迎使用 Chimera++</h1>
+              <span className="v5-version">v{APP_VERSION}</span>
+            </div>
+            <p>
+              统一管理 Codex、Claude Code
+              与本地模型线路。线路配置和凭据保存在本机。
+            </p>
+          </div>
+        </header>
         <ol>
           <li>
-            <b>1</b>
+            <b aria-hidden="true">01</b>
             <div>
-              <strong>添加线路</strong>
-              <span>默认使用 Chimera 中转站模板</span>
+              <strong>选择首条接入方式</strong>
+              <span>
+                从 ChimeraHub 模板开始，也可以填写自定义服务地址和密钥。
+              </span>
             </div>
           </li>
           <li>
-            <b>2</b>
+            <b aria-hidden="true">02</b>
             <div>
-              <strong>检测 Codex</strong>
-              <span>识别标准安装或免安装版本</span>
+              <strong>连通性探测与延迟校验</strong>
+              <span>在编辑器测试地址并读取可用模型，确认后再写入配置。</span>
             </div>
           </li>
           <li>
-            <b>3</b>
+            <b aria-hidden="true">03</b>
             <div>
-              <strong>完成设置</strong>
-              <span>保存后即可快速切换</span>
+              <strong>托盘一键切换与用量统计</strong>
+              <span>从系统托盘切换已保存的线路，或查看请求用量。</span>
             </div>
           </li>
         </ol>
         <footer>
+          <small>
+            <LockKeyhole size={15} aria-hidden="true" /> 数据仅保存在本机
+          </small>
           <button className="secondary" onClick={onSkip}>
             稍后配置
           </button>
           <button className="primary" onClick={onAdd}>
-            开始配置
+            开始配置第一条线路 <ArrowRight size={15} aria-hidden="true" />
           </button>
         </footer>
-        <small>数据仅保存在本机</small>
       </section>
     </main>
   );

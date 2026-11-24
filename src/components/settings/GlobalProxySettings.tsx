@@ -182,12 +182,13 @@ export function GlobalProxySettings() {
           size="icon"
           disabled={scanMutation.isPending}
           onClick={handleScan}
+          aria-label={t("settings.globalProxy.scan")}
           title={t("settings.globalProxy.scan")}
         >
           {scanMutation.isPending ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
           ) : (
-            <Search className="h-4 w-4" />
+            <Search className="h-4 w-4" aria-hidden="true" />
           )}
         </Button>
         <Button
@@ -195,12 +196,13 @@ export function GlobalProxySettings() {
           size="icon"
           disabled={!fullUrl || testMutation.isPending}
           onClick={handleTest}
+          aria-label={t("settings.globalProxy.test")}
           title={t("settings.globalProxy.test")}
         >
           {testMutation.isPending ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
           ) : (
-            <TestTube2 className="h-4 w-4" />
+            <TestTube2 className="h-4 w-4" aria-hidden="true" />
           )}
         </Button>
         <Button
@@ -208,9 +210,10 @@ export function GlobalProxySettings() {
           size="icon"
           disabled={!url && !username && !password}
           onClick={handleClear}
+          aria-label={t("settings.globalProxy.clear")}
           title={t("settings.globalProxy.clear")}
         >
-          <X className="h-4 w-4" />
+          <X className="h-4 w-4" aria-hidden="true" />
         </Button>
         <Button
           onClick={handleSave}
@@ -254,12 +257,27 @@ export function GlobalProxySettings() {
             size="icon"
             className="absolute right-0 top-0 h-full px-3 hover:bg-transparent"
             onClick={() => setShowPassword(!showPassword)}
-            tabIndex={-1}
+            aria-label={
+              showPassword
+                ? t("common.hidePassword", { defaultValue: "隐藏密码" })
+                : t("common.showPassword", { defaultValue: "显示密码" })
+            }
+            title={
+              showPassword
+                ? t("common.hidePassword", { defaultValue: "隐藏密码" })
+                : t("common.showPassword", { defaultValue: "显示密码" })
+            }
           >
             {showPassword ? (
-              <EyeOff className="h-4 w-4 text-muted-foreground" />
+              <EyeOff
+                className="h-4 w-4 text-muted-foreground"
+                aria-hidden="true"
+              />
             ) : (
-              <Eye className="h-4 w-4 text-muted-foreground" />
+              <Eye
+                className="h-4 w-4 text-muted-foreground"
+                aria-hidden="true"
+              />
             )}
           </Button>
         </div>

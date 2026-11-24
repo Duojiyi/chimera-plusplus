@@ -166,33 +166,11 @@ pub(crate) fn ps_line_is_claude_code(line: &str) -> bool {
     program.rsplit('/').next() == Some("claude") || line.contains("@anthropic-ai/claude-code")
 }
 
-/// A `ps -axo command=` line of the Claude Desktop main process on macOS
-/// (helpers live in `Frameworks/… Helper.app` and do not match).
 #[cfg(any(target_os = "macos", test))]
-pub(crate) fn ps_line_is_claude_desktop(line: &str) -> bool {
-    const MAIN: &str = "/Claude.app/Contents/MacOS/Claude";
-    line.find(MAIN).is_some_and(|start| {
-        let rest = &line[start + MAIN.len()..];
-        rest.is_empty() || rest.starts_with(' ')
-    })
-}
+pub(crate) use crate::claude_desktop_paths::ps_line_is_claude_desktop;
 
 #[cfg(unix)]
-fn ps_command_lines() -> Option<String> {
-    let mut command = std::process::Command::new("ps");
-    command.args(["-axo", "command="]);
-    match crate::process_utils::output_with_timeout(
-        command,
-        std::time::Duration::from_secs(5),
-        crate::security_limits::MAX_PROCESS_OUTPUT_BYTES,
-    ) {
-        Ok(output) => Some(String::from_utf8_lossy(&output.stdout).into_owned()),
-        Err(error) => {
-            log::warn!("读取进程列表失败: {error}");
-            None
-        }
-    }
-}
+use crate::claude_desktop_paths::ps_command_lines;
 
 /// Whether a Claude Code CLI is running. Unknown (the check itself failed)
 /// reads as not running; the switch still re-checks the files it writes.

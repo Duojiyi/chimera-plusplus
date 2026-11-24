@@ -5,75 +5,64 @@ import type {
   UsageSummary,
 } from "@/types/usage";
 
-/**
- * Browser design-preview fixtures for the 用量 page (L08).
- *
- * Only used when the renderer runs outside Tauri with `?preview=design`, so
- * the layout can be reviewed without a backend. Numbers follow the shared
- * fake-data baseline (design system §6): input 12.4M + output 3.18M, cache
- * read 48.9M (79% hit), 41,208 requests with 9 failures. Refresh, rebuild and
- * range switching stay disabled while these are on screen.
- */
+/** Read-only Codex activity for the seven-day v5.2 design preview. */
 export const isUsageDesignPreview = (): boolean =>
   import.meta.env.DEV &&
   typeof window !== "undefined" &&
   !("__TAURI_INTERNALS__" in window) &&
   new URLSearchParams(window.location.search).get("preview") === "design";
 
-const INPUT = 12_400_000;
-const OUTPUT = 3_180_000;
-const CACHE_CREATION = 600_000;
-const CACHE_READ = 48_900_000;
-const REQUESTS = 41_208;
-const FAILURES = 9;
-
-export const USAGE_SAMPLE_SESSION_FILES = 1_958;
-
+const DAY_TOTALS = [
+  1_450_000, 1_180_000, 1_940_000, 1_620_000, 2_640_000, 2_040_000, 1_610_000,
+];
+const TOTAL = DAY_TOTALS.reduce((sum, value) => sum + value, 0);
+const OUTPUT = 2_660_000;
+const CACHE_CREATION = 120_000;
+const CACHE_READ = Math.round((TOTAL - OUTPUT) * 0.684);
+const INPUT = TOTAL - OUTPUT - CACHE_CREATION - CACHE_READ;
+const REQUESTS = 1_428;
+const COST_CENTS = 3_460;
+export const USAGE_SAMPLE_SESSION_FILES = 96;
 export const USAGE_SAMPLE_SUMMARY: UsageSummary = {
   totalRequests: REQUESTS,
-  totalCost: "25.80",
+  totalCost: (COST_CENTS / 100).toFixed(2),
   totalInputTokens: INPUT,
   totalOutputTokens: OUTPUT,
   totalCacheCreationTokens: CACHE_CREATION,
   totalCacheReadTokens: CACHE_READ,
-  successRate: ((REQUESTS - FAILURES) / REQUESTS) * 100,
-  realTotalTokens: INPUT + OUTPUT + CACHE_CREATION + CACHE_READ,
-  cacheHitRate: CACHE_READ / (INPUT + CACHE_CREATION + CACHE_READ),
+  successRate: 100,
+  realTotalTokens: TOTAL,
+  cacheHitRate: CACHE_READ / (TOTAL - OUTPUT),
 };
 
-/** Relative daily load, oldest first; the shape of the L08 board. */
-const SHAPE = [
-  48, 56, 43, 70, 62, 80, 55, 38, 66, 75, 50, 88, 95, 70, 65, 80, 75, 58, 100,
-  83, 70, 55, 80, 93, 75, 62, 132, 160, 108, 100,
-];
-
-/** Split `total` by SHAPE so the days add up exactly. */
+/** Round cumulative shares so the buckets add up to the exact total. */
 function spread(total: number): number[] {
-  const weight = SHAPE.reduce((sum, value) => sum + value, 0);
-  const parts = SHAPE.map((value) => Math.floor((total * value) / weight));
-  parts[parts.length - 1] += total - parts.reduce((sum, v) => sum + v, 0);
-  return parts;
+  let cumulative = 0;
+  return DAY_TOTALS.map((weight) => {
+    const start = Math.round((total * cumulative) / TOTAL);
+    cumulative += weight;
+    return Math.round((total * cumulative) / TOTAL) - start;
+  });
 }
 
 const pad = (value: number) => String(value).padStart(2, "0");
 
-export function usageSampleTrends(now = new Date()): DailyStats[] {
-  const input = spread(INPUT);
+export function usageSampleTrends(now = new Date(2026, 10, 23)): DailyStats[] {
   const output = spread(OUTPUT);
   const creation = spread(CACHE_CREATION);
   const read = spread(CACHE_READ);
   const requests = spread(REQUESTS);
-  const cost = spread(2580);
-  return SHAPE.map((_, index) => {
+  const cost = spread(COST_CENTS);
+  return DAY_TOTALS.map((total, index) => {
     const day = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    day.setDate(day.getDate() - (SHAPE.length - 1 - index));
-    const total = input[index] + output[index] + creation[index] + read[index];
+    day.setDate(day.getDate() - (DAY_TOTALS.length - 1 - index));
+    const input = total - output[index] - creation[index] - read[index];
     return {
       date: `${day.getFullYear()}-${pad(day.getMonth() + 1)}-${pad(day.getDate())}`,
       requestCount: requests[index],
       totalCost: (cost[index] / 100).toFixed(2),
       totalTokens: total,
-      totalInputTokens: input[index],
+      totalInputTokens: input,
       totalOutputTokens: output[index],
       totalCacheCreationTokens: creation[index],
       totalCacheReadTokens: read[index],
@@ -94,13 +83,10 @@ const model = (
   avgCostPerRequest: (Number(totalCost) / requestCount).toFixed(6),
 });
 
-/** Model totals are fresh input + output, like the backend's model ranking. */
 export const USAGE_SAMPLE_MODELS: ModelStats[] = [
-  model("deepseek-v4-pro", 8_850_000, 21_406, "6.92"),
-  model("gpt-5.6", 3_320_000, 9_812, "12.64"),
-  model("kimi-k2", 2_120_000, 6_204, "3.41"),
-  model("glm-5", 890_000, 2_731, "1.12"),
-  model("claude-sonnet-4-6", 400_000, 1_055, "1.71"),
+  model("gpt-5.4-codex", 6_420_000, 743, "19.26"),
+  model("gpt-6.2-sol", 3_840_000, 432, "11.52"),
+  model("claude-sonnet-4", 2_220_000, 253, "3.82"),
 ];
 
 const provider = (
@@ -119,9 +105,7 @@ const provider = (
 });
 
 export const USAGE_SAMPLE_PROVIDERS: ProviderStats[] = [
-  provider("DeepSeek", 6_140_000, 16_240, "5.10"),
-  provider("OpenAI 官方", 4_050_000, 10_715, "13.06"),
-  provider("Kimi", 2_910_000, 7_706, "3.91"),
-  provider("智谱 GLM", 1_590_000, 4_212, "1.92"),
-  provider("OpenRouter", 890_000, 2_335, "1.81"),
+  provider("新线路 · kimera", 7_820_000, 894, "21.12"),
+  provider("OpenAI Official", 3_660_000, 388, "11.60"),
+  provider("默认本地备用线路", 1_000_000, 146, "1.88"),
 ];

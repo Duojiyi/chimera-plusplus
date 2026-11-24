@@ -23,6 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { copyText } from "@/lib/clipboard";
+import { isSafeHttpUrl, openSafeExternalUrl } from "@/lib/schemas/provider";
 import { useXaiOauth } from "./hooks/useXaiOauth";
 
 interface XaiOAuthSectionProps {
@@ -260,17 +261,20 @@ export const XaiOAuthSection: React.FC<XaiOAuthSectionProps> = ({
               </Button>
             </div>
           </div>
-          <div className="text-center">
-            <a
-              href={deviceCode.verification_uri}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-sm text-blue-500 hover:underline"
-            >
-              {deviceCode.verification_uri}
-              <ExternalLink className="h-3 w-3" />
-            </a>
-          </div>
+          {isSafeHttpUrl(deviceCode.verification_uri) && (
+            <div className="text-center">
+              <button
+                type="button"
+                onClick={() => {
+                  void openSafeExternalUrl(deviceCode.verification_uri);
+                }}
+                className="inline-flex items-center gap-1 text-sm text-blue-500 hover:underline"
+              >
+                {deviceCode.verification_uri}
+                <ExternalLink className="h-3 w-3" />
+              </button>
+            </div>
+          )}
           <div className="text-center">
             <Button
               type="button"

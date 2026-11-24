@@ -1,28 +1,22 @@
-/* Claude accounts card: the same glass feature-card material as the tool
-   page's cards (liquid-glass-pages.css), with token fallbacks so it stays
-   legible where the glass variables are absent. */
+/* Claude accounts card: Chimera++ v5.2 Studio Titanium-Mist · Plane 2 Crystal Stage */
 .claude-accounts-card {
   container-type: inline-size;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  gap: 14px;
+  gap: 16px;
   min-width: 0;
-  padding: 18px 20px;
-  border: 1px solid var(--glass-border, var(--border-subtle));
-  border-radius: var(--radius-panel, 12px);
-  background:
-    linear-gradient(
-      155deg,
-      var(--glass-highlight, transparent),
-      transparent 74%
-    ),
-    var(--glass-surface-strong, var(--bg-surface));
+  padding: 20px 22px;
+  border: 1px solid var(--v5-stage-border, rgba(255, 255, 255, 0.92));
+  border-radius: 18px;
+  background: var(--v5-stage-bg, rgba(255, 255, 255, 0.78));
   box-shadow:
-    inset 0 1px 0 var(--glass-highlight, transparent),
-    var(--glass-shadow, none);
+    inset 0 1px 0 #ffffff,
+    var(--v5-stage-shadow, 0 10px 30px rgba(17, 19, 24, 0.06));
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  backdrop-filter: blur(22px) saturate(150%);
   color: var(--text-1);
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .claude-accounts-heading {
@@ -124,19 +118,19 @@
 .claude-accounts-eyebrow {
   flex-basis: 100%;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   letter-spacing: 0.2px;
 }
 .claude-accounts-saved {
   color: var(--success-fg);
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 .claude-accounts-plan {
   padding: 1px 7px;
   border-radius: 999px;
   background: var(--glass-accent-soft, var(--bg-subtle));
   color: var(--glass-accent-strong, var(--brand-text));
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.3px;
 }
@@ -152,29 +146,33 @@
   list-style: none;
 }
 .claude-account-row {
+  position: relative;
   display: grid;
   grid-column: 1 / -1;
   grid-template-columns: subgrid;
   align-items: center;
   gap: 12px 14px;
-  padding: 12px 14px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-ring, 10px);
-  background: var(--bg-surface);
+  padding: 12px 16px;
+  border: 1px solid rgba(17, 19, 24, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: inset 0 1px 0 #ffffff;
   transition:
     border-color var(--dur-fast, 120ms) ease,
-    box-shadow var(--dur-fast, 120ms) ease;
+    box-shadow var(--dur-fast, 120ms) ease,
+    background var(--dur-fast, 120ms) ease;
 }
 .claude-account-row:hover {
-  border-color: var(--glass-border, var(--border-control));
+  border-color: rgba(17, 19, 24, 0.14);
+  background: rgba(255, 255, 255, 0.96);
 }
 .claude-account-row[data-current="true"] {
-  border-color: color-mix(
-    in srgb,
-    var(--glass-accent, #087bb9) 45%,
-    transparent
-  );
-  box-shadow: inset 3px 0 0 var(--glass-accent, var(--brand));
+  border-color: rgba(17, 19, 24, 0.12);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow:
+    inset 3px 0 0 var(--accent-petrol, #0e6470),
+    inset 0 1px 0 #ffffff,
+    0 4px 14px rgba(17, 19, 24, 0.06);
 }
 .claude-account-row.is-default:not(.has-quota) > .claude-account-identity {
   grid-column: 2 / -1;
@@ -221,7 +219,7 @@
   border-radius: 6px;
   background: var(--glass-accent-soft, var(--bg-subtle));
   color: var(--glass-accent-strong, var(--brand-text));
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .claude-account-tag.is-muted,
 .claude-account-tag[data-tone="muted"] {
@@ -243,13 +241,13 @@
   gap: 4px 8px;
   overflow: hidden;
   color: var(--text-2);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   text-overflow: ellipsis;
 }
 .claude-account-meta code {
   color: var(--text-3);
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .claude-account-actions {
   display: flex;
@@ -286,11 +284,11 @@
   justify-content: space-between;
   gap: 6px;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .claude-quota-meter-head strong {
   color: var(--text-1);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
@@ -320,7 +318,7 @@
   gap: 1px 8px;
   overflow: hidden;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   white-space: nowrap;
 }
 .claude-quota-reset {
@@ -341,7 +339,7 @@
 .claude-quota-extra {
   margin: 0;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .claude-quota-foot {
   display: flex;
@@ -355,7 +353,7 @@
   gap: 4px;
   min-width: 0;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .claude-quota-note.is-warning {
   color: var(--warning-fg);
@@ -370,7 +368,7 @@
   border-radius: 6px;
   background: transparent;
   color: var(--text-2);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   cursor: pointer;
 }
 .claude-quota-refresh:hover:not(:disabled) {
@@ -413,7 +411,7 @@
 }
 .claude-accounts-form label {
   color: var(--text-2);
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 .claude-accounts-form footer,
 .claude-accounts-form-actions {
@@ -522,7 +520,7 @@
 .claude-login-report strong {
   flex-shrink: 0;
   color: var(--glass-accent, var(--brand-text));
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 600;
 }
 .claude-login-report li[data-skipped="true"] strong {
@@ -539,7 +537,7 @@
 .claude-login-note {
   margin: 0;
   color: var(--warning-fg);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.7;
   text-wrap: pretty;
 }
@@ -609,7 +607,7 @@
   background: var(--bg-subtle);
   color: var(--text-2);
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   letter-spacing: 0.2px;
 }
 .claude-account-tag[data-tone="live"] {
@@ -636,7 +634,7 @@
 .claude-account-noquota {
   margin: 0;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
 }
 
@@ -671,7 +669,7 @@
 }
 .claude-add-menu small {
   color: var(--text-3);
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   line-height: 1.5;
 }
 
@@ -683,7 +681,7 @@
 .claude-secret-field input {
   padding-right: 38px;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 .claude-secret-toggle {
   position: absolute;
@@ -708,7 +706,7 @@
 .claude-secret-kind {
   margin: 0;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 .claude-secret-kind[data-kind="setup_token"],
 .claude-secret-kind[data-kind="api_key"] {
@@ -720,7 +718,7 @@
 .claude-secret-error {
   margin: 0;
   color: var(--danger-fg);
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 /* The default Claude Desktop: who is signed in, and saving that. */
@@ -730,7 +728,7 @@
   align-items: center;
   gap: 6px 12px;
   color: var(--text-2);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
 }
 .claude-swap-line > span {
@@ -813,27 +811,29 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin-bottom: 10px;
-  padding: 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-ring, 10px);
-  background: var(--glass-control-bg, var(--bg-subtle));
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--v3-hairline, rgba(17, 19, 24, 0.07));
+  border-radius: 12px;
+  background: rgba(17, 19, 24, 0.035);
 }
 .claude-accounts-search {
   display: inline-flex;
   flex: 1 1 200px;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   min-width: 0;
-  height: 30px;
-  padding: 0 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-control, 8px);
-  background: var(--bg-surface);
+  height: 34px;
+  padding: 0 11px;
+  border: 1px solid var(--btn-secondary-border, rgba(17, 19, 24, 0.12));
+  border-radius: 9px;
+  background: var(--input-bg, #ffffff);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.9);
   color: var(--text-3);
 }
 .claude-accounts-search:focus-within {
-  border-color: var(--glass-accent, var(--brand));
+  border-color: var(--accent-petrol, #0e6470);
+  box-shadow: 0 0 0 2px rgba(14, 100, 112, 0.14);
 }
 .claude-accounts-search input {
   flex: 1;
@@ -842,16 +842,16 @@
   outline: none;
   background: transparent;
   color: var(--text-1);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .claude-accounts-select {
-  height: 30px;
-  padding: 0 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-control, 8px);
-  background: var(--bg-surface);
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--btn-secondary-border, rgba(17, 19, 24, 0.12));
+  border-radius: 9px;
+  background: var(--input-bg, #ffffff);
   color: var(--text-1);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .claude-accounts-toolbar-icons {
   display: inline-flex;
@@ -861,36 +861,48 @@
 }
 .claude-accounts-view {
   display: inline-flex;
-  padding: 2px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-control, 8px);
-  background: var(--bg-surface);
+  padding: 3px;
+  border: 1px solid rgba(17, 19, 24, 0.07);
+  border-radius: 9px;
+  background: rgba(17, 19, 24, 0.05);
 }
 .claude-accounts-view button,
 .claude-accounts-icon-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 26px;
+  width: 30px;
+  height: 28px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 7px;
   background: transparent;
   color: var(--text-2);
   cursor: pointer;
+  transition:
+    background 120ms ease,
+    color 120ms ease,
+    box-shadow 120ms ease;
 }
 .claude-accounts-icon-button {
-  height: 30px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-control, 8px);
-  background: var(--bg-surface);
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--btn-secondary-border, rgba(17, 19, 24, 0.12));
+  border-radius: 9px;
+  background: var(--btn-secondary-bg, rgba(255, 255, 255, 0.88));
+}
+.claude-accounts-icon-button:hover:not(:disabled) {
+  background: var(--btn-secondary-bg-hover, #ffffff);
+  color: var(--text-1);
 }
 .claude-accounts-view button[aria-pressed="true"] {
-  background: color-mix(in srgb, var(--glass-accent, #087bb9) 14%, transparent);
-  color: var(--glass-accent-strong, var(--brand-text));
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 1px 4px rgba(17, 19, 24, 0.08);
+  color: var(--accent-petrol, #0e6470);
 }
 .claude-accounts-icon-button[aria-pressed="true"] {
-  color: var(--glass-accent-strong, var(--brand-text));
+  color: var(--accent-petrol, #0e6470);
 }
 .claude-accounts-icon-button:disabled {
   cursor: default;
@@ -899,37 +911,53 @@
 
 .claude-accounts-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  gap: 14px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 .claude-account-card {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   min-width: 0;
-  padding: 14px;
-  border: 1px solid var(--border-subtle);
+  padding: 16px 18px;
+  border: 1px solid rgba(17, 19, 24, 0.085);
   border-radius: 14px;
-  background: var(--bg-surface);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 3px 12px rgba(17, 19, 24, 0.045);
   transition:
     border-color var(--dur-fast, 120ms) ease,
-    box-shadow var(--dur-fast, 120ms) ease;
+    box-shadow var(--dur-fast, 120ms) ease,
+    background var(--dur-fast, 120ms) ease;
 }
 .claude-account-card:hover {
-  border-color: var(--glass-border, var(--border-control));
-  box-shadow: 0 6px 18px rgb(0 0 0 / 6%);
+  border-color: rgba(17, 19, 24, 0.14);
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 8px 22px rgba(17, 19, 24, 0.075);
 }
 .claude-account-card[data-current="true"] {
-  border-color: color-mix(
-    in srgb,
-    var(--glass-accent, #087bb9) 55%,
-    transparent
-  );
-  box-shadow: 0 0 0 1px
-    color-mix(in srgb, var(--glass-accent, #087bb9) 30%, transparent);
+  border-color: rgba(17, 19, 24, 0.12);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 6px 20px rgba(17, 19, 24, 0.07);
+}
+.claude-account-card[data-current="true"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent-petrol, #0e6470);
 }
 .claude-account-card[data-disabled="true"] {
   border-style: dashed;
@@ -975,7 +1003,7 @@
   border-radius: 999px;
   background: var(--bg-subtle);
   color: var(--text-2);
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   cursor: pointer;
 }
 .claude-account-note span {
@@ -993,7 +1021,7 @@
   display: block;
   overflow: hidden;
   color: var(--text-2);
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1021,7 +1049,7 @@
 .claude-account-card-date {
   color: var(--text-3);
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .claude-account-card-foot .claude-account-actions {
   display: inline-flex;
@@ -1051,7 +1079,7 @@
   border-radius: 8px;
   background: transparent;
   color: var(--text-2);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   cursor: pointer;
 }
@@ -1104,32 +1132,37 @@
   color: var(--text-3);
 }
 
-/* Desktop accounts: one collection with clear identity, readiness and quota. */
+/* Desktop accounts: v5.2 Plane 2 Crystal Stage with hairline recessed ledger */
 .claude-accounts-card[data-mode="desktop"] {
-  gap: 20px;
-  padding: 24px;
-  background: var(--bg-surface);
-  box-shadow: none;
-  border-color: var(--border-subtle);
+  gap: 18px;
+  padding: 22px 24px;
+  border: 1px solid var(--v5-stage-border, rgba(255, 255, 255, 0.92));
+  border-radius: 18px;
+  background: var(--v5-stage-bg, rgba(255, 255, 255, 0.78));
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    var(--v5-stage-shadow, 0 10px 30px rgba(17, 19, 24, 0.06));
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  backdrop-filter: blur(22px) saturate(150%);
 }
 .claude-accounts-card[data-mode="desktop"] .claude-accounts-heading {
   align-items: center;
 }
 .claude-accounts-card[data-mode="desktop"] .claude-accounts-title h2 {
-  font-size: 18px;
-  letter-spacing: -0.3px;
+  font-size: var(--fs-lg, 17px);
+  letter-spacing: -0.015em;
 }
 .claude-accounts-card[data-mode="desktop"] .claude-accounts-title p {
-  margin-top: 5px;
-  font-size: 12px;
+  margin-top: 4px;
+  font-size: var(--fs-sm);
 }
 .claude-desktop-summary {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px 24px;
-  color: var(--text-3);
-  font-size: 12px;
+  gap: 10px 22px;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
 }
 .claude-desktop-summary > span {
   display: inline-flex;
@@ -1141,60 +1174,79 @@
   font-size: 15px;
 }
 .claude-desktop-status-dot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--text-3);
 }
 .claude-desktop-status-dot[data-active] {
-  background: var(--success-fg);
+  background: var(--accent-petrol, #0e6470);
 }
 .claude-accounts-card[data-mode="desktop"] .claude-accounts-toolbar {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
+  padding: 8px 10px;
+  border: 1px solid var(--v3-hairline, rgba(17, 19, 24, 0.07));
+  border-radius: 12px;
+  background: rgba(17, 19, 24, 0.035);
 }
 .claude-accounts-card[data-mode="desktop"] .claude-accounts-grid {
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 310px), 1fr));
   gap: 16px;
 }
 .claude-accounts-card[data-mode="desktop"] .claude-account-card {
-  gap: 16px;
-  padding: 20px;
-  border: 1px solid var(--border-subtle);
+  gap: 14px;
+  padding: 18px 20px;
+  border: 1px solid rgba(17, 19, 24, 0.085);
   border-radius: 14px;
-  background: var(--bg-surface);
-  box-shadow: 0 2px 6px rgb(0 0 0 / 3%);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 4px 14px rgba(17, 19, 24, 0.045);
 }
 .claude-accounts-card[data-mode="desktop"] .claude-account-card[data-current] {
-  border-color: var(--brand-text);
-  background: color-mix(in srgb, var(--brand-text) 3%, var(--bg-surface));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand-text) 12%, transparent);
+  border-color: rgba(17, 19, 24, 0.12);
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 8px 22px rgba(17, 19, 24, 0.075);
+}
+.claude-accounts-card[data-mode="desktop"]
+  .claude-account-card[data-current]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent-petrol, #0e6470);
 }
 .claude-accounts-card[data-mode="desktop"] .claude-account-avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  background: var(--bg-subtle);
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  background: rgba(17, 19, 24, 0.055);
+  border: 1px solid rgba(17, 19, 24, 0.06);
+  color: var(--text-1);
+  font-weight: 700;
   box-shadow: none;
 }
 .claude-accounts-card[data-mode="desktop"] .claude-account-card-quota {
-  padding: 0;
-  border: 0;
-  background: transparent;
+  padding: 10px 12px;
+  border: 1px solid rgba(17, 19, 24, 0.055);
+  border-radius: 10px;
+  background: rgba(17, 19, 24, 0.028);
 }
 .claude-accounts-card[data-mode="desktop"] .claude-account-card-tags {
   gap: 6px;
 }
 .claude-accounts-card[data-mode="desktop"] .claude-account-card-foot {
   gap: 10px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border-subtle);
+  padding-top: 12px;
+  border-top: 1px solid var(--v3-hairline, rgba(17, 19, 24, 0.07));
 }
 .claude-accounts-card[data-mode="desktop"] .claude-account-card-date {
   color: var(--text-3);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .claude-accounts-card[data-mode="desktop"]
   .claude-account-tag[data-tone="warning"] {
@@ -1209,7 +1261,7 @@
   flex: 1;
   margin: 0;
   color: var(--text-2);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.7;
 }
 .claude-desktop-empty,
@@ -1234,7 +1286,7 @@
 .claude-desktop-empty p,
 .claude-local-empty p {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.7;
 }
 .claude-desktop-profiles {
@@ -1246,7 +1298,7 @@
   width: fit-content;
   cursor: pointer;
   color: var(--text-2);
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 .claude-desktop-profiles > summary > span {
   margin-left: 6px;
@@ -1265,7 +1317,7 @@
   align-items: center;
   justify-content: space-between;
   color: var(--text-2);
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 .claude-local-login {
   display: flex;
@@ -1298,7 +1350,7 @@
 .claude-add-advanced p {
   margin: 0;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
 }
 .claude-local-login > button {

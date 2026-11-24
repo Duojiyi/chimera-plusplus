@@ -151,6 +151,16 @@ fn uri_encode(input: &str, encode_slash: bool) -> String {
 
 // ─── AWS Signature V4 signing ────────────────────────────────
 
+fn parse_header_value(name: &str, raw: &str) -> Result<reqwest::header::HeaderValue, AppError> {
+    reqwest::header::HeaderValue::from_str(raw).map_err(|_| {
+        AppError::localized(
+            "s3.header.invalid",
+            format!("S3 请求头 `{name}` 包含非法字符（请检查凭证或区域配置）"),
+            format!("S3 request header `{name}` contains invalid characters"),
+        )
+    })
+}
+
 /// Sign an HTTP request using AWS Signature Version 4.
 ///
 /// Mutates `headers` by adding `host`, `x-amz-date`, `x-amz-content-sha256`,
@@ -162,7 +172,7 @@ fn sign_request(
     body_hash: &str,
     creds: &S3Credentials,
     now: chrono::DateTime<chrono::Utc>,
-) {
+) -> Result<(), AppError> {
     let timestamp = now.format("%Y%m%dT%H%M%SZ").to_string();
     let datestamp = now.format("%Y%m%d").to_string();
 
@@ -171,9 +181,12 @@ fn sign_request(
         Some(port) => format!("{}:{}", url.host_str().unwrap_or_default(), port),
         None => url.host_str().unwrap_or_default().to_string(),
     };
-    headers.insert("host", host_value.parse().unwrap());
-    headers.insert("x-amz-date", timestamp.parse().unwrap());
-    headers.insert("x-amz-content-sha256", body_hash.parse().unwrap());
+    headers.insert("host", parse_header_value("host", &host_value)?);
+    headers.insert("x-amz-date", parse_header_value("x-amz-date", &timestamp)?);
+    headers.insert(
+        "x-amz-content-sha256",
+        parse_header_value("x-amz-content-sha256", body_hash)?,
+    );
 
     // ── Step 2: Build canonical request ──
 
@@ -252,7 +265,11 @@ fn sign_request(
         "AWS4-HMAC-SHA256 Credential={}/{}, SignedHeaders={}, Signature={}",
         creds.access_key_id, scope, signed_headers, signature
     );
-    headers.insert("authorization", authorization.parse().unwrap());
+    headers.insert(
+        "authorization",
+        parse_header_value("authorization", &authorization)?,
+    );
+    Ok(())
 }
 
 // ─── Error helpers ───────────────────────────────────────────
@@ -361,7 +378,7 @@ pub(crate) async fn test_connection(creds: &S3Credentials) -> Result<(), AppErro
         )
     })?;
 
-    let client = http_client::get();
+    let client = http_client::get_for_auth_probe().map_err(AppError::Message)?;
     let body_hash = sha256_hex(b"");
     let mut headers = reqwest::header::HeaderMap::new();
     sign_request(
@@ -371,7 +388,7 @@ pub(crate) async fn test_connection(creds: &S3Credentials) -> Result<(), AppErro
         &body_hash,
         creds,
         chrono::Utc::now(),
-    );
+    )?;
 
     let resp = client
         .head(url.as_str())
@@ -405,10 +422,13 @@ pub(crate) async fn put_object(
         )
     })?;
 
-    let client = http_client::get();
+    let client = http_client::get_for_auth_probe().map_err(AppError::Message)?;
     let body_hash = sha256_hex(&bytes);
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("content-type", content_type.parse().unwrap());
+    headers.insert(
+        "content-type",
+        parse_header_value("content-type", content_type)?,
+    );
     if let Some((name, value)) = condition.header() {
         headers.insert(
             name,
@@ -428,7 +448,7 @@ pub(crate) async fn put_object(
         &body_hash,
         creds,
         chrono::Utc::now(),
-    );
+    )?;
 
     let resp = client
         .put(url.as_str())
@@ -477,7 +497,7 @@ pub(crate) async fn get_object(
         )
     })?;
 
-    let client = http_client::get();
+    let client = http_client::get_for_auth_probe().map_err(AppError::Message)?;
     let body_hash = sha256_hex(b"");
     let mut headers = reqwest::header::HeaderMap::new();
     sign_request(
@@ -487,7 +507,7 @@ pub(crate) async fn get_object(
         &body_hash,
         creds,
         chrono::Utc::now(),
-    );
+    )?;
 
     let resp = client
         .get(url.as_str())
@@ -544,7 +564,7 @@ pub(crate) async fn head_object(
         )
     })?;
 
-    let client = http_client::get();
+    let client = http_client::get_for_auth_probe().map_err(AppError::Message)?;
     let body_hash = sha256_hex(b"");
     let mut headers = reqwest::header::HeaderMap::new();
     sign_request(
@@ -554,7 +574,7 @@ pub(crate) async fn head_object(
         &body_hash,
         creds,
         chrono::Utc::now(),
-    );
+    )?;
 
     let resp = client
         .head(url.as_str())
@@ -897,7 +917,8 @@ mod tests {
                 &sha256_hex(body.as_bytes()),
                 &creds,
                 now,
-            );
+            )
+            .unwrap();
             assert_eq!(
                 headers.get("host").unwrap().to_str().unwrap(),
                 "mybucket.oss-cn-hangzhou.aliyuncs.com:9000"
@@ -951,7 +972,7 @@ mod tests {
         let body_hash = sha256_hex(b"");
 
         let mut headers = reqwest::header::HeaderMap::new();
-        sign_request("GET", &url, &mut headers, &body_hash, &creds, now);
+        sign_request("GET", &url, &mut headers, &body_hash, &creds, now).unwrap();
 
         let auth = headers.get("authorization").unwrap().to_str().unwrap();
 
@@ -992,7 +1013,7 @@ mod tests {
 
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("content-type", "application/json".parse().unwrap());
-        sign_request("PUT", &url, &mut headers, &body_hash, &creds, now);
+        sign_request("PUT", &url, &mut headers, &body_hash, &creds, now).unwrap();
 
         let auth = headers.get("authorization").unwrap().to_str().unwrap();
         // content-type must appear in the signed headers

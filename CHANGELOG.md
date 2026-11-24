@@ -10,6 +10,28 @@ numbers belong to a separate upstream line.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.3] - 2026-11-24
+
+### Changed
+
+- 全应用视觉升级为液态玻璃 v5.2 规范（天光钛银底壳、曜石黑主行动按钮与深矿物石油绿指示），新增「字号与阅读舒适度」（标准 / 舒适 / 宽松）调节并提升全局最低字号与对比度。
+- 统一主侧栏、托盘快捷浮窗、欢迎引导页、关于页、Windows 任务栏与全平台图标为紫色 **CH** 品牌图标，并补齐 Windows 任务栏窗口标题显示。
+- 优化系统托盘快捷浮窗（补齐用量峰值与视口高度适配）、官方账号卡片（Claude Code / Claude Desktop / Codex）、会话管理页（按项目/列表切换移至搜索行避免工具栏拥挤）与非 Codex 工具页信息层级（移除与侧栏重复的页内分区导航）。
+
+### Fixed
+
+- 修正 Claude 免费（Free）账号被误识别为 Pro 的问题，并为 Free 账号展示中性的额度提示而非报错样式。
+- 修复 `oh-my-pi` 空状态左对齐、用量柱状图峰值徽章位置、Codex 管理页顶部任务卡与外观页选中指示条裁切，以及提示词抽屉分隔符乱码。
+- 修复 `UpdateContext` 后台预下载异常取消时 `isStaging` 可能永久卡死并阻塞轻量模式的缺陷，补齐安装期间按 `Escape` 关闭弹窗保护、Skills/MCP 抽屉焦点陷阱与多处异步竞态/错误提示。
+- 补齐 Windows 覆盖配置中被丢弃的 `transparent`、`shadow` 与 `dragDropEnabled: false`，恢复 Windows 拖拽排序与轻量模式还原后的无边框外观。
+
+### Security
+
+- SQL 备份导出剔除并在导入/恢复时保留本机代理与网关安全配置（`local_proxy_token`、`local_proxy_legacy_until`、`claude_desktop_gateway_token`、`global_proxy_url`）。
+- 加固本地代理中间件顺序（Origin 校验 → Token 鉴权 → 并发限流），为请求体读取统一强制 64 MiB 上限（超限返回 `413`）、为协议探测增加超时并移除生产环境回退到固定占位 Token 的路径；修复全局代理在无原始大小写头时被绕过的问题。
+- 严格校验 GitHub Copilot 动态 `endpoints.api` 域名并禁用所有携带凭据的 OAuth/WebDAV/S3/探测请求的自动重定向；修复 S3 SigV4 签名遇非法头部字符可能触发 Panic 的问题；加固 Windows 终端启动脚本与 `skills.zip` 解压文件名校验，并扩展日志与崩溃报告凭据脱敏。
+- CSP 增加 `base-uri 'self'; form-action 'none'`；升级 `i18next` 至 `26.3.4` 修复已知安全公告（GHSA-6jcc-5g8w-32mx）。
+
 ## [2.9.2] - 2026-11-22
 
 ### Added

@@ -88,6 +88,52 @@ fn copilot_api_base(domain: &str) -> String {
     }
 }
 
+/// 校验 `/copilot_internal/user` 返回的动态 `endpoints.api`：
+/// - 必须为 HTTPS，无 userinfo/query/fragment
+/// - 禁止 IP 字面量与回环/本地域名
+/// - 主机必须属于 `githubcopilot.com`（含子域）或当前账号的 `github_domain`（含子域）
+fn validate_copilot_api_endpoint(raw: &str, github_domain: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = url::Url::parse(trimmed).ok()?;
+    if parsed.scheme() != "https"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return None;
+    }
+    let host = match parsed.host() {
+        Some(url::Host::Domain(domain)) => domain.trim_end_matches('.').to_ascii_lowercase(),
+        _ => return None,
+    };
+    if host.is_empty()
+        || !host.contains('.')
+        || host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+        || host.parse::<std::net::IpAddr>().is_ok()
+    {
+        return None;
+    }
+    let domain_lc = github_domain
+        .trim()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let allowed = host == "githubcopilot.com"
+        || host.ends_with(".githubcopilot.com")
+        || (!domain_lc.is_empty()
+            && (host == domain_lc || host.ends_with(&format!(".{domain_lc}"))));
+    if !allowed {
+        return None;
+    }
+    Some(trimmed.trim_end_matches('/').to_string())
+}
+
 /// Token 刷新提前量（秒）
 const TOKEN_REFRESH_BUFFER_SECONDS: i64 = 60;
 
@@ -98,28 +144,53 @@ fn is_ghes(domain: &str) -> bool {
 
 /// 归一化 GitHub 域名（SSOT）：
 /// - 小写化
-/// - 剥离协议（https:// http://）
-/// - 剥离尾斜杠、path、query、fragment
-/// - 拒绝包含 userinfo（@）的输入
-/// - 保留端口号（如有）
+/// - 剥离协议（https:// http://）与尾部路径/查询/片段
+/// - 拒绝 userinfo（@）、端口、IP 字面量、回环/本地域名及非法 DNS 标签
 fn normalize_github_domain(raw: &str) -> Result<String, CopilotAuthError> {
     let s = raw.trim();
-    // 剥离协议
-    let s = s
-        .strip_prefix("https://")
-        .or_else(|| s.strip_prefix("http://"))
-        .unwrap_or(s);
-    // 取 host 部分（到第一个 / 或 ? 或 #）
-    let host = s.split(&['/', '?', '#'][..]).next().unwrap_or(s);
-    // 拒绝 userinfo
-    if host.contains('@') {
+    if s.is_empty() {
         return Err(CopilotAuthError::InvalidDomain(raw.to_string()));
     }
-    let normalized = host.to_lowercase();
-    if normalized.is_empty() {
+    let with_scheme = if s.starts_with("https://") || s.starts_with("http://") {
+        s.to_string()
+    } else {
+        format!("https://{s}")
+    };
+    let parsed = url::Url::parse(&with_scheme)
+        .map_err(|_| CopilotAuthError::InvalidDomain(raw.to_string()))?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(CopilotAuthError::InvalidDomain(raw.to_string()));
     }
-    Ok(normalized)
+    if parsed.port().is_some_and(|p| p != 443) {
+        return Err(CopilotAuthError::InvalidDomain(raw.to_string()));
+    }
+    let host = match parsed.host() {
+        Some(url::Host::Domain(domain)) => domain.trim_end_matches('.').to_ascii_lowercase(),
+        _ => return Err(CopilotAuthError::InvalidDomain(raw.to_string())),
+    };
+    if host.is_empty()
+        || !host.contains('.')
+        || host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+        || host.parse::<std::net::IpAddr>().is_ok()
+    {
+        return Err(CopilotAuthError::InvalidDomain(raw.to_string()));
+    }
+    let valid_labels = host.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    });
+    if !valid_labels {
+        return Err(CopilotAuthError::InvalidDomain(raw.to_string()));
+    }
+    Ok(host)
 }
 
 /// 生成复合账号 ID，确保不同 GHES 实例的 user ID 不会冲突。
@@ -598,7 +669,9 @@ impl CopilotAuthManager {
         };
         log::info!("[CopilotAuth] 启动设备码流程 (domain: {domain})");
 
-        let response = crate::proxy::http_client::get()
+        let client = crate::proxy::http_client::get_for_auth_probe()
+            .map_err(CopilotAuthError::NetworkError)?;
+        let response = client
             .post(github_device_code_url(&domain))
             .header("Accept", "application/json")
             .header("User-Agent", COPILOT_USER_AGENT)
@@ -622,6 +695,14 @@ impl CopilotAuthManager {
             .await
             .map_err(|e| CopilotAuthError::ParseError(e.to_string()))?;
 
+        let parsed_verify = url::Url::parse(&device_code.verification_uri)
+            .map_err(|_| CopilotAuthError::ParseError("无效的 verification_uri".to_string()))?;
+        if parsed_verify.scheme() != "https" {
+            return Err(CopilotAuthError::ParseError(
+                "verification_uri 必须使用 HTTPS".to_string(),
+            ));
+        }
+
         log::info!(
             "[CopilotAuth] 获取设备码成功，user_code: {}",
             device_code.user_code
@@ -642,7 +723,9 @@ impl CopilotAuthManager {
         };
         log::debug!("[CopilotAuth] 轮询 OAuth Token (domain: {domain})");
 
-        let response = crate::proxy::http_client::get()
+        let client = crate::proxy::http_client::get_for_auth_probe()
+            .map_err(CopilotAuthError::NetworkError)?;
+        let response = client
             .post(github_oauth_token_url(&domain))
             .header("Accept", "application/json")
             .header("User-Agent", COPILOT_USER_AGENT)
@@ -825,7 +908,9 @@ impl CopilotAuthManager {
 
         log::info!("[CopilotAuth] 获取账号 {account_id} 的 Copilot 可用模型");
 
-        let response = crate::proxy::http_client::get()
+        let client = crate::proxy::http_client::get_for_auth_probe()
+            .map_err(CopilotAuthError::NetworkError)?;
+        let response = client
             .get(&models_url)
             .header("Authorization", format!("Bearer {copilot_token}"))
             .header("Content-Type", "application/json")
@@ -912,7 +997,9 @@ impl CopilotAuthManager {
 
         log::info!("[CopilotAuth] 获取账号 {account_id} 的 Copilot 使用量");
 
-        let response = crate::proxy::http_client::get()
+        let client = crate::proxy::http_client::get_for_auth_probe()
+            .map_err(CopilotAuthError::NetworkError)?;
+        let response = client
             .get(copilot_usage_url(&domain))
             .header("Authorization", format!("token {github_token}"))
             .header("Content-Type", "application/json")
@@ -940,12 +1027,16 @@ impl CopilotAuthManager {
             .await
             .map_err(|e| CopilotAuthError::ParseError(e.to_string()))?;
 
-        // 存储动态 API 端点（如果有）
+        // 存储动态 API 端点（仅接受经校验的合法 Copilot / 账号域 HTTPS 端点）
         if let Some(ref endpoints) = usage.endpoints {
-            let mut api_endpoints = self.api_endpoints.write().await;
-            api_endpoints.insert(account_id.to_string(), endpoints.api.clone());
-            // 使用 debug 级别避免在日志中暴露企业内部域名
-            log::debug!("[CopilotAuth] 账号 {account_id} 已保存动态 API 端点");
+            if let Some(validated) = validate_copilot_api_endpoint(&endpoints.api, &domain) {
+                let mut api_endpoints = self.api_endpoints.write().await;
+                api_endpoints.insert(account_id.to_string(), validated);
+                // 使用 debug 级别避免在日志中暴露企业内部域名
+                log::debug!("[CopilotAuth] 账号 {account_id} 已保存动态 API 端点");
+            } else {
+                log::warn!("[CopilotAuth] 账号 {account_id} 返回了不受信任的动态 API 端点，已忽略");
+            }
         }
 
         log::info!(
@@ -1026,7 +1117,9 @@ impl CopilotAuthManager {
 
         log::debug!("[CopilotAuth] 为账号 {account_id} 惰性拉取动态 API 端点");
 
-        let response = crate::proxy::http_client::get()
+        let client = crate::proxy::http_client::get_for_auth_probe()
+            .map_err(CopilotAuthError::NetworkError)?;
+        let response = client
             .get(copilot_usage_url(&domain))
             .header("Authorization", format!("token {github_token}"))
             .header("Content-Type", "application/json")
@@ -1053,9 +1146,20 @@ impl CopilotAuthManager {
             .await
             .map_err(|e| CopilotAuthError::ParseError(e.to_string()))?;
 
-        let endpoint = match usage.endpoints {
-            Some(endpoints) => endpoints.api.clone(),
-            None => copilot_api_base(&domain),
+        let endpoint = match usage
+            .endpoints
+            .as_ref()
+            .and_then(|endpoints| validate_copilot_api_endpoint(&endpoints.api, &domain))
+        {
+            Some(validated) => validated,
+            None => {
+                if usage.endpoints.is_some() {
+                    log::warn!(
+                        "[CopilotAuth] 账号 {account_id} 返回了不受信任的动态 API 端点，回退至默认端点"
+                    );
+                }
+                copilot_api_base(&domain)
+            }
         };
 
         // 缓存端点（包括默认值），避免重复请求
@@ -1303,7 +1407,9 @@ impl CopilotAuthManager {
         github_token: &str,
         domain: &str,
     ) -> Result<GitHubUser, CopilotAuthError> {
-        let response = crate::proxy::http_client::get()
+        let client = crate::proxy::http_client::get_for_auth_probe()
+            .map_err(CopilotAuthError::NetworkError)?;
+        let response = client
             .get(github_user_url(domain))
             .header("Authorization", format!("token {github_token}"))
             .header("User-Agent", COPILOT_USER_AGENT)
@@ -1335,7 +1441,9 @@ impl CopilotAuthManager {
     ) -> Result<(), CopilotAuthError> {
         log::debug!("[CopilotAuth] 获取账号 {account_id} 的 Copilot Token (domain: {domain})");
 
-        let response = crate::proxy::http_client::get()
+        let client = crate::proxy::http_client::get_for_auth_probe()
+            .map_err(CopilotAuthError::NetworkError)?;
+        let response = client
             .get(copilot_token_url(domain))
             .header("Authorization", format!("token {github_token}"))
             .header("User-Agent", COPILOT_USER_AGENT)
@@ -2032,10 +2140,14 @@ mod tests {
             "company.ghe.com"
         );
 
-        // 保留端口
+        // 拒绝非默认端口、IP 字面量和本地域名
+        assert!(normalize_github_domain("company.ghe.com:8443").is_err());
+        assert!(normalize_github_domain("127.0.0.1").is_err());
+        assert!(normalize_github_domain("169.254.169.254").is_err());
+        assert!(normalize_github_domain("localhost").is_err());
         assert_eq!(
-            normalize_github_domain("company.ghe.com:8443").unwrap(),
-            "company.ghe.com:8443"
+            normalize_github_domain("https://company.ghe.com:443/").unwrap(),
+            "company.ghe.com"
         );
 
         // 拒绝 userinfo
@@ -2079,5 +2191,38 @@ mod tests {
 
         let account = GitHubAccount::from(&data);
         assert_eq!(account.id, "company.ghe.com:99999");
+    }
+
+    #[test]
+    fn test_validate_copilot_api_endpoint_rejects_untrusted_targets() {
+        assert_eq!(
+            validate_copilot_api_endpoint(
+                "https://api.individual.githubcopilot.com/",
+                "github.com"
+            )
+            .as_deref(),
+            Some("https://api.individual.githubcopilot.com")
+        );
+        assert_eq!(
+            validate_copilot_api_endpoint("https://copilot-api.company.ghe.com", "company.ghe.com")
+                .as_deref(),
+            Some("https://copilot-api.company.ghe.com")
+        );
+        assert!(
+            validate_copilot_api_endpoint("http://api.githubcopilot.com", "github.com").is_none()
+        );
+        assert!(validate_copilot_api_endpoint("https://evil.example.com", "github.com").is_none());
+        assert!(
+            validate_copilot_api_endpoint("https://169.254.169.254/latest", "github.com").is_none()
+        );
+        assert!(validate_copilot_api_endpoint("https://127.0.0.1:8080", "github.com").is_none());
+        assert!(
+            validate_copilot_api_endpoint("https://user@api.githubcopilot.com", "github.com")
+                .is_none()
+        );
+        assert!(
+            validate_copilot_api_endpoint("https://api.githubcopilot.com?x=1", "github.com")
+                .is_none()
+        );
     }
 }

@@ -447,7 +447,6 @@ export function AboutSection({
     // Mount-only: loadAllToolVersions is intentionally excluded to avoid
     // re-fetching all tools whenever wslShellByTool changes. Single-tool
     // refreshes are handled by refreshToolVersions in the shell/flag handlers.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ... (handlers like handleOpenReleaseNotes, handleCheckUpdate) ...
@@ -497,8 +496,8 @@ export function AboutSection({
 
       try {
         resetDismiss();
-        const installed = await installUpdate();
-        if (!installed) {
+        const outcome = await installUpdate();
+        if (outcome === "unavailable") {
           toast.info(t("settings.upToDate"), { closeButton: true });
         }
       } catch (error) {

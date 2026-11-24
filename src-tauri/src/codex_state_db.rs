@@ -96,10 +96,50 @@ pub(crate) fn backup_sqlite_online(
     source: &Connection,
     backup_path: &Path,
 ) -> rusqlite::Result<()> {
-    let mut backup_conn = Connection::open(backup_path)?;
-    let backup = Backup::new(source, &mut backup_conn)?;
-    backup.run_to_completion(5, Duration::from_millis(25), None)?;
-    Ok(())
+    use rusqlite::backup::StepResult;
+    use std::time::Instant;
+
+    const MAX_CONTENTION_WAIT: Duration = Duration::from_secs(10);
+    let result = (|| -> rusqlite::Result<()> {
+        let mut backup_conn = Connection::open(backup_path)?;
+        let backup = Backup::new(source, &mut backup_conn)?;
+        let mut deadline = Instant::now() + MAX_CONTENTION_WAIT;
+        loop {
+            match backup.step(100) {
+                Ok(StepResult::Done) => return Ok(()),
+                Ok(StepResult::More) => {
+                    // Normal forward progress — continue immediately without sleeping and
+                    // reset the contention window.
+                    deadline = Instant::now() + MAX_CONTENTION_WAIT;
+                }
+                Ok(_) => {
+                    if Instant::now() >= deadline {
+                        return Err(rusqlite::Error::SqliteFailure(
+                            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                            Some("online SQLite backup timed out".to_string()),
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(rusqlite::Error::SqliteFailure(err, msg))
+                    if matches!(
+                        err.code,
+                        rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                    ) =>
+                {
+                    if Instant::now() >= deadline {
+                        return Err(rusqlite::Error::SqliteFailure(err, msg));
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(backup_path);
+    }
+    result
 }
 
 fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {

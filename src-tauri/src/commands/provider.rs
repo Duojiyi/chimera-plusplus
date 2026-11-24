@@ -1080,8 +1080,13 @@ async fn add_provider_with_automatic_routing_mode(
     let auto_manage_routing = matches!(app_type, AppType::Codex | AppType::GrokBuild);
     if !auto_manage_routing {
         if !activate_when_current_exists {
-            return ProviderService::add(&state, app_type, provider, add_to_live)
-                .map_err(|e| e.to_string());
+            let add_state = state.clone();
+            return tauri::async_runtime::spawn_blocking(move || {
+                ProviderService::add(&add_state, app_type, provider, add_to_live)
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| format!("后台任务失败: {e}"))?;
         }
 
         // Enabled Deep Link imports for every other app use the same complete
@@ -1101,8 +1106,14 @@ async fn add_provider_with_automatic_routing_mode(
             .map_err(|e| e.to_string())?;
         let provider_id = provider.id.clone();
 
-        ProviderService::add_inactive(&state, app_type.clone(), provider, add_to_live)
-            .map_err(|e| e.to_string())?;
+        let add_state = state.clone();
+        let add_app = app_type.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            ProviderService::add_inactive(&add_state, add_app, provider, add_to_live)
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("供应商写入任务执行失败: {e}"))??;
 
         let switch_state = state.clone();
         let switch_app = app_type.clone();
@@ -1196,8 +1207,14 @@ async fn add_provider_with_automatic_routing_locked(
 
     let mut initial_codex_receipt = None;
     let result = async {
-        ProviderService::add_inactive(&state, app_type.clone(), provider, add_to_live)
-            .map_err(|e| e.to_string())?;
+        let add_state = state.clone();
+        let add_app = app_type.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            ProviderService::add_inactive(&add_state, add_app, provider, add_to_live)
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("供应商写入任务执行失败: {e}"))??;
         if previous_current.is_some() && !activate_when_current_exists {
             return Ok(true);
         }

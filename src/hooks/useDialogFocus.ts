@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 
 const FOCUSABLE_SELECTOR =
   'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
@@ -21,6 +21,23 @@ export function openDialogCount(): number {
   return dialogStack.length;
 }
 
+/**
+ * Registers a modal surface (such as Radix `<Dialog>` content or a
+ * `<FullScreenPanel>`) in the shared open-dialog stack while mounted/open so
+ * global shortcuts (`Ctrl+K`) and lightweight-close guards do not fire underneath.
+ */
+export function useRegisterOpenDialog(active: boolean) {
+  useLayoutEffect(() => {
+    if (!active) return;
+    const token = Symbol("registered-dialog");
+    dialogStack.push(token);
+    return () => {
+      const index = dialogStack.lastIndexOf(token);
+      if (index !== -1) dialogStack.splice(index, 1);
+    };
+  }, [active]);
+}
+
 export function useDialogFocus<T extends HTMLElement>(
   onClose: () => void,
   enabled = true,
@@ -38,10 +55,32 @@ export function useDialogFocus<T extends HTMLElement>(
     if (!dialog) return;
     const token = Symbol("dialog");
     dialogStack.push(token);
+    const isVisibleFocusable = (element: HTMLElement, hasLayout: boolean) => {
+      if (
+        element.hidden ||
+        element.closest("[hidden], [aria-hidden='true']") !== null ||
+        element.style.display === "none" ||
+        element.style.visibility === "hidden"
+      ) {
+        return false;
+      }
+      return !hasLayout || element.offsetParent !== null;
+    };
+    const getVisibleFocusable = () => {
+      const hasLayout = dialog.offsetParent !== null;
+      return Array.from(
+        dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+      ).filter((element) => isVisibleFocusable(element, hasLayout));
+    };
     const focusFirst = () => {
+      const hasLayout = dialog.offsetParent !== null;
       const preferred = dialog.querySelector<HTMLElement>("[data-autofocus]");
-      const first = dialog.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
-      (preferred ?? first ?? dialog).focus();
+      const visiblePreferred =
+        preferred && isVisibleFocusable(preferred, hasLayout)
+          ? preferred
+          : null;
+      const first = getVisibleFocusable()[0] ?? null;
+      (visiblePreferred ?? first ?? dialog).focus();
     };
     const focusFrame = requestAnimationFrame(focusFirst);
     const onKeyDown = (event: KeyboardEvent) => {
@@ -52,9 +91,7 @@ export function useDialogFocus<T extends HTMLElement>(
         return;
       }
       if (event.key !== "Tab") return;
-      const focusable = Array.from(
-        dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
-      ).filter((element) => element.offsetParent !== null);
+      const focusable = getVisibleFocusable();
       if (!focusable.length) {
         event.preventDefault();
         dialog.focus();
@@ -62,10 +99,16 @@ export function useDialogFocus<T extends HTMLElement>(
       }
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
+      const active = document.activeElement;
+      if (!active || !dialog.contains(active) || active === dialog) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+        return;
+      }
+      if (event.shiftKey && active === first) {
         event.preventDefault();
         last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
+      } else if (!event.shiftKey && active === last) {
         event.preventDefault();
         first.focus();
       }

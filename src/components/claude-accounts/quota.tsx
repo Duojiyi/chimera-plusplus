@@ -121,6 +121,7 @@ export function QuotaStrip({
   now,
   onRefresh,
   label,
+  plan,
   statusText = QUOTA_STATUS_TEXT,
   remaining = false,
 }: {
@@ -128,13 +129,21 @@ export function QuotaStrip({
   now: number;
   onRefresh: () => void;
   label: string;
+  plan?: string | null;
   statusText?: Partial<Record<ClaudeQuota["status"], string>>;
   remaining?: boolean;
 }) {
   const view = state?.view;
   const main = view?.windows.filter((w) => w.kind !== "model") ?? [];
   const models = view?.windows.filter((w) => w.kind === "model") ?? [];
-  const note = view ? statusText[view.status] : undefined;
+  const resolvedPlan = (state?.plan ?? plan ?? "").trim().toLowerCase();
+  const isFreeWithoutQuota =
+    resolvedPlan === "free" &&
+    view?.status === "unavailable" &&
+    main.length === 0 &&
+    models.length === 0;
+  const note =
+    view && !isFreeWithoutQuota ? statusText[view.status] : undefined;
   return (
     <div className="claude-quota" role="group" aria-label={`${label} 的额度`}>
       {main.length > 0 ? (
@@ -169,6 +178,10 @@ export function QuotaStrip({
           <span role="status" className="claude-quota-note">
             <Loader2 size={12} className="animate-spin" aria-hidden="true" />
             正在读取额度…
+          </span>
+        ) : isFreeWithoutQuota ? (
+          <span role="status" className="claude-quota-note">
+            Free 账号无订阅额度窗口
           </span>
         ) : note ? (
           <span className="claude-quota-note is-warning" role="status">

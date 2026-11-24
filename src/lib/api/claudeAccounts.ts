@@ -135,6 +135,8 @@ export interface ClaudeDesktopSnapshot {
 
 export interface ClaudeDesktopSwapStatus {
   supported: boolean;
+  platformSupported?: boolean;
+  unsupportedReason?: string | null;
   /** Claude Desktop has its data open. */
   running: boolean;
   /** The official login may stay cached while an API route is active. */

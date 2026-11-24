@@ -8,15 +8,21 @@ import ChimeraApp from "@/ChimeraApp";
 import { createTestQueryClient } from "../utils/testQueryClient";
 
 const sidebar = () => document.querySelector('[data-pencil-name="侧栏"]');
-const titlebar = () => {
+const titlebar = ({ expectSearch = true } = {}) => {
   const bar = document.querySelector<HTMLElement>(
     '[data-pencil-name="标题栏"]',
   );
   expect(bar).not.toBeNull();
-  // The simplified titlebar keeps command access, without the old mini signboard.
-  expect(
-    within(bar!).getByRole("button", { name: "搜索线路、页面或命令" }),
-  ).toBeEnabled();
+  if (expectSearch) {
+    // The simplified titlebar keeps command access, without the old mini signboard.
+    expect(
+      within(bar!).getByRole("button", { name: "搜索线路、页面或命令" }),
+    ).toBeEnabled();
+  } else {
+    expect(
+      within(bar!).getByRole("button", { name: "返回线路" }),
+    ).toBeEnabled();
+  }
   expect(
     within(bar!).queryByRole("button", { name: /^当前线路：/ }),
   ).not.toBeInTheDocument();
@@ -42,5 +48,7 @@ it("keeps the shell markup stable across views and the line editor", async () =>
   fireEvent.click(await screen.findByRole("button", { name: "开始配置" }));
   await screen.findByRole("region", { name: "新建线路" });
   expect(sidebar()).toBeNull();
-  expect(titlebar()).toMatchSnapshot("titlebar while editing a line");
+  expect(titlebar({ expectSearch: false })).toMatchSnapshot(
+    "titlebar while editing a line",
+  );
 });

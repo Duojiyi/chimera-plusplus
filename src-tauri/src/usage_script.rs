@@ -300,10 +300,11 @@ async fn send_http_request(config: &RequestConfig, timeout_secs: u64) -> Result<
 
     // 发送请求
     let resp = req.send().await.map_err(|e| {
+        let safe_err = e.without_url();
         AppError::localized(
             "usage_script.request_failed",
-            format!("请求失败: {e}"),
-            format!("Request failed: {e}"),
+            format!("请求失败: {safe_err}"),
+            format!("Request failed: {safe_err}"),
         )
     })?;
 

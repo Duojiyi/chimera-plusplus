@@ -1,6 +1,12 @@
 import "@/theme/v3/appearance.css";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   ChevronRight,
@@ -15,6 +21,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Empty } from "@/components/Empty";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
 import { settingsApi } from "@/lib/api/settings";
 import {
   APPEARANCE_DESIGN_SAMPLE,
@@ -35,10 +43,19 @@ type CatalogSkin = {
   version: string;
   author?: string;
   appearance?: "dark" | "light" | "dual" | string | null;
+  swatches?: readonly string[];
   preview: string;
   installed: boolean;
   applied: boolean;
+  platformSupported?: boolean;
 };
+
+type SkinCatalogResponse =
+  | CatalogSkin[]
+  | {
+      skins?: CatalogSkin[];
+      platformSupported?: boolean;
+    };
 type Filter = "featured" | "installed" | "dark" | "light";
 
 const FILTERS: ReadonlyArray<readonly [Filter, string]> = [
@@ -158,24 +175,41 @@ function MarketState({
   onAction?: () => void;
   alert?: boolean;
 }) {
-  return (
-    <div className="skin-market-state" role={alert ? "alert" : undefined}>
-      <span className="skin-market-state-icon" aria-hidden="true">
-        {icon}
-      </span>
-      <h2>{title}</h2>
-      <p>{text}</p>
-      {detail && (
-        <p className="skin-market-state-detail" title={detail}>
-          详细信息：{detail}
-        </p>
-      )}
-      {action && onAction && (
-        <button type="button" className="secondary" onClick={onAction}>
-          {action}
-        </button>
-      )}
-    </div>
+  const actionButton =
+    action && onAction ? (
+      <button type="button" className="secondary" onClick={onAction}>
+        {action}
+      </button>
+    ) : undefined;
+  const extraDetail = detail ? (
+    <span className="skin-market-state-detail" title={detail}>
+      详细信息：{detail}
+    </span>
+  ) : undefined;
+  return alert ? (
+    <ErrorState
+      className="skin-market-state"
+      icon={icon}
+      title={title}
+      description={
+        extraDetail ? (
+          <>
+            {text} {extraDetail}
+          </>
+        ) : (
+          text
+        )
+      }
+      action={actionButton}
+    />
+  ) : (
+    <EmptyState
+      className="skin-market-state"
+      icon={icon}
+      title={title}
+      description={text}
+      action={actionButton}
+    />
   );
 }
 
@@ -195,32 +229,71 @@ function skinStatus(skin: CatalogSkin) {
   return "可下载安装";
 }
 
-/** Shown when a skin ships no preview image: a neutral window outline. */
+/** Shown when a skin ships no preview image: a live code-editor window preview. */
 function SkinMock({ skin }: { skin: CatalogSkin }) {
+  const mode = skin.appearance === "light" ? "light" : "dark";
   return (
     <span
       className={`skin-mock ${skinToneClass(skin)}`}
-      data-appearance={skin.appearance ?? undefined}
+      data-appearance={mode}
       aria-hidden="true"
     >
       <span className="skin-mock-bar">
-        <i />
-        <i />
-        <i />
+        <span className="skin-mock-tab is-active">
+          <i className="skin-mock-dot" />
+          theme_engine.rs
+        </span>
+        <span className="skin-mock-tab">config.toml</span>
+        <span className="skin-mock-meta">
+          UTF-8 · Rust 2024 · {skin.name} v{skin.version}
+        </span>
       </span>
-      <span className="skin-mock-body">
-        <span className="skin-mock-side">
-          <i />
-          <i />
-          <i />
-          <i />
+      <span className="skin-mock-code">
+        <span>
+          <em>01</em>
+          <b>use</b> codex_core::&#123;Runtime, ThemeConfig&#125;;
         </span>
-        <span className="skin-mock-main">
-          <i />
-          <i />
-          <i />
-          <i />
+        <span>
+          <em>02</em>
+          <b>use</b> anyhow::Result;
         </span>
+        <span>
+          <em>03</em>
+          <s className="skin-mock-comment">
+            // {skin.name}: 高对比语法配色与液态玻璃结构层
+          </s>
+        </span>
+        <span>
+          <em>04</em>
+          <b>pub fn</b> <u>apply_theme</u>(cfg: &amp;ThemeConfig) -&gt;
+          Result&lt;()&gt; &#123;
+        </span>
+        <span>
+          <em>05</em>
+          {"  "}
+          <b>let</b> runtime = Runtime::<u>current</u>()?;
+        </span>
+        <span>
+          <em>06</em>
+          {"  "}runtime.<u>set_palette</u>(<q>&quot;#0e6470&quot;</q>,{" "}
+          <q>&quot;#2dd4bf&quot;</q>);
+        </span>
+        <span>
+          <em>07</em>
+          {"  "}runtime.<u>enable_specular</u>(<b>true</b>);
+        </span>
+        <span>
+          <em>08</em>
+          {"  "}Ok(())
+        </span>
+        <span>
+          <em>09</em>
+          &#125;
+        </span>
+      </span>
+      <span className="skin-mock-status">
+        <span>+24 tokens · {appearanceLabel(skin) || "标准"}</span>
+        <span>Ready</span>
       </span>
     </span>
   );
@@ -290,15 +363,24 @@ export default function AppearanceView({
   const [selectedId, setSelectedId] = useState(() =>
     designPreview ? APPEARANCE_DESIGN_SAMPLE[0].id : "",
   );
-  const [filter, setFilter] = useState<Filter>(() =>
-    designPreview ? "installed" : "featured",
-  );
+  const [filter, setFilter] = useState<Filter>("featured");
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const [platformSupported, setPlatformSupported] = useState(true);
+  const busyRef = useRef(false);
+  const loadGenRef = useRef(0);
+  const mountedRef = useRef(true);
   useLightweightCloseBlocker(Boolean(busy));
   const [error, setError] = useState("");
   // Start as loading so the first frame never claims the catalog is empty.
   const [loading, setLoading] = useState(() => enabled && runningInTauri);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      loadGenRef.current += 1;
+    };
+  }, []);
   const load = async () => {
     if (!runningInTauri) {
       if (designPreview) return;
@@ -307,10 +389,25 @@ export default function AppearanceView({
       setError("");
       return;
     }
+    const gen = ++loadGenRef.current;
     try {
       setLoading(true);
       setError("");
-      const result = await invoke<CatalogSkin[]>("list_skin_catalog");
+      const raw = await invoke<SkinCatalogResponse>("list_skin_catalog");
+      if (!mountedRef.current || gen !== loadGenRef.current) return;
+      const result = Array.isArray(raw) ? raw : (raw?.skins ?? []);
+      const fallbackWindows =
+        typeof navigator !== "undefined" &&
+        /windows|win32|win64/i.test(
+          `${navigator.userAgent ?? ""} ${navigator.platform ?? ""}`,
+        );
+      const supported = Array.isArray(raw)
+        ? result.length > 0
+          ? result.every((item) => item.platformSupported !== false)
+          : fallbackWindows
+        : raw?.platformSupported !== false &&
+          result.every((item) => item.platformSupported !== false);
+      setPlatformSupported(supported);
       setSkins(result);
       setSelectedId((id) =>
         id && result.some((item) => item.id === id)
@@ -318,11 +415,14 @@ export default function AppearanceView({
           : (result[0]?.id ?? ""),
       );
     } catch (reason) {
+      if (!mountedRef.current || gen !== loadGenRef.current) return;
       // Installed and applied flags may be stale after a failed refresh.
       setSkins([]);
       setError(String(reason));
     } finally {
-      setLoading(false);
+      if (mountedRef.current && gen === loadGenRef.current) {
+        setLoading(false);
+      }
     }
   };
   useEffect(() => {
@@ -354,27 +454,51 @@ export default function AppearanceView({
     null;
   const applied = skins.find((skin) => skin.applied) ?? null;
   const installedCount = skins.filter((skin) => skin.installed).length;
+  const unsupportedPlatform =
+    runningInTauri && !designPreview && !platformSupported;
   // The design preview has no backend, so every write stays disabled there.
-  const writesLocked = Boolean(busy) || designPreview;
+  const writesLocked = Boolean(busy) || designPreview || unsupportedPlatform;
   const run = async (
     label: string,
     command: string,
     args?: Record<string, unknown>,
   ) => {
+    if (busyRef.current || unsupportedPlatform) return;
+    busyRef.current = true;
     try {
       setBusy(label);
       await invoke(command, args);
+      if (!mountedRef.current) return;
       toast.success(`${label}完成`);
       await load();
     } catch (reason) {
-      toast.error(`${label}失败`, { description: String(reason) });
+      if (mountedRef.current) {
+        toast.error(`${label}失败`, { description: String(reason) });
+      }
     } finally {
-      setBusy(null);
+      busyRef.current = false;
+      if (mountedRef.current) setBusy(null);
     }
   };
   const importLocal = async () => {
-    const path = await settingsApi.openSkinFileDialog();
-    if (path) await run("导入皮肤", "import_skin_package", { path });
+    if (busyRef.current || unsupportedPlatform) return;
+    busyRef.current = true;
+    setBusy("导入皮肤");
+    try {
+      const path = await settingsApi.openSkinFileDialog();
+      if (!mountedRef.current || !path) return;
+      await invoke("import_skin_package", { path });
+      if (!mountedRef.current) return;
+      toast.success("导入皮肤完成");
+      await load();
+    } catch (reason) {
+      if (mountedRef.current) {
+        toast.error("导入皮肤失败", { description: String(reason) });
+      }
+    } finally {
+      busyRef.current = false;
+      if (mountedRef.current) setBusy(null);
+    }
   };
   if (!enabled) return <Empty label="此版本暂未开放 Codex 皮肤。" />;
 
@@ -445,61 +569,214 @@ export default function AppearanceView({
       : "";
     const tone = appearanceLabel(selected);
     body = (
-      <>
-        <div className="skin-layout">
-          <article className="skin-detail" aria-label="皮肤详情">
-            <header className="skin-detail-head">
+      <article className="skin-detail" aria-label="皮肤详情">
+        <div className="skin-preview" key={selected.id}>
+          {selectedUrl ? (
+            <SkinArt
+              url={selectedUrl}
+              alt={`${selected.name} 预览`}
+              size="stage"
+              failed={failedPreviews.has(selectedUrl)}
+              onFail={markFailed}
+              onRetry={() => setFailedPreviews(new Set())}
+            />
+          ) : (
+            <span className="skin-art skin-art-stage" data-state="mock">
+              <SkinMock skin={selected} />
+            </span>
+          )}
+        </div>
+        <footer className="skin-actionbar skin-detail-footer">
+          <div className="skin-summary-strip">
+            <header className="skin-detail-head skin-caption-line">
               <h2>{selected.name}</h2>
-              {selected.description && <p>{selected.description}</p>}
               <p className="skin-detail-meta">
                 v{selected.version}
                 {selected.author && ` · ${selected.author}`} ·{" "}
                 {skinStatus(selected)}
               </p>
+
+              {selected.description && <p>{selected.description}</p>}
             </header>
-            <div className="skin-preview" key={selected.id}>
-              {selectedUrl ? (
-                <SkinArt
-                  url={selectedUrl}
-                  alt={`${selected.name} 预览`}
-                  size="stage"
-                  failed={failedPreviews.has(selectedUrl)}
-                  onFail={markFailed}
-                  onRetry={() => setFailedPreviews(new Set())}
-                />
+            <div className="skin-actions">
+              <button
+                type="button"
+                className="secondary"
+                onClick={() =>
+                  onRequestSkinAction({
+                    label: "恢复默认外观",
+                    execute: () =>
+                      void run("恢复默认", "restore_skin_package", {
+                        confirm: true,
+                      }),
+                  })
+                }
+                disabled={writesLocked}
+              >
+                恢复默认
+              </button>
+              {selected.installed && !selected.applied && (
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() =>
+                    onRequestSkinAction({
+                      label: "试穿皮肤",
+                      execute: () =>
+                        void run("试穿", "try_skin_package", {
+                          skinId: selected.id,
+                          confirm: true,
+                        }),
+                    })
+                  }
+                  disabled={writesLocked}
+                >
+                  试穿
+                </button>
+              )}
+              {selected.installed ? (
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() =>
+                    onRequestSkinAction({
+                      label: selected.applied ? "重新应用皮肤" : "应用皮肤",
+                      execute: () =>
+                        void run("应用皮肤", "apply_skin_package", {
+                          skinId: selected.id,
+                          confirm: true,
+                        }),
+                    })
+                  }
+                  disabled={writesLocked}
+                >
+                  {selected.applied ? "重新应用" : "应用并重启"}
+                </button>
               ) : (
-                <span className="skin-art skin-art-stage" data-state="mock">
-                  <SkinMock skin={selected} />
-                </span>
+                <button
+                  type="button"
+                  className="primary skin-install-action"
+                  onClick={() =>
+                    void run("下载安装", "install_catalog_skin", {
+                      skinId: selected.id,
+                    })
+                  }
+                  disabled={writesLocked}
+                >
+                  <Download size={14} aria-hidden="true" />
+                  {busy === "下载安装" ? "正在下载…" : "下载并安装"}
+                </button>
               )}
             </div>
-            <dl className="skin-facts">
-              <div>
-                <dt>外观</dt>
-                <dd>{tone || "未标注"}</dd>
+          </div>
+          <div className="skin-detail-notes">
+            <p className="skin-action-note">
+              {selected.installed
+                ? "应用皮肤会关闭并重新启动 Codex；正在进行的会话会在重启后丢失上下文。"
+                : "下载后会先校验皮肤包，再安装到本机；安装后可以试穿或应用。"}
+            </p>
+            <details className="skin-extra">
+              <summary>皮肤详情</summary>
+              <dl className="skin-facts">
+                <div>
+                  <dt>外观</dt>
+                  <dd>{tone || "未标注"}</dd>
+                </div>
+                <div>
+                  <dt>完整性</dt>
+                  <dd>
+                    <ShieldCheck size={13} aria-hidden="true" />
+                    安装前校验 SHA-256
+                  </dd>
+                </div>
+                <div>
+                  <dt>应用范围</dt>
+                  <dd>Codex 窗口的配色与圆角</dd>
+                </div>
+                <div>
+                  <dt>影响范围</dt>
+                  <dd>皮肤不影响线路、凭据与代理行为。</dd>
+                </div>
+              </dl>
+            </details>
+          </div>
+        </footer>
+      </article>
+    );
+  }
+
+  const summary =
+    showCatalog && skins.length
+      ? `Codex 窗口皮肤 · ${installedCount} 个已安装 · 当前使用 ${applied?.name ?? "默认外观"}`
+      : "Codex 窗口皮肤";
+
+  return (
+    <section className="skin-market-reference">
+      <header className="skin-market-heading">
+        <div>
+          <h1>外观</h1>
+          <p>{summary}</p>
+        </div>
+        <div className="skin-heading-actions">
+          {showCatalog && (
+            <div className="skin-toolbar">
+              <div className="skin-filter-tabs" aria-label="筛选皮肤">
+                {FILTERS.map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    className={filter === id ? "is-active" : ""}
+                    aria-pressed={filter === id}
+                    onClick={() => setFilter(id)}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
-              <div>
-                <dt>完整性</dt>
-                <dd>
-                  <ShieldCheck size={13} aria-hidden="true" />
-                  安装前校验 SHA-256
-                </dd>
-              </div>
-              <div>
-                <dt>应用范围</dt>
-                <dd>Codex 窗口的配色与圆角</dd>
-              </div>
-            </dl>
-          </article>
+            </div>
+          )}
+
+          <button
+            type="button"
+            className="secondary skin-import"
+            onClick={() => void importLocal()}
+            disabled={writesLocked || !runningInTauri}
+          >
+            导入本地
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => void load()}
+            disabled={loading || !runningInTauri}
+          >
+            重新读取
+          </button>
+        </div>
+      </header>
+      {unsupportedPlatform && (
+        <p className="skin-platform-notice" role="status">
+          Codex 皮肤注入与应用目前仅支持 Windows 桌面端；当前系统仅可浏览目录。
+        </p>
+      )}
+      {showCatalog && !error && skins.length > 0 ? (
+        <div className="skin-layout">
           <aside className="skin-list" aria-label="皮肤列表">
-            <header className="skin-list-head">
-              <h2>{LIST_TITLE[filter]}</h2>
-              <p>{visibleSkins.length} 个</p>
-            </header>
+            <label className="skin-search">
+              <Search size={14} aria-hidden="true" />
+              <input
+                type="search"
+                value={query}
+                placeholder="搜索皮肤"
+                aria-label="搜索皮肤"
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            </label>
+
             <div className="skin-list-rows">
               {visibleSkins.map((skin) => {
                 const url = skin.preview ? skinPreviewUrl(skin.preview) : "";
-                const active = skin.id === selected.id;
+                const active = skin.id === selected?.id;
                 return (
                   <button
                     key={skin.id}
@@ -520,6 +797,15 @@ export default function AppearanceView({
                         failed={failedPreviews.has(url)}
                         onFail={markFailed}
                       />
+                    ) : skin.swatches?.length ? (
+                      <span
+                        className="skin-catalog-swatches"
+                        aria-hidden="true"
+                      >
+                        {skin.swatches.map((color, index) => (
+                          <i key={index} style={{ backgroundColor: color }} />
+                        ))}
+                      </span>
                     ) : (
                       <span
                         className={`skin-card-miniature ${skinToneClass(skin)}`}
@@ -528,178 +814,55 @@ export default function AppearanceView({
                       />
                     )}
                     <span className="skin-row-text">
-                      <b>{skin.name}</b>
+                      <span className="skin-row-title">
+                        <b>{skin.name}</b>
+                        {skin.applied ? (
+                          <em className="skin-row-state is-applied">使用中</em>
+                        ) : skin.installed ? (
+                          <em className="skin-row-state">已安装</em>
+                        ) : appearanceLabel(skin) ? (
+                          <em className="skin-row-state">
+                            {appearanceLabel(skin)}
+                          </em>
+                        ) : (
+                          <ChevronRight
+                            className="skin-row-chevron"
+                            size={14}
+                            aria-hidden="true"
+                          />
+                        )}
+                      </span>
                       <small>
-                        {[
-                          skin.author,
-                          appearanceLabel(skin),
-                          `v${skin.version}`,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
+                        {skin.description ||
+                          [
+                            skin.author,
+                            appearanceLabel(skin),
+                            `v${skin.version}`,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
                       </small>
                     </span>
-                    {skin.applied ? (
-                      <em className="skin-row-state is-applied">使用中</em>
-                    ) : skin.installed ? (
-                      <em className="skin-row-state">已安装</em>
-                    ) : (
-                      <ChevronRight
-                        className="skin-row-chevron"
-                        size={14}
-                        aria-hidden="true"
-                      />
-                    )}
                   </button>
                 );
               })}
             </div>
+            <footer className="skin-catalog-footer">
+              <span className="sr-only">{LIST_TITLE[filter]}</span>
+              <span aria-live="polite">共 {visibleSkins.length} 款皮肤</span>
+            </footer>
           </aside>
+          {body}
         </div>
-        <div className="skin-actionbar">
-          <p>
-            {selected.installed
-              ? "应用皮肤会关闭并重新启动 Codex；正在进行的会话会在重启后丢失上下文。"
-              : "下载后会先校验皮肤包，再安装到本机；安装后可以试穿或应用。"}
-          </p>
-          <div className="skin-actions">
-            <button
-              type="button"
-              className="secondary"
-              onClick={() =>
-                onRequestSkinAction({
-                  label: "恢复默认外观",
-                  execute: () =>
-                    void run("恢复默认", "restore_skin_package", {
-                      confirm: true,
-                    }),
-                })
-              }
-              disabled={writesLocked}
-            >
-              恢复默认
-            </button>
-            {selected.installed && !selected.applied && (
-              <button
-                type="button"
-                className="secondary"
-                onClick={() =>
-                  onRequestSkinAction({
-                    label: "试穿皮肤",
-                    execute: () =>
-                      void run("试穿", "try_skin_package", {
-                        skinId: selected.id,
-                        confirm: true,
-                      }),
-                  })
-                }
-                disabled={writesLocked}
-              >
-                试穿
-              </button>
-            )}
-            {selected.installed ? (
-              <button
-                type="button"
-                className="primary"
-                onClick={() =>
-                  onRequestSkinAction({
-                    label: selected.applied ? "重新应用皮肤" : "应用皮肤",
-                    execute: () =>
-                      void run("应用皮肤", "apply_skin_package", {
-                        skinId: selected.id,
-                        confirm: true,
-                      }),
-                  })
-                }
-                disabled={writesLocked}
-              >
-                {selected.applied ? "重新应用" : "应用并重启"}
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="primary skin-install-action"
-                onClick={() =>
-                  void run("下载安装", "install_catalog_skin", {
-                    skinId: selected.id,
-                  })
-                }
-                disabled={writesLocked}
-              >
-                <Download size={14} aria-hidden="true" />
-                {busy === "下载安装" ? "正在下载…" : "下载并安装"}
-              </button>
-            )}
-          </div>
-        </div>
-      </>
-    );
-  }
-
-  const summary =
-    showCatalog && skins.length
-      ? `Codex 窗口皮肤 · ${installedCount} 个已安装 · 当前使用 ${applied?.name ?? "默认外观"}`
-      : "Codex 窗口皮肤";
-
-  return (
-    <section className="skin-market-reference">
-      <header className="skin-market-heading">
-        <div>
-          <h1>外观</h1>
-          <p>{summary}</p>
-        </div>
-        <div className="skin-heading-actions">
-          <button
-            type="button"
-            className="secondary skin-import"
-            onClick={() => void importLocal()}
-            disabled={writesLocked || !runningInTauri}
-          >
-            导入本地
-          </button>
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => void load()}
-            disabled={loading || !runningInTauri}
-          >
-            重新读取
-          </button>
-        </div>
-      </header>
-      {showCatalog && (
-        <div className="skin-toolbar">
-          <div className="skin-filter-tabs" aria-label="筛选皮肤">
-            {FILTERS.map(([id, label]) => (
-              <button
-                key={id}
-                type="button"
-                className={filter === id ? "is-active" : ""}
-                aria-pressed={filter === id}
-                onClick={() => setFilter(id)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <label className="skin-search">
-            <Search size={14} aria-hidden="true" />
-            <input
-              type="search"
-              value={query}
-              placeholder="搜索皮肤"
-              aria-label="搜索皮肤"
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </label>
-        </div>
+      ) : (
+        body
       )}
-      {body}
-      <p className="skin-footnote">
-        <Info size={13} aria-hidden="true" />
-        皮肤不影响线路、凭据与代理行为。
-      </p>
+      {(!showCatalog || error || !selected) && (
+        <p className="skin-footnote">
+          <Info size={13} aria-hidden="true" />
+          皮肤不影响线路、凭据与代理行为。
+        </p>
+      )}
     </section>
   );
 }

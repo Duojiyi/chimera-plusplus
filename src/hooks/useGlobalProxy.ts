@@ -7,6 +7,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
+import { extractErrorMessage } from "@/utils/errorUtils";
 import {
   getGlobalProxyUrl,
   setGlobalProxyUrl,
@@ -74,8 +75,8 @@ export function useTestProxy() {
         );
       }
     },
-    onError: (error: Error) => {
-      toast.error(error.message);
+    onError: (error: unknown) => {
+      toast.error(extractErrorMessage(error) || String(error));
     },
   });
 }
@@ -98,9 +99,11 @@ export function useScanProxies() {
 
   return useMutation({
     mutationFn: scanLocalProxies,
-    onError: (error: Error) => {
+    onError: (error: unknown) => {
       toast.error(
-        t("settings.globalProxy.scanFailed", { error: error.message }),
+        t("settings.globalProxy.scanFailed", {
+          error: extractErrorMessage(error) || String(error),
+        }),
       );
     },
   });

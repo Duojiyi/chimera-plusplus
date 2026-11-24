@@ -5,9 +5,7 @@ import type { McpServer } from "@/types";
  * Browser design-preview fixtures for the Skills 与 MCP page (L07).
  *
  * Only used when the renderer runs outside Tauri with `?preview=design`, so
- * the layout can be reviewed without a backend. Counts follow the shared fake
- * data baseline (design system §6): 6 Skills with 4 enabled, 6 MCP services
- * with 3 enabled. Writes are disabled while these are on screen.
+ * the layout can be compared with the four rows per column in the approved design.
  */
 export const isSkillsDesignPreview = (): boolean =>
   import.meta.env.DEV &&
@@ -45,12 +43,13 @@ const skill = (
 });
 
 export const SAMPLE_SKILLS: InstalledSkill[] = [
-  skill("commit-style", "按团队约定撰写提交说明", true, ["team", "skills"], 42),
-  skill("repo-map", "生成仓库结构概览", true, ["team", "skills"], 30),
-  skill("pdf-tools", "读取与拆分 PDF", true, undefined, 21),
-  skill("db-inspect", "只读查看本地数据库表结构", true, undefined, 12),
-  skill("legacy-notes", "旧版笔记整理规则", false, undefined, 88),
-  skill("image-lab", "图片裁剪与压缩", false, ["team", "skills"], 5),
+  skill("code-review-checklist", "自动执行结构化代码审查与安全检查", true, [
+    "studio",
+    "skills",
+  ]),
+  skill("tauri-rust-auditor", "分析 Rust 命令权限、异步锁与路径边界", true),
+  skill("docs-changelog-writer", "根据提交历史整理中英双语发布说明", false),
+  skill("sql-migration-guard", "校验 SQLite 迁移脚本幂等性与只读备份", false),
 ];
 
 const server = (
@@ -68,35 +67,26 @@ const server = (
 
 export const SAMPLE_MCP_SERVERS: Record<string, McpServer> = Object.fromEntries(
   [
-    server("filesystem", "本地文件读写", true, {
+    server("filesystem-local", "读写授权工作区内的代码与配置文件", true, {
       type: "stdio",
-      command: "npx",
-      env: { ALLOWED_ROOT: "sample" },
+      command: "filesystem-local",
     }),
-    server("github", "仓库、议题与合并请求", true, {
+    server("postgres-readonly", "只读查询本地开发数据库结构与表数据", true, {
+      type: "stdio",
+      command: "postgres-readonly",
+      env: { DATABASE_URL: "sample" },
+    }),
+    server("fetch-docs-mcp", "按需抓取官方文档页面并转成 Markdown", false, {
       type: "http",
-      url: "https://api.githubcopilot.com/mcp",
-      headers: { Authorization: "sample" },
+      url: "https://docs.example.test/mcp",
     }),
-    server("sqlite", "查询本地 SQLite 数据库", true, {
-      type: "stdio",
-      command: "uvx",
-    }),
-    server("browser", "驱动浏览器完成网页操作", false, {
-      type: "stdio",
-      command: "npx",
-    }),
-    server("sentry", "查看线上错误报告", false, {
-      type: "http",
-      url: "https://mcp.sentry.dev/sse",
-    }),
-    server("memory", "跨会话记住项目约定", false, {
-      type: "stdio",
-      command: "npx",
-    }),
+    server(
+      "git-history-inspector",
+      "只读检索仓库提交图谱与文件演进记录",
+      false,
+      { type: "stdio", command: "git-history-inspector" },
+    ),
   ].map((entry) => [entry.id, entry]),
 );
 
-export const SAMPLE_NOTES: Record<string, string> = {
-  "commit-style": "提交前自动套用",
-};
+export const SAMPLE_NOTES: Record<string, string> = {};

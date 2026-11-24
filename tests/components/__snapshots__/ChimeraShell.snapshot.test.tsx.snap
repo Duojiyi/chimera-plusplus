@@ -14,7 +14,10 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       aria-hidden="true"
       class="v3-sidebar-logo"
     >
-      C
+      <img
+        alt=""
+        src="/src/assets/icons/app-icon.png"
+      />
     </span>
     <span
       class="v3-sidebar-brandtext"
@@ -28,7 +31,8 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       <span
         class="v3-sidebar-version"
       >
-        2.9.2
+        v
+        2.9.3
       </span>
     </span>
   </div>
@@ -42,22 +46,28 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     type="button"
   >
     <span
-      aria-hidden="true"
-      class="v3-tool-bar"
-      data-tool="codex"
-    />
+      class="v3-tool-switch-sub"
+    >
+      当前工具
+    </span>
     <span
       class="v3-tool-switch-text"
     >
+      <span
+        aria-hidden="true"
+        class="v3-tool-bar"
+        data-tool="codex"
+      />
       <span
         class="v3-tool-switch-name"
       >
         Codex
       </span>
       <span
-        class="v3-tool-switch-sub"
+        aria-hidden="true"
+        class="v5-tool-selected"
       >
-        当前工具
+        活跃
       </span>
     </span>
     <svg
@@ -94,6 +104,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         工作区
       </div>
       <button
+        aria-label="线路"
         class="v3-nav-item"
         data-pencil-name="能力 · 线路"
         type="button"
@@ -132,6 +143,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </span>
       </button>
       <button
+        aria-label="官方账号"
         class="v3-nav-item"
         data-pencil-name="能力 · 官方账号"
         type="button"
@@ -171,6 +183,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </span>
       </button>
       <button
+        aria-label="提示词"
         class="v3-nav-item"
         data-pencil-name="能力 · 提示词"
         type="button"
@@ -211,6 +224,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </span>
       </button>
       <button
+        aria-label="Skills 与 MCP"
         class="v3-nav-item"
         data-pencil-name="能力 · Skills 与 MCP"
         type="button"
@@ -286,6 +300,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </span>
       </button>
       <button
+        aria-label="用量"
         class="v3-nav-item"
         data-pencil-name="能力 · 用量"
         type="button"
@@ -333,6 +348,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       </div>
       <button
         aria-current="page"
+        aria-label="Codex 管理"
         class="v3-nav-item"
         data-pencil-name="能力 · Codex 管理"
         type="button"
@@ -370,6 +386,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </span>
       </button>
       <button
+        aria-label="外观"
         class="v3-nav-item"
         data-pencil-name="能力 · 外观"
         type="button"
@@ -404,6 +421,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </span>
       </button>
       <button
+        aria-label="配置体检"
         class="v3-nav-item"
         data-pencil-name="能力 · 配置体检"
         type="button"
@@ -437,6 +455,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     class="v3-sidebar-foot"
   >
     <button
+      aria-label="会话"
       class="v3-nav-item"
       data-pencil-name="会话"
       type="button"
@@ -468,6 +487,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       </span>
     </button>
     <button
+      aria-label="设置"
       class="v3-nav-item"
       data-pencil-name="设置"
       type="button"
@@ -526,7 +546,10 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       aria-hidden="true"
       class="v3-sidebar-logo"
     >
-      C
+      <img
+        alt=""
+        src="/src/assets/icons/app-icon.png"
+      />
     </span>
     <span
       class="v3-sidebar-brandtext"
@@ -540,7 +563,8 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       <span
         class="v3-sidebar-version"
       >
-        2.9.2
+        v
+        2.9.3
       </span>
     </span>
   </div>
@@ -554,22 +578,28 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     type="button"
   >
     <span
-      aria-hidden="true"
-      class="v3-tool-bar"
-      data-tool="codex"
-    />
+      class="v3-tool-switch-sub"
+    >
+      当前工具
+    </span>
     <span
       class="v3-tool-switch-text"
     >
+      <span
+        aria-hidden="true"
+        class="v3-tool-bar"
+        data-tool="codex"
+      />
       <span
         class="v3-tool-switch-name"
       >
         Codex
       </span>
       <span
-        class="v3-tool-switch-sub"
+        aria-hidden="true"
+        class="v5-tool-selected"
       >
-        当前工具
+        活跃
       </span>
     </span>
     <svg
@@ -607,6 +637,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       </div>
       <button
         aria-current="page"
+        aria-label="线路"
         class="v3-nav-item"
         data-pencil-name="能力 · 线路"
         type="button"
@@ -645,6 +676,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </span>
       </button>
       <button
+        aria-label="官方账号"
         class="v3-nav-item"
         data-pencil-name="能力 · 官方账号"
         type="button"
@@ -684,6 +716,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </span>
       </button>
       <button
+        aria-label="提示词"
         class="v3-nav-item"
         data-pencil-name="能力 · 提示词"
         type="button"
@@ -724,6 +757,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </span>
       </button>
       <button
+        aria-label="Skills 与 MCP"
         class="v3-nav-item"
         data-pencil-name="能力 · Skills 与 MCP"
         type="button"
@@ -799,6 +833,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </span>
       </button>
       <button
+        aria-label="用量"
         class="v3-nav-item"
         data-pencil-name="能力 · 用量"
         type="button"
@@ -845,6 +880,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         本机
       </div>
       <button
+        aria-label="Codex 管理"
         class="v3-nav-item"
         data-pencil-name="能力 · Codex 管理"
         type="button"
@@ -882,6 +918,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </span>
       </button>
       <button
+        aria-label="外观"
         class="v3-nav-item"
         data-pencil-name="能力 · 外观"
         type="button"
@@ -916,6 +953,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         </span>
       </button>
       <button
+        aria-label="配置体检"
         class="v3-nav-item"
         data-pencil-name="能力 · 配置体检"
         type="button"
@@ -949,6 +987,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
     class="v3-sidebar-foot"
   >
     <button
+      aria-label="会话"
       class="v3-nav-item"
       data-pencil-name="会话"
       type="button"
@@ -980,6 +1019,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       </span>
     </button>
     <button
+      aria-label="设置"
       class="v3-nav-item"
       data-pencil-name="设置"
       type="button"
@@ -1050,12 +1090,25 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
       Codex 管理
     </span>
     <span
+      class="v5-version"
+    >
+      v
+      2.9.3
+    </span>
+    <span
       class="v3-preview-chip"
       title="浏览器预览 · 未连接本机，不读取或修改本机配置"
     >
       浏览器预览 · 未连接本机
     </span>
   </div>
+  <span
+    aria-hidden="true"
+    class="v5-window-name"
+    data-tauri-drag-region="deep"
+  >
+    CHIMERA++
+  </span>
   <button
     aria-label="搜索线路、页面或命令"
     class="v3-search"
@@ -1218,12 +1271,25 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
       线路
     </span>
     <span
+      class="v5-version"
+    >
+      v
+      2.9.3
+    </span>
+    <span
       class="v3-preview-chip"
       title="浏览器预览 · 未连接本机，不读取或修改本机配置"
     >
       浏览器预览 · 未连接本机
     </span>
   </div>
+  <span
+    aria-hidden="true"
+    class="v5-window-name"
+    data-tauri-drag-region="deep"
+  >
+    CHIMERA++
+  </span>
   <button
     aria-label="搜索线路、页面或命令"
     class="v3-search"
@@ -1362,167 +1428,160 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
 
 exports[`keeps the shell markup stable across views and the line editor > titlebar while editing a line 1`] = `
 <header
-  class="chimera-titlebar"
+  class="editor-page-header editor-window-header"
   data-pencil-name="标题栏"
 >
-  <div
-    class="v3-crumb"
-    data-tauri-drag-region="deep"
-  >
-    <span
-      class="v3-crumb-tool"
-    >
-      Codex
-    </span>
-    <span
-      aria-hidden="true"
-      class="v3-crumb-sep"
-    >
-      /
-    </span>
-    <span
-      class="v3-crumb-page"
-    >
-      添加线路
-    </span>
-    <span
-      class="v3-preview-chip"
-      title="浏览器预览 · 未连接本机，不读取或修改本机配置"
-    >
-      浏览器预览 · 未连接本机
-    </span>
-  </div>
   <button
-    aria-label="搜索线路、页面或命令"
-    class="v3-search"
-    data-pencil-name="搜索"
+    aria-label="返回线路"
+    class="secondary editor-back"
     data-tauri-no-drag="true"
     type="button"
   >
     <svg
       aria-hidden="true"
-      class="lucide lucide-search"
+      class="lucide lucide-chevron-left"
       fill="none"
-      height="14"
+      height="16"
       stroke="currentColor"
       stroke-linecap="round"
       stroke-linejoin="round"
       stroke-width="2"
       viewBox="0 0 24 24"
-      width="14"
+      width="16"
       xmlns="http://www.w3.org/2000/svg"
     >
       <path
-        d="m21 21-4.34-4.34"
-      />
-      <circle
-        cx="11"
-        cy="11"
-        r="8"
+        d="m15 18-6-6 6-6"
       />
     </svg>
-    <span
-      class="v3-search-placeholder"
-    >
-      搜索线路、页面或命令
-    </span>
-    <span
-      aria-hidden="true"
-      class="v3-kbd"
-    >
-      Ctrl K
-    </span>
+     返回线路
   </button>
   <div
-    class="v3-window-controls"
+    class="editor-heading"
+    data-tauri-drag-region="deep"
+  >
+    <span>
+      Codex
+       /
+    </span>
+    <h2
+      aria-label="新建线路"
+      id="provider-editor-title"
+      tabindex="-1"
+    >
+      新建线路 · 
+      默认线路
+    </h2>
+  </div>
+  <span
+    class="editor-draft-status"
+    role="status"
+  />
+  <span
+    aria-hidden="true"
+    class="editor-app-mark"
+    data-tauri-drag-region="deep"
+  >
+    CHIMERA++ 
+    <small>
+      v
+      2.9.3
+    </small>
+  </span>
+  <div
+    class="editor-window-end"
     data-tauri-no-drag="true"
   >
     <div
-      class="window-controls window-controls-windows"
-      data-tauri-no-drag="true"
+      class="editor-window-controls"
     >
-      <button
-        aria-label="最小化窗口"
-        class="window-control-minimize"
-        disabled=""
-        title="仅桌面应用可用"
-        type="button"
+      <div
+        class="window-controls window-controls-windows"
+        data-tauri-no-drag="true"
       >
-        <svg
-          aria-hidden="true"
-          class="lucide lucide-minus"
-          fill="none"
-          height="14"
-          stroke="currentColor"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="2"
-          viewBox="0 0 24 24"
-          width="14"
-          xmlns="http://www.w3.org/2000/svg"
+        <button
+          aria-label="最小化窗口"
+          class="window-control-minimize"
+          disabled=""
+          title="仅桌面应用可用"
+          type="button"
         >
-          <path
-            d="M5 12h14"
-          />
-        </svg>
-      </button>
-      <button
-        aria-label="最大化窗口"
-        class="window-control-maximize"
-        disabled=""
-        title="仅桌面应用可用"
-        type="button"
-      >
-        <svg
-          aria-hidden="true"
-          class="lucide lucide-square"
-          fill="none"
-          height="12"
-          stroke="currentColor"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="2"
-          viewBox="0 0 24 24"
-          width="12"
-          xmlns="http://www.w3.org/2000/svg"
+          <svg
+            aria-hidden="true"
+            class="lucide lucide-minus"
+            fill="none"
+            height="14"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            viewBox="0 0 24 24"
+            width="14"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="M5 12h14"
+            />
+          </svg>
+        </button>
+        <button
+          aria-label="最大化窗口"
+          class="window-control-maximize"
+          disabled=""
+          title="仅桌面应用可用"
+          type="button"
         >
-          <rect
-            height="18"
-            rx="2"
-            width="18"
-            x="3"
-            y="3"
-          />
-        </svg>
-      </button>
-      <button
-        aria-label="关闭窗口"
-        class="window-control-close"
-        disabled=""
-        title="仅桌面应用可用"
-        type="button"
-      >
-        <svg
-          aria-hidden="true"
-          class="lucide lucide-x"
-          fill="none"
-          height="14"
-          stroke="currentColor"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="2"
-          viewBox="0 0 24 24"
-          width="14"
-          xmlns="http://www.w3.org/2000/svg"
+          <svg
+            aria-hidden="true"
+            class="lucide lucide-square"
+            fill="none"
+            height="12"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            viewBox="0 0 24 24"
+            width="12"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <rect
+              height="18"
+              rx="2"
+              width="18"
+              x="3"
+              y="3"
+            />
+          </svg>
+        </button>
+        <button
+          aria-label="关闭窗口"
+          class="window-control-close"
+          disabled=""
+          title="仅桌面应用可用"
+          type="button"
         >
-          <path
-            d="M18 6 6 18"
-          />
-          <path
-            d="m6 6 12 12"
-          />
-        </svg>
-      </button>
+          <svg
+            aria-hidden="true"
+            class="lucide lucide-x"
+            fill="none"
+            height="14"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            viewBox="0 0 24 24"
+            width="14"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="M18 6 6 18"
+            />
+            <path
+              d="m6 6 12 12"
+            />
+          </svg>
+        </button>
+      </div>
     </div>
   </div>
 </header>

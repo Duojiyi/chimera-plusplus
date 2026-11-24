@@ -111,6 +111,7 @@ pub async fn import_claude_logins_text(text: String) -> Result<ImportReport, App
 #[tauri::command]
 pub async fn delete_claude_code_account(id: String) -> Result<(), AppError> {
     crate::claude_accounts::validate_account_id(&id)?;
+    let _swap = DESKTOP_SWAP.lock().await;
     let lock = code::account_lock(&id);
     let _guard = lock.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
@@ -901,8 +902,21 @@ pub async fn switch_claude_desktop_provider(
                 return Ok(None);
             }
             if running {
-                close_desktop_for_swap(&roots.0)?;
-                if desktop_swap::data_locked(&roots.1) {
+                #[cfg(windows)]
+                {
+                    close_desktop_for_swap(&roots.0)?;
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    close_macos_claude_desktop(&roots.0, &roots.1)?;
+                }
+                #[cfg(not(any(windows, target_os = "macos")))]
+                {
+                    return Err(AppError::Message(
+                        "请先退出 Claude Desktop 后再切换线路。".into(),
+                    ));
+                }
+                if desktop_swap::data_locked(&roots.0) || desktop_swap::data_locked(&roots.1) {
                     return Err(AppError::Message(
                         "Claude Desktop 尚未完全退出，已取消切换。".into(),
                     ));
@@ -1188,6 +1202,35 @@ pub async fn prepare_claude_desktop_login(
     })
     .await
     .map_err(unfinished)?
+}
+
+#[cfg(target_os = "macos")]
+fn close_macos_claude_desktop(
+    normal: &std::path::Path,
+    api: &std::path::Path,
+) -> Result<(), AppError> {
+    use std::time::{Duration, Instant};
+
+    let mut command = std::process::Command::new("osascript");
+    command.args(["-e", "tell application \"Claude\" to quit"]);
+    let _ = crate::process_utils::output_with_timeout(
+        command,
+        Duration::from_secs(5),
+        crate::security_limits::MAX_PROCESS_OUTPUT_BYTES,
+    );
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while Instant::now() < deadline {
+        if !desktop_swap::data_locked(normal) && !desktop_swap::data_locked(api) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    if !desktop_swap::data_locked(normal) && !desktop_swap::data_locked(api) {
+        return Ok(());
+    }
+    Err(AppError::Message(
+        "未能自动退出 Claude Desktop，请手动退出（Command+Q）后再切换。".into(),
+    ))
 }
 
 #[cfg(test)]

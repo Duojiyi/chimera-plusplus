@@ -52,6 +52,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { HelpTip } from "@/components/ui/help-tip";
+import { useDialogFocus } from "@/hooks/useDialogFocus";
+import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import type { McpServer } from "@/types";
 import type { AppId } from "@/lib/api";
 import { lazy, Suspense, useCallback, useEffect, useRef } from "react";
@@ -145,8 +147,6 @@ export const SkillsMcpView: React.FC<{
   const [mcpNotes, setMcpNotes] = useState<Record<string, string>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [installDrawerOpen, setInstallDrawerOpen] = useState(false);
-  const installPanelRef = useRef<HTMLDivElement>(null);
-  const detailsRef = useRef<HTMLDivElement>(null);
   // null until the configured repositories have been read, so an empty read
   // can say so instead of leaving the panel silently blank.
   const [available, setAvailable] = useState<DiscoverableSkill[] | null>(null);
@@ -174,6 +174,7 @@ export const SkillsMcpView: React.FC<{
   const [scanError, setScanError] = useState<string | null>(null);
   const scanGeneration = useRef(0);
   const [selectedImports, setSelectedImports] = useState<string[]>([]);
+  const scanDetails = useRef<HTMLDetailsElement>(null);
   const [scanAllSources, setScanAllSources] = useState(false);
   const [backups, setBackups] = useState<SkillBackupEntry[] | null>(null);
   const [updates, setUpdates] = useState<SkillUpdateInfo[] | null>(null);
@@ -255,14 +256,15 @@ export const SkillsMcpView: React.FC<{
       scanGeneration.current++;
     };
   }, [scanSkills, refreshVersion]);
-  useEffect(() => {
-    // In the narrow layout the panel opens below the fold; moving focus into
-    // it also scrolls it into view, so the click visibly does something.
-    if (installDrawerOpen) installPanelRef.current?.focus();
-  }, [installDrawerOpen]);
-  useEffect(() => {
-    if (selectedId) detailsRef.current?.focus();
-  }, [selectedId]);
+  const installPanelRef = useDialogFocus<HTMLDivElement>(() => {
+    if (!busyRef.current) setInstallDrawerOpen(false);
+  }, installDrawerOpen);
+  const detailsRef = useDialogFocus<HTMLDivElement>(() => {
+    if (!busyRef.current) setSelectedId(null);
+  }, Boolean(selectedId));
+  useLightweightCloseBlocker(
+    busy || editing !== null || removing !== null || editingNote !== null,
+  );
 
   /** The design preview has no backend; say so instead of failing. */
   const previewBlocked = () => {
@@ -476,10 +478,6 @@ export const SkillsMcpView: React.FC<{
     toast.success(`已导出配置。${MCP_EXPORT_NOTICE}`);
   };
   const removingTools = removing ? enabledToolNames(removing.apps) : [];
-  const repoSkillCount = installed.filter(
-    (item) => item.repoOwner && item.repoName,
-  ).length;
-  const remoteMcpCount = mcps.filter((item) => item.remote).length;
   const scanButtonLabel = scanning
     ? "正在扫描…"
     : scanError
@@ -594,38 +592,13 @@ export const SkillsMcpView: React.FC<{
             onClick={() => {
               if (!previewBlocked()) exportSafeConfiguration();
             }}
+            aria-label="导出"
             aria-describedby="mcp-export-scope"
             title={`导出全部工具的共享资源与启用状态。${MCP_EXPORT_NOTICE}`}
           >
             <Export size={13} aria-hidden="true" />
-            导出
+            导出配置
           </button>
-          {/* The Skills empty state carries its own install paths. */}
-          {loaded && skills.length > 0 && (
-            <button
-              type="button"
-              className="v3-btn"
-              disabled={busy || loading}
-              aria-expanded={installDrawerOpen}
-              aria-controls={
-                installDrawerOpen ? "skills-install-panel" : undefined
-              }
-              onClick={openInstall}
-            >
-              安装
-            </button>
-          )}
-          {/* With no services the MCP card's empty state carries this action. */}
-          {loaded && mcps.length > 0 && (
-            <button
-              type="button"
-              className="v3-btn v3-btn-primary"
-              disabled={busy || loading}
-              onClick={() => openEditor("new")}
-            >
-              添加 MCP
-            </button>
-          )}
         </div>
       </header>
 
@@ -733,12 +706,34 @@ export const SkillsMcpView: React.FC<{
                   <>
                     {targetName} 已启用{" "}
                     <strong>{`${enabledSkillsCount} / ${skills.length}`}</strong>
-                    {repoSkillCount > 0 && ` · ${repoSkillCount} 个来自仓库`}
                   </>
                 ) : (
                   "正在读取…"
                 )}
               </p>
+              {loaded && skills.length > 0 && (
+                <div className="v3-res-head-actions">
+                  <button
+                    type="button"
+                    className="v3-btn"
+                    aria-label="安装"
+                    aria-expanded={installDrawerOpen}
+                    aria-controls={
+                      installDrawerOpen ? "skills-install-panel" : undefined
+                    }
+                    onClick={openInstall}
+                  >
+                    从仓库安装
+                  </button>
+                  <button
+                    type="button"
+                    className="v3-btn"
+                    onClick={installFromZip}
+                  >
+                    导入 ZIP
+                  </button>
+                </div>
+              )}
             </div>
             <div className="v3-res-card-body">
               {!loaded && (
@@ -803,7 +798,7 @@ export const SkillsMcpView: React.FC<{
                       {skill.name}
                     </div>
                     <div className="v3-res-path" title={skill.source}>
-                      {skill.source}
+                      {skill.description || skill.source}
                     </div>
                     {renderNote(skill.id, skill.note, true)}
                   </div>
@@ -1001,243 +996,6 @@ export const SkillsMcpView: React.FC<{
                   )}
                 </fieldset>
               )}
-              {loaded && (scanning || scanError || unmanaged !== null) && (
-                <section
-                  className="skills-discovery v3-res-discovery"
-                  aria-label="本机发现的 Skills"
-                >
-                  <fieldset
-                    disabled={
-                      busy || loading || confirmation !== null || repoOpen
-                    }
-                  >
-                    <div
-                      className="skills-lifecycle-panel skills-scan-panel"
-                      role="region"
-                      aria-label="本地 Skills 扫描"
-                      aria-busy={scanning}
-                    >
-                      <div className="skills-scan-heading">
-                        <h2>本机发现的 Skills</h2>
-                        {!scanning && !scanError && unmanaged !== null && (
-                          <span>
-                            {unmanaged.length} 个发现 · 已选{" "}
-                            {selectedImports.length} 个
-                          </span>
-                        )}
-                      </div>
-                      <p>
-                        扫描只读取文件，不会修改。确认后添加到共享资源库，并启用到{" "}
-                        {targetName}。
-                      </p>
-                      <label className="skills-scan-scope">
-                        <input
-                          type="checkbox"
-                          checked={scanAllSources}
-                          onChange={(event) =>
-                            setScanAllSources(event.target.checked)
-                          }
-                        />
-                        同时发现其他工具的 Skills
-                      </label>
-                      <p className="skills-scan-scope-hint">
-                        {scanAllSources
-                          ? "正在查看所有工具与共享目录；相同内容的副本会合并。"
-                          : `仅查看 ${targetName}${targetApp === "codex" ? " 与通用 .agents 目录" : " 的技能目录"}。`}
-                      </p>
-                      {scanning && (
-                        <p role="status">
-                          {unmanaged === null
-                            ? "正在发现本地 Skills…"
-                            : "正在刷新，以下为上次扫描结果。"}
-                        </p>
-                      )}
-                      {scanError && (
-                        <p role="alert">
-                          {scanError}
-                          {unmanaged !== null &&
-                            " 以下为上次扫描结果，暂不可添加。"}
-                        </p>
-                      )}
-                      {!scanning && !scanError && unmanaged?.length === 0 && (
-                        <p>未发现可添加的本地 Skills。</p>
-                      )}
-                      {!scanError && skippedSkills.length > 0 && (
-                        <p
-                          className="skills-scan-scope-hint"
-                          data-testid="skills-scan-skipped"
-                        >
-                          {skippedSkills.length} 个本地 Skill
-                          目录无法读取或校验，已跳过：
-                          {skippedSkills
-                            .map(
-                              (dir) =>
-                                `${dir.directory}（${dir.reason}，来源：${dir.foundIn.map(sourceLabel).join("、")}）`,
-                            )
-                            .join("；")}
-                          。
-                        </p>
-                      )}
-                      {unmanaged?.map((skill) => {
-                        const key = importKey(skill);
-                        const ambiguous =
-                          unmanaged.filter(
-                            (item) => item.directory === skill.directory,
-                          ).length !== 1;
-                        return (
-                          <label
-                            className="skills-lifecycle-row skills-scan-row"
-                            data-selected={selectedImports.includes(key)}
-                            key={key}
-                          >
-                            <input
-                              type="checkbox"
-                              aria-label={`添加 ${skill.name}`}
-                              checked={selectedImports.includes(key)}
-                              disabled={scanning || !!scanError}
-                              onChange={(event) =>
-                                setSelectedImports((previous) =>
-                                  event.target.checked
-                                    ? [
-                                        ...previous.filter(
-                                          (item) =>
-                                            !unmanaged.some(
-                                              (candidate) =>
-                                                candidate.directory ===
-                                                  skill.directory &&
-                                                importKey(candidate) === item,
-                                            ),
-                                        ),
-                                        key,
-                                      ]
-                                    : previous.filter((item) => item !== key),
-                                )
-                              }
-                            />
-                            <span className="skills-scan-details">
-                              <strong>{skill.name}</strong>
-                              <span
-                                className="skills-scan-path"
-                                title={skill.path}
-                              >
-                                {skill.path}
-                              </span>
-                              <span className="skills-scan-source">
-                                来源：
-                                {skill.foundIn.map(sourceLabel).join("、")}
-                              </span>
-                              {ambiguous && (
-                                <span className="skills-scan-warning">
-                                  同名但内容不同，请选择一个来源；不会覆盖目标中的不同内容。
-                                </span>
-                              )}
-                            </span>
-                          </label>
-                        );
-                      })}
-                      <button
-                        type="button"
-                        disabled={
-                          scanning ||
-                          !!scanError ||
-                          selectedImports.length === 0
-                        }
-                        onClick={() => {
-                          const imports = (unmanaged ?? [])
-                            .filter((skill) =>
-                              selectedImports.includes(importKey(skill)),
-                            )
-                            .map((skill) => ({
-                              directory: skill.directory,
-                              sourcePath: skill.path,
-                              contentHash: skill.contentHash,
-                              apps: {
-                                claude: false,
-                                codex: false,
-                                gemini: false,
-                                grokbuild: false,
-                                opencode: false,
-                                [targetApp]: true,
-                              },
-                            }));
-                          setConfirmation({
-                            title: "确认添加 Skills",
-                            message: `将添加所选 ${imports.length} 个 Skill 到共享资源库，并启用到 ${targetName}。已有目标必须与所选来源内容一致；如有冲突，本批次将回滚新建文件，不会覆盖已有目录。`,
-                            confirmText: `添加 ${imports.length} 个`,
-                            destructive: false,
-                            action: async () => {
-                              await skillsApi.importFromApps(imports);
-                              setSelectedImports([]);
-                              await scanSkills();
-                            },
-                          });
-                        }}
-                      >
-                        添加所选 Skills
-                      </button>
-                    </div>
-                  </fieldset>
-                </section>
-              )}
-            </div>
-            <div className="v3-res-card-foot">
-              <p>
-                <span className="v3-res-foot-label">共享目录</span>
-                启用后同步到 {targetName} 的 Skills 目录 · 新会话加载
-              </p>
-              <fieldset
-                className="v3-res-foot-actions"
-                disabled={
-                  !loaded ||
-                  busy ||
-                  loading ||
-                  confirmation !== null ||
-                  repoOpen
-                }
-              >
-                <button type="button" className="v3-btn" onClick={openRepos}>
-                  管理仓库
-                </button>
-                <button
-                  type="button"
-                  className="v3-btn"
-                  disabled={scanning}
-                  onClick={() => {
-                    if (!previewBlocked()) void scanSkills();
-                  }}
-                >
-                  {scanButtonLabel}
-                </button>
-                {hasRepoSkills && (
-                  <button
-                    type="button"
-                    className="v3-btn"
-                    onClick={() =>
-                      void read(
-                        "检查更新失败，请检查网络后重试。",
-                        async () => {
-                          setUpdates(null);
-                          setUpdates(await skillsApi.checkUpdates());
-                        },
-                      )
-                    }
-                  >
-                    检查 Skills 更新
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="v3-btn"
-                  onClick={() =>
-                    void read("无法读取备份列表，请稍后重试。", async () => {
-                      setBackups(null);
-                      setBackups(await skillsApi.getBackups());
-                    })
-                  }
-                >
-                  查看可恢复备份
-                </button>
-              </fieldset>
             </div>
           </section>
 
@@ -1250,12 +1008,21 @@ export const SkillsMcpView: React.FC<{
                   <>
                     {targetName} 已启用{" "}
                     <strong>{`${enabledMcpCount} / ${mcps.length}`}</strong>
-                    {remoteMcpCount > 0 && ` · ${remoteMcpCount} 个远程`}
                   </>
                 ) : (
                   "正在读取…"
                 )}
               </p>
+              {loaded && mcps.length > 0 && (
+                <button
+                  type="button"
+                  className="v3-btn v3-btn-primary"
+                  onClick={() => openEditor("new")}
+                >
+                  <Plus size={14} aria-hidden="true" />
+                  添加 MCP
+                </button>
+              )}
             </div>
             <div className="v3-res-card-body">
               {!loaded && (
@@ -1317,7 +1084,9 @@ export const SkillsMcpView: React.FC<{
                         </button>
                         <span className="v3-res-chip">{mcp.sourceCommand}</span>
                       </div>
-                      <div className="v3-res-path">{mcp.target}</div>
+                      <div className="v3-res-path" title={mcp.target}>
+                        {mcp.description || mcp.target}
+                      </div>
                       {renderNote(mcp.id, mcp.note, false)}
                     </div>
                     <div className="v3-res-side">
@@ -1356,6 +1125,258 @@ export const SkillsMcpView: React.FC<{
                 );
               })}
             </div>
+          </section>
+
+          <div className="v3-skills-dock">
+            <div className="v3-res-card-foot">
+              {loaded && (scanning || scanError || unmanaged !== null) && (
+                <section
+                  className="skills-discovery v3-res-discovery"
+                  aria-label="本机发现的 Skills"
+                >
+                  <details ref={scanDetails} className="skills-scan-disclosure">
+                    <summary>
+                      本机发现的 Skills{" "}
+                      <span>
+                        {scanning
+                          ? "正在扫描…"
+                          : scanError
+                            ? "扫描失败，查看详情"
+                            : `${unmanaged?.length ?? 0} 个发现`}
+                      </span>
+                    </summary>
+                    <fieldset
+                      disabled={
+                        busy || loading || confirmation !== null || repoOpen
+                      }
+                    >
+                      <div
+                        className="skills-lifecycle-panel skills-scan-panel"
+                        role="region"
+                        aria-label="本地 Skills 扫描"
+                        aria-busy={scanning}
+                      >
+                        <div className="skills-scan-heading">
+                          {!scanning && !scanError && unmanaged !== null && (
+                            <span>
+                              {unmanaged.length} 个发现 · 已选{" "}
+                              {selectedImports.length} 个
+                            </span>
+                          )}
+                        </div>
+                        <p>
+                          扫描只读取文件，不会修改。确认后添加到共享资源库，并启用到{" "}
+                          {targetName}。
+                        </p>
+                        <label className="skills-scan-scope">
+                          <input
+                            type="checkbox"
+                            checked={scanAllSources}
+                            onChange={(event) =>
+                              setScanAllSources(event.target.checked)
+                            }
+                          />
+                          同时发现其他工具的 Skills
+                        </label>
+                        <p className="skills-scan-scope-hint">
+                          {scanAllSources
+                            ? "正在查看所有工具与共享目录；相同内容的副本会合并。"
+                            : `仅查看 ${targetName}${targetApp === "codex" ? " 与通用 .agents 目录" : " 的技能目录"}。`}
+                        </p>
+                        {scanning && (
+                          <p role="status">
+                            {unmanaged === null
+                              ? "正在发现本地 Skills…"
+                              : "正在刷新，以下为上次扫描结果。"}
+                          </p>
+                        )}
+                        {scanError && (
+                          <p role="alert">
+                            {scanError}
+                            {unmanaged !== null &&
+                              " 以下为上次扫描结果，暂不可添加。"}
+                          </p>
+                        )}
+                        {!scanning && !scanError && unmanaged?.length === 0 && (
+                          <p>未发现可添加的本地 Skills。</p>
+                        )}
+                        {!scanError && skippedSkills.length > 0 && (
+                          <p
+                            className="skills-scan-scope-hint"
+                            data-testid="skills-scan-skipped"
+                          >
+                            {skippedSkills.length} 个本地 Skill
+                            目录无法读取或校验，已跳过：
+                            {skippedSkills
+                              .map(
+                                (dir) =>
+                                  `${dir.directory}（${dir.reason}，来源：${dir.foundIn.map(sourceLabel).join("、")}）`,
+                              )
+                              .join("；")}
+                            。
+                          </p>
+                        )}
+                        {unmanaged?.map((skill) => {
+                          const key = importKey(skill);
+                          const ambiguous =
+                            unmanaged.filter(
+                              (item) => item.directory === skill.directory,
+                            ).length !== 1;
+                          return (
+                            <label
+                              className="skills-lifecycle-row skills-scan-row"
+                              data-selected={selectedImports.includes(key)}
+                              key={key}
+                            >
+                              <input
+                                type="checkbox"
+                                aria-label={`添加 ${skill.name}`}
+                                checked={selectedImports.includes(key)}
+                                disabled={scanning || !!scanError}
+                                onChange={(event) =>
+                                  setSelectedImports((previous) =>
+                                    event.target.checked
+                                      ? [
+                                          ...previous.filter(
+                                            (item) =>
+                                              !unmanaged.some(
+                                                (candidate) =>
+                                                  candidate.directory ===
+                                                    skill.directory &&
+                                                  importKey(candidate) === item,
+                                              ),
+                                          ),
+                                          key,
+                                        ]
+                                      : previous.filter((item) => item !== key),
+                                  )
+                                }
+                              />
+                              <span className="skills-scan-details">
+                                <strong>{skill.name}</strong>
+                                <span
+                                  className="skills-scan-path"
+                                  title={skill.path}
+                                >
+                                  {skill.path}
+                                </span>
+                                <span className="skills-scan-source">
+                                  来源：
+                                  {skill.foundIn.map(sourceLabel).join("、")}
+                                </span>
+                                {ambiguous && (
+                                  <span className="skills-scan-warning">
+                                    同名但内容不同，请选择一个来源；不会覆盖目标中的不同内容。
+                                  </span>
+                                )}
+                              </span>
+                            </label>
+                          );
+                        })}
+                        <button
+                          type="button"
+                          disabled={
+                            scanning ||
+                            !!scanError ||
+                            selectedImports.length === 0
+                          }
+                          onClick={() => {
+                            const imports = (unmanaged ?? [])
+                              .filter((skill) =>
+                                selectedImports.includes(importKey(skill)),
+                              )
+                              .map((skill) => ({
+                                directory: skill.directory,
+                                sourcePath: skill.path,
+                                contentHash: skill.contentHash,
+                                apps: {
+                                  claude: false,
+                                  codex: false,
+                                  gemini: false,
+                                  grokbuild: false,
+                                  opencode: false,
+                                  [targetApp]: true,
+                                },
+                              }));
+                            setConfirmation({
+                              title: "确认添加 Skills",
+                              message: `将添加所选 ${imports.length} 个 Skill 到共享资源库，并启用到 ${targetName}。已有目标必须与所选来源内容一致；如有冲突，本批次将回滚新建文件，不会覆盖已有目录。`,
+                              confirmText: `添加 ${imports.length} 个`,
+                              destructive: false,
+                              action: async () => {
+                                await skillsApi.importFromApps(imports);
+                                setSelectedImports([]);
+                                await scanSkills();
+                              },
+                            });
+                          }}
+                        >
+                          添加所选 Skills
+                        </button>
+                      </div>
+                    </fieldset>
+                  </details>
+                </section>
+              )}
+              <p>
+                <span className="v3-res-foot-label">共享目录</span>
+                启用后同步到 {targetName} 的 Skills 目录 · 新会话加载
+              </p>
+              <fieldset
+                className="v3-res-foot-actions"
+                disabled={
+                  !loaded ||
+                  busy ||
+                  loading ||
+                  confirmation !== null ||
+                  repoOpen
+                }
+              >
+                <button type="button" className="v3-btn" onClick={openRepos}>
+                  管理仓库
+                </button>
+                <button
+                  type="button"
+                  className="v3-btn"
+                  disabled={scanning}
+                  onClick={() => {
+                    if (scanDetails.current) scanDetails.current.open = true;
+                    if (!previewBlocked()) void scanSkills();
+                  }}
+                >
+                  {scanButtonLabel}
+                </button>
+                {hasRepoSkills && (
+                  <button
+                    type="button"
+                    className="v3-btn"
+                    onClick={() =>
+                      void read(
+                        "检查更新失败，请检查网络后重试。",
+                        async () => {
+                          setUpdates(null);
+                          setUpdates(await skillsApi.checkUpdates());
+                        },
+                      )
+                    }
+                  >
+                    检查 Skills 更新
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="v3-btn"
+                  onClick={() =>
+                    void read("无法读取备份列表，请稍后重试。", async () => {
+                      setBackups(null);
+                      setBackups(await skillsApi.getBackups());
+                    })
+                  }
+                >
+                  查看可恢复备份
+                </button>
+              </fieldset>
+            </div>
             <div className="v3-res-card-foot">
               <p>
                 <span className="v3-res-foot-label">配置文件</span>
@@ -1384,8 +1405,7 @@ export const SkillsMcpView: React.FC<{
                 </button>
               </fieldset>
             </div>
-          </section>
-
+          </div>
           {/* ---------- 抽屉：安装 Skill / MCP 详情（L23） ---------- */}
           {(installDrawerOpen || selectedMcp) && (
             <div
@@ -1401,7 +1421,8 @@ export const SkillsMcpView: React.FC<{
               ref={installPanelRef}
               id="skills-install-panel"
               tabIndex={-1}
-              role="region"
+              role="dialog"
+              aria-modal="true"
               aria-label="安装 Skill"
               className="v3-drawer"
               onKeyDown={drawerKeys}
@@ -1521,7 +1542,8 @@ export const SkillsMcpView: React.FC<{
               ref={detailsRef}
               id="mcp-details"
               tabIndex={-1}
-              role="region"
+              role="dialog"
+              aria-modal="true"
               aria-label="MCP 详情"
               className="v3-drawer"
               onKeyDown={drawerKeys}

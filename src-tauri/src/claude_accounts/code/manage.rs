@@ -487,7 +487,7 @@ mod tests {
         assert_eq!(ids(&f), vec![c.clone(), a.clone(), b.clone()]);
 
         // A partial list puts those first and keeps the rest in order.
-        reorder_in(&f.vault, &[b.clone()]).unwrap();
+        reorder_in(&f.vault, std::slice::from_ref(&b)).unwrap();
         assert_eq!(ids(&f), vec![b.clone(), c.clone(), a.clone()]);
 
         let d = add_secret_in(&f.vault, None, KEY).unwrap().id;

@@ -686,9 +686,18 @@ pub(crate) mod win {
 
     fn blob_to_vec(blob: &CRYPT_INTEGER_BLOB) -> Vec<u8> {
         let len = blob.cbData as usize;
-        let bytes = unsafe { std::slice::from_raw_parts(blob.pbData, len) }.to_vec();
+        if blob.pbData.is_null() {
+            return Vec::new();
+        }
+        let bytes = if len == 0 {
+            Vec::new()
+        } else {
+            unsafe { std::slice::from_raw_parts(blob.pbData, len) }.to_vec()
+        };
         unsafe {
-            std::ptr::write_bytes(blob.pbData, 0, len);
+            if len > 0 {
+                std::ptr::write_bytes(blob.pbData, 0, len);
+            }
             LocalFree(blob.pbData.cast());
         }
         bytes

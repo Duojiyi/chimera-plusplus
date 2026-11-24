@@ -309,15 +309,10 @@ impl ProfileService {
         Ok(profile)
     }
 
-    /// 删除项目；若删除的是某分组当前激活项目，一并清除该分组的激活标记
+    /// 删除项目；若删除的是某分组当前激活项目，在同一事务中一并清除该分组的激活标记
     pub fn delete(state: &AppState, id: &str) -> Result<(), AppError> {
-        state.db.delete_profile(id)?;
-        for scope in ProfileScope::ALL {
-            if state.db.get_current_profile_id(scope.as_str())?.as_deref() == Some(id) {
-                state.db.set_current_profile_id(scope.as_str(), None)?;
-            }
-        }
-        Ok(())
+        let scopes: Vec<&str> = ProfileScope::ALL.iter().map(|s| s.as_str()).collect();
+        state.db.delete_profile_and_clear_current(id, &scopes)
     }
 
     /// 应用项目快照（best-effort，返回 warnings）。部分应用失败时保留已成功
@@ -429,10 +424,21 @@ impl ProfileService {
                     warnings.push(format!("[{app_str}] MCP '{id}' no longer exists, skipped"));
                 }
                 for (id, enabled) in toggles {
-                    if let Err(e) = McpService::toggle_app(state, &id, app.clone(), enabled) {
-                        warnings.push(format!(
+                    let toggle_state = state.clone();
+                    let toggle_app = app.clone();
+                    let toggle_id = id.clone();
+                    let res = tokio::task::spawn_blocking(move || {
+                        McpService::toggle_app(&toggle_state, &toggle_id, toggle_app, enabled)
+                    })
+                    .await;
+                    match res {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => warnings.push(format!(
                             "[{app_str}] toggle MCP '{id}' -> {enabled} failed: {e}"
-                        ));
+                        )),
+                        Err(e) => warnings.push(format!(
+                            "[{app_str}] toggle MCP '{id}' -> {enabled} panicked: {e}"
+                        )),
                     }
                 }
             }
@@ -451,10 +457,21 @@ impl ProfileService {
                     ));
                 }
                 for (id, enabled) in toggles {
-                    if let Err(e) = SkillService::toggle_app(&state.db, &id, app, enabled) {
-                        warnings.push(format!(
+                    let toggle_db = state.db.clone();
+                    let toggle_app = app.clone();
+                    let toggle_id = id.clone();
+                    let res = tokio::task::spawn_blocking(move || {
+                        SkillService::toggle_app(&toggle_db, &toggle_id, &toggle_app, enabled)
+                    })
+                    .await;
+                    match res {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => warnings.push(format!(
                             "[{app_str}] toggle skill '{id}' -> {enabled} failed: {e}"
-                        ));
+                        )),
+                        Err(e) => warnings.push(format!(
+                            "[{app_str}] toggle skill '{id}' -> {enabled} panicked: {e}"
+                        )),
                     }
                 }
             }

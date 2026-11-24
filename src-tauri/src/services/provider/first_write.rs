@@ -184,7 +184,13 @@ fn adopt_live(
 
 fn snippet_has_content(snippet: &str) -> bool {
     let trimmed = snippet.trim();
-    !trimmed.is_empty() && trimmed != "{}"
+    if trimmed.is_empty() || trimmed == "{}" {
+        return false;
+    }
+    !matches!(
+        serde_json::from_str::<serde_json::Value>(trimmed),
+        Ok(serde_json::Value::Object(map)) if map.is_empty()
+    )
 }
 
 /// The first written line uses the snippet unless it already chose.
@@ -214,4 +220,45 @@ fn opt_into_snippet(
         state.db.save_provider(app.as_str(), &target)?;
     }
     Ok(target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preservation_maps_each_tool_to_expected_strategy() {
+        assert_eq!(
+            preservation(&AppType::Claude),
+            FirstWritePreservation::SharedSnippet
+        );
+        assert_eq!(
+            preservation(&AppType::Gemini),
+            FirstWritePreservation::SharedSnippet
+        );
+        assert_eq!(
+            preservation(&AppType::GrokBuild),
+            FirstWritePreservation::AdoptOnly
+        );
+        assert_eq!(
+            preservation(&AppType::Codex),
+            FirstWritePreservation::KeyOwnership
+        );
+        assert_eq!(
+            preservation(&AppType::ClaudeDesktop),
+            FirstWritePreservation::MergedByWriter
+        );
+        assert_eq!(
+            preservation(&AppType::OpenCode),
+            FirstWritePreservation::MergedByWriter
+        );
+    }
+
+    #[test]
+    fn snippet_has_content_rejects_empty_and_empty_brace_json() {
+        assert!(!snippet_has_content(""));
+        assert!(!snippet_has_content("   "));
+        assert!(!snippet_has_content(" { } "));
+        assert!(snippet_has_content("{\"env\":{\"FOO\":\"bar\"}}"));
+    }
 }

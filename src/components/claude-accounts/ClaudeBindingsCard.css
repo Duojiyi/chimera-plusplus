@@ -23,23 +23,25 @@
   grid-template-columns: auto minmax(0, 1fr) minmax(160px, 240px) auto;
   align-items: center;
   gap: 12px 14px;
-  padding: 12px 14px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-ring, 10px);
-  background: var(--bg-surface);
+  padding: 12px 16px;
+  border: 1px solid rgba(17, 19, 24, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: inset 0 1px 0 #ffffff;
 }
 .claude-binding-row:hover {
-  border-color: var(--glass-border, var(--border-control));
+  border-color: rgba(17, 19, 24, 0.14);
+  background: rgba(255, 255, 255, 0.96);
 }
 .claude-binding-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   border-radius: 10px;
-  background: var(--glass-accent-soft, var(--bg-subtle));
-  color: var(--glass-accent, var(--brand-text));
+  background: rgba(14, 100, 112, 0.09);
+  color: var(--accent-petrol, #0e6470);
 }
 .claude-binding-path {
   display: flex;
@@ -57,7 +59,7 @@
 .claude-binding-picked code {
   color: var(--text-3);
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   overflow-wrap: anywhere;
 }
 .claude-binding-path .claude-account-tag {
@@ -77,9 +79,9 @@
   padding: 0 28px 0 10px;
   border: 1px solid var(--border-control);
   border-radius: var(--radius-control, 8px);
-  background-color: var(--bg-surface);
+  background-color: var(--input-bg, #ffffff);
   color: var(--text-1);
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 .claude-binding-account select:focus-visible,
 .claude-binding-select:focus-visible {

@@ -8,7 +8,6 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
@@ -219,7 +218,9 @@ impl XaiOAuthManager {
 
     pub async fn start_device_flow(&self) -> Result<GitHubDeviceCodeResponse, XaiOAuthError> {
         let endpoints = self.discover_endpoints().await?;
-        let response = crate::proxy::http_client::get()
+        let client =
+            crate::proxy::http_client::get_for_auth_probe().map_err(XaiOAuthError::NetworkError)?;
+        let response = client
             .post(&endpoints.device_authorization_endpoint)
             .header("User-Agent", XAI_USER_AGENT)
             .form(&[("client_id", XAI_CLIENT_ID), ("scope", XAI_SCOPE)])
@@ -234,6 +235,17 @@ impl XaiOAuthManager {
             )));
         }
         let device = parse_device_code_response(value)?;
+        let verification_uri = device
+            .verification_uri_complete
+            .unwrap_or(device.verification_uri);
+        let parsed_verify = url::Url::parse(&verification_uri).map_err(|_| {
+            XaiOAuthError::ParseError("xAI 返回了无效的 verification_uri".to_string())
+        })?;
+        if parsed_verify.scheme() != "https" {
+            return Err(XaiOAuthError::ParseError(
+                "xAI verification_uri 必须使用 HTTPS".to_string(),
+            ));
+        }
         let interval = device
             .interval
             .clamp(1, MAX_POLL_INTERVAL_SECS)
@@ -262,9 +274,7 @@ impl XaiOAuthManager {
         Ok(GitHubDeviceCodeResponse {
             device_code: device.device_code,
             user_code: device.user_code,
-            verification_uri: device
-                .verification_uri_complete
-                .unwrap_or(device.verification_uri),
+            verification_uri,
             expires_in,
             interval,
         })
@@ -293,7 +303,9 @@ impl XaiOAuthManager {
         self.schedule_next_poll(device_code, entry.interval_secs)
             .await;
 
-        let response = crate::proxy::http_client::get()
+        let client =
+            crate::proxy::http_client::get_for_auth_probe().map_err(XaiOAuthError::NetworkError)?;
+        let response = client
             .post(&entry.token_endpoint)
             .header("User-Agent", XAI_USER_AGENT)
             .form(&[
@@ -484,7 +496,9 @@ impl XaiOAuthManager {
         if let Some(endpoints) = self.discovered_endpoints.read().await.clone() {
             return Ok(endpoints);
         }
-        let response = crate::proxy::http_client::get()
+        let client =
+            crate::proxy::http_client::get_for_auth_probe().map_err(XaiOAuthError::NetworkError)?;
+        let response = client
             .get(XAI_DISCOVERY_URL)
             .header("User-Agent", XAI_USER_AGENT)
             .send()
@@ -517,7 +531,9 @@ impl XaiOAuthManager {
         refresh_token: &str,
     ) -> Result<OAuthTokenResponse, XaiOAuthError> {
         let endpoints = self.discover_endpoints().await?;
-        let response = crate::proxy::http_client::get()
+        let client =
+            crate::proxy::http_client::get_for_auth_probe().map_err(XaiOAuthError::NetworkError)?;
+        let response = client
             .post(&endpoints.token_endpoint)
             .header("User-Agent", XAI_USER_AGENT)
             .form(&[
@@ -790,7 +806,30 @@ impl XaiOAuthManager {
         if !self.storage_path.exists() {
             return Ok(());
         }
-        let content = fs::read_to_string(&self.storage_path)?;
+        let raw = crate::security_limits::read_to_string_limited(
+            &self.storage_path,
+            crate::security_limits::MAX_CONFIG_FILE_BYTES,
+        )
+        .map_err(|error| XaiOAuthError::IoError(error.to_string()))?;
+        #[cfg(windows)]
+        let content = if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(sealed_b64) = envelope.get("dpapi_v1").and_then(|v| v.as_str()) {
+                use base64::Engine as _;
+                let sealed = base64::engine::general_purpose::STANDARD
+                    .decode(sealed_b64)
+                    .map_err(|error| XaiOAuthError::ParseError(error.to_string()))?;
+                let plain = crate::codex_accounts::vault::win::unprotect(&sealed)
+                    .map_err(|error| XaiOAuthError::IoError(error.to_string()))?;
+                String::from_utf8(plain)
+                    .map_err(|error| XaiOAuthError::ParseError(error.to_string()))?
+            } else {
+                raw
+            }
+        } else {
+            raw
+        };
+        #[cfg(not(windows))]
+        let content = raw;
         let store: XaiOAuthStore = serde_json::from_str(&content)
             .map_err(|error| XaiOAuthError::ParseError(error.to_string()))?;
         if let Ok(mut accounts) = self.accounts.try_write() {
@@ -803,62 +842,23 @@ impl XaiOAuthManager {
     }
 
     fn write_store_atomic(&self, content: &str) -> Result<(), XaiOAuthError> {
-        let parent = self
-            .storage_path
-            .parent()
-            .ok_or_else(|| XaiOAuthError::IoError("无效的存储路径".to_string()))?;
-        fs::create_dir_all(parent)?;
-        let file_name = self
-            .storage_path
-            .file_name()
-            .ok_or_else(|| XaiOAuthError::IoError("无效的存储文件名".to_string()))?
-            .to_string_lossy();
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let temporary_path = parent.join(format!("{file_name}.tmp.{nonce}"));
+        #[cfg(windows)]
+        let payload = {
+            use base64::Engine as _;
+            let sealed = crate::codex_accounts::vault::win::protect(content.as_bytes())
+                .map_err(|error| XaiOAuthError::IoError(error.to_string()))?;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(sealed);
+            serde_json::json!({ "dpapi_v1": encoded }).to_string()
+        };
+        #[cfg(not(windows))]
+        let payload = content.to_string();
 
+        crate::config::atomic_write(&self.storage_path, payload.as_bytes())
+            .map_err(|error| XaiOAuthError::IoError(error.to_string()))?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-            let result = (|| -> Result<(), std::io::Error> {
-                let mut file = fs::OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .mode(0o600)
-                    .open(&temporary_path)?;
-                file.write_all(content.as_bytes())?;
-                file.flush()?;
-                fs::rename(&temporary_path, &self.storage_path)?;
-                fs::set_permissions(&self.storage_path, fs::Permissions::from_mode(0o600))?;
-                Ok(())
-            })();
-            if result.is_err() {
-                let _ = fs::remove_file(&temporary_path);
-            }
-            result?;
-        }
-
-        #[cfg(windows)]
-        {
-            let result = (|| -> Result<(), std::io::Error> {
-                let mut file = fs::OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .open(&temporary_path)?;
-                file.write_all(content.as_bytes())?;
-                file.flush()?;
-                if self.storage_path.exists() {
-                    fs::remove_file(&self.storage_path)?;
-                }
-                fs::rename(&temporary_path, &self.storage_path)?;
-                Ok(())
-            })();
-            if result.is_err() {
-                let _ = fs::remove_file(&temporary_path);
-            }
-            result?;
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&self.storage_path, fs::Permissions::from_mode(0o600))?;
         }
         Ok(())
     }
@@ -954,7 +954,7 @@ fn validate_xai_endpoint(value: &str) -> Result<(), XaiOAuthError> {
 }
 
 async fn read_json_response(
-    response: reqwest::Response,
+    mut response: reqwest::Response,
 ) -> Result<serde_json::Value, XaiOAuthError> {
     if response
         .content_length()
@@ -964,11 +964,14 @@ async fn read_json_response(
             "OAuth 响应超过大小限制".to_string(),
         ));
     }
-    let bytes = response.bytes().await?;
-    if bytes.len() > MAX_OAUTH_RESPONSE_BYTES {
-        return Err(XaiOAuthError::ParseError(
-            "OAuth 响应超过大小限制".to_string(),
-        ));
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_OAUTH_RESPONSE_BYTES {
+            return Err(XaiOAuthError::ParseError(
+                "OAuth 响应超过大小限制".to_string(),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
     }
     serde_json::from_slice(&bytes)
         .map_err(|_| XaiOAuthError::ParseError("OAuth 响应不是有效 JSON".to_string()))

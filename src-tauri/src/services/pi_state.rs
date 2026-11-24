@@ -1,13 +1,19 @@
 // Adapted from farion1231/cc-switch src-tauri/src/services/pi_state.rs (MIT)
 //! Read-only Pi provider membership and global default reference.
 
+#[cfg(test)]
 use crate::error::AppError;
+#[cfg(test)]
 use crate::pi_config::{read_pi_default_provider, read_pi_native_providers};
+#[cfg(test)]
 use crate::store::AppState;
+#[cfg(test)]
 use serde::Serialize;
 
+#[cfg(test)]
 const PI_APP: &str = "pi";
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PiCurrentState {
@@ -17,8 +23,10 @@ pub(crate) struct PiCurrentState {
     pub default_provider_id: Option<String>,
 }
 
+#[cfg(test)]
 pub(crate) struct PiStateService;
 
+#[cfg(test)]
 impl PiStateService {
     pub(crate) fn current(state: &AppState) -> Result<PiCurrentState, AppError> {
         let _guard = futures::executor::block_on(state.proxy_service.lock_switch_for_app(PI_APP));

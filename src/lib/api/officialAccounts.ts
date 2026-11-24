@@ -122,6 +122,15 @@ export const officialAccountsApi = {
     if (account.needsRelogin) throw new Error("账号登录已过期，请重新登录");
     if (account.disabled) throw new Error("这个账号已停用，请先启用它");
     await providersApi.switch(account.providerId, "codex");
+    try {
+      await invoke<void>("mark_official_account_used", { key: account.key });
+    } catch {
+      // Best-effort timestamp stamp after a successful switch.
+    }
+  },
+
+  markUsed: async (key: string): Promise<void> => {
+    return invoke<void>("mark_official_account_used", { key });
   },
 
   removeAccount: async (key: string): Promise<void> => {
@@ -147,6 +156,24 @@ export const officialAccountsApi = {
       name,
       color: null,
     });
+  },
+
+  updateGroup: async (
+    id: string,
+    name: string,
+    color?: string | null,
+    sortIndex?: number | null,
+  ): Promise<void> => {
+    return invoke<void>("update_official_account_group", {
+      id,
+      name,
+      color: color ?? null,
+      sortIndex: sortIndex ?? null,
+    });
+  },
+
+  reorderGroups: async (ids: string[]): Promise<void> => {
+    return invoke<void>("reorder_official_account_groups", { ids });
   },
 
   /** Removes a group; its accounts become ungrouped. Returns how many. */

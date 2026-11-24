@@ -338,7 +338,7 @@ describe("full-page provider editor", () => {
 
   it("requires confirmation to restore a template and Escape only closes that dialog", async () => {
     const { onRequestClose } = setup();
-    fireEvent.click(screen.getByRole("button", { name: "恢复 Chimera 模板" }));
+    fireEvent.click(screen.getByRole("button", { name: /从.*ChimeraHub.*模板填充/ }));
     const dialog = screen.getByRole("alertdialog", { name: "恢复默认模板？" });
     expect(
       within(dialog).getByText(/地址、密钥、模型映射/),
@@ -361,7 +361,7 @@ describe("full-page provider editor", () => {
       target: { value: "before reset" },
     });
     const id = onDraftChange.mock.lastCall![0].id;
-    fireEvent.click(screen.getByRole("button", { name: "恢复 Chimera 模板" }));
+    fireEvent.click(screen.getByRole("button", { name: /从.*ChimeraHub.*模板填充/ }));
     fireEvent.click(
       within(screen.getByRole("alertdialog")).getByRole("button", {
         name: "恢复模板",

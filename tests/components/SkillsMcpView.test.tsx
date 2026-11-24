@@ -106,6 +106,10 @@ beforeEach(() => {
   vi.mocked(officialAccountsApi.getNotes).mockResolvedValue({});
 });
 /** The MCP card; the Skills card beside it shows its own "n / m" count. */
+const openSkillScan = async () => {
+  const summary = await screen.findByText(/本机发现的 Skills/, { selector: "summary" });
+  fireEvent.click(summary);
+};
 const mcpCard = () => screen.getByRole("region", { name: "MCP 服务" });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -258,7 +262,7 @@ describe("connected Skills/MCP page", () => {
     const trigger = screen.getByRole("button", { name: "查看 MCP HTTP MCP" });
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(trigger);
-    expect(screen.getByRole("region", { name: "MCP 详情" })).toBeVisible();
+    expect(screen.getByRole("dialog", { name: "MCP 详情" })).toBeVisible();
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("远程连接")).toBeVisible();
     expect(screen.queryByText("启动命令")).not.toBeInTheDocument();
@@ -774,6 +778,7 @@ describe("A06 resource lifecycle and A07 refresh", () => {
       ],
     });
     render(<SkillsMcpView initialApp="codex" />);
+    await openSkillScan();
     const notice = await screen.findByTestId("skills-scan-skipped");
     expect(notice).toHaveTextContent(
       "1 个本地 Skill 目录无法读取或校验，已跳过：broken（无法读取目录或文件，来源：Codex、通用目录 .agents）。",
@@ -792,6 +797,7 @@ describe("A06 resource lifecycle and A07 refresh", () => {
       },
     ]);
     render(<SkillsMcpView />);
+    await openSkillScan();
     const checkbox = await screen.findByRole("checkbox", {
       name: "添加 Shared",
     });
@@ -838,6 +844,7 @@ describe("A06 resource lifecycle and A07 refresh", () => {
     ]);
     vi.mocked(skillsApi.importFromApps).mockResolvedValue([skill]);
     render(<SkillsMcpView />);
+    await openSkillScan();
     const first = await screen.findByRole("checkbox", { name: "添加 Shared" });
     const second = screen.getByRole("checkbox", { name: "添加 Other" });
     const third = screen.getByRole("checkbox", { name: "添加 Unrelated" });
@@ -897,6 +904,7 @@ describe("A06 resource lifecycle and A07 refresh", () => {
       })),
     );
     render(<SkillsMcpView />);
+    await openSkillScan();
     const first = await screen.findByRole("checkbox", { name: "添加 one" });
     const second = screen.getByRole("checkbox", { name: "添加 two" });
     fireEvent.click(first);
@@ -1007,6 +1015,7 @@ describe("A06 resource lifecycle and A07 refresh", () => {
       },
     ]);
     const view = render(<SkillsMcpView refreshVersion={0} />);
+    await openSkillScan();
     await screen.findByRole("switch");
     fireEvent.click(
       await screen.findByRole("checkbox", { name: "添加 Local" }),
@@ -1125,8 +1134,10 @@ describe("empty and loading states", () => {
     ).not.toBeInTheDocument();
     const fromRepo = screen.getByRole("button", { name: /从仓库安装/ });
     fireEvent.click(fromRepo);
-    const panel = screen.getByRole("region", { name: "安装 Skill" });
-    expect(panel).toHaveFocus();
+    const panel = screen.getByRole("dialog", { name: "安装 Skill" });
+    await waitFor(() =>
+      expect(panel.contains(document.activeElement)).toBe(true),
+    );
     expect(fromRepo).toHaveAttribute("aria-expanded", "true");
     vi.mocked(skillsApi.getInstalled).mockResolvedValue([skill]);
     fireEvent.click(screen.getByRole("button", { name: /导入 ZIP/ }));
@@ -1212,6 +1223,7 @@ describe("automatic local Skills discovery", () => {
       .mockReturnValueOnce(allSources.promise)
       .mockReturnValueOnce(scopedAgain.promise);
     render(<SkillsMcpView />);
+    await openSkillScan();
     fireEvent.click(
       await screen.findByRole("checkbox", { name: "添加 Local" }),
     );
@@ -1273,6 +1285,7 @@ describe("automatic local Skills discovery", () => {
       vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue([aliased]);
       vi.mocked(skillsApi.importFromApps).mockResolvedValue([skill]);
       render(<SkillsMcpView />);
+      await openSkillScan();
       await screen.findByRole("checkbox", { name: "添加 Local" });
       if (allSources) {
         fireEvent.click(
@@ -1352,6 +1365,7 @@ describe("automatic local Skills discovery", () => {
         .mockResolvedValueOnce([local])
         .mockReturnValueOnce(refresh.promise);
       render(<SkillsMcpView />);
+      await openSkillScan();
       const checkbox = await screen.findByRole("checkbox", {
         name: "添加 Local",
       });
@@ -1399,6 +1413,7 @@ describe("automatic local Skills discovery", () => {
         },
       ]);
     render(<SkillsMcpView />);
+    await openSkillScan();
     fireEvent.click(
       await screen.findByRole("checkbox", { name: "添加 Local" }),
     );
@@ -1425,6 +1440,7 @@ describe("automatic local Skills discovery", () => {
       .mockResolvedValue([changed]);
     vi.mocked(skillsApi.importFromApps).mockResolvedValue([skill]);
     render(<SkillsMcpView />);
+    await openSkillScan();
     fireEvent.click(
       await screen.findByRole("checkbox", { name: "添加 Local" }),
     );
@@ -1488,6 +1504,7 @@ describe("automatic local Skills discovery", () => {
         .mockReturnValueOnce(older.promise)
         .mockReturnValueOnce(latest.promise);
       render(<SkillsMcpView />);
+      await openSkillScan();
       await screen.findByRole("switch");
       if (change === "scope") {
         fireEvent.click(
@@ -1535,6 +1552,7 @@ describe("automatic local Skills discovery", () => {
         .mockReturnValueOnce(older.promise)
         .mockReturnValueOnce(latest.promise);
       render(<SkillsMcpView />);
+      await openSkillScan();
       await screen.findByRole("switch");
       fireEvent.click(
         screen.getByRole("checkbox", { name: "同时发现其他工具的 Skills" }),
@@ -1572,6 +1590,7 @@ describe("automatic local Skills discovery", () => {
       .mockReturnValueOnce(latest.promise)
       .mockResolvedValue([local]);
     render(<SkillsMcpView />);
+    await openSkillScan();
     await screen.findByRole("switch");
     fireEvent.change(screen.getByRole("combobox", { name: "目标工具" }), {
       target: { value: "gemini" },
@@ -1612,6 +1631,7 @@ describe("automatic local Skills discovery", () => {
       .mockReturnValueOnce(allAfterTarget.promise)
       .mockReturnValueOnce(claude.promise);
     render(<SkillsMcpView />);
+    await openSkillScan();
     await screen.findByRole("switch");
     const scope = screen.getByRole("checkbox", {
       name: "同时发现其他工具的 Skills",
@@ -1657,6 +1677,7 @@ describe("automatic local Skills discovery", () => {
       {} as Awaited<ReturnType<typeof skillsApi.scanUnmanaged>>,
     );
     render(<SkillsMcpView />);
+    await openSkillScan();
     expect(await screen.findByRole("alert")).toHaveTextContent("扫描失败");
     expect(screen.getByRole("button", { name: "重试扫描" })).toBeEnabled();
     expect(screen.getByRole("switch")).toBeEnabled();
@@ -1668,6 +1689,7 @@ describe("automatic local Skills discovery", () => {
       .mockRejectedValueOnce(new Error("private path"))
       .mockResolvedValue([local]);
     render(<SkillsMcpView />);
+    await openSkillScan();
     expect(await screen.findByRole("alert")).toHaveTextContent("扫描失败");
     expect(
       screen.queryByText("未发现可添加的本地 Skills。"),
@@ -1686,6 +1708,7 @@ describe("automatic local Skills discovery", () => {
   it("keeps old results visible but unavailable during refresh and after failure", async () => {
     vi.mocked(skillsApi.scanUnmanaged).mockResolvedValue([local]);
     render(<SkillsMcpView />);
+    await openSkillScan();
     fireEvent.click(
       await screen.findByRole("checkbox", { name: "添加 Local" }),
     );
@@ -1736,6 +1759,7 @@ describe("automatic local Skills discovery", () => {
       )
       .mockResolvedValue([]);
     const view = render(<SkillsMcpView />);
+    await openSkillScan();
     await screen.findByRole("switch");
     view.rerender(<SkillsMcpView refreshVersion={1} />);
     await screen.findByText("未发现可添加的本地 Skills。");
@@ -1778,6 +1802,7 @@ describe("resource visual hierarchy", () => {
       { directory: "local", name: "Local", path, foundIn: ["codex"] },
     ]);
     render(<SkillsMcpView />);
+    await openSkillScan();
     const checkbox = await screen.findByRole("checkbox", {
       name: "添加 Local",
     });

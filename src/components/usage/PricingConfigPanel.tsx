@@ -424,18 +424,20 @@ export function PricingConfigPanel() {
                               setIsAddingNew(false);
                               setEditingModel(model);
                             }}
+                            aria-label={`${t("common.edit")} ${model.displayName || model.modelId}`}
                             title={t("common.edit")}
                           >
-                            <Pencil className="h-4 w-4" />
+                            <Pencil className="h-4 w-4" aria-hidden="true" />
                           </Button>
                           <Button
                             variant="ghost"
                             size="icon"
                             onClick={() => setDeleteConfirm(model.modelId)}
+                            aria-label={`${t("common.delete")} ${model.displayName || model.modelId}`}
                             title={t("common.delete")}
                             className="text-destructive hover:text-destructive"
                           >
-                            <Trash2 className="h-4 w-4" />
+                            <Trash2 className="h-4 w-4" aria-hidden="true" />
                           </Button>
                         </div>
                       </TableCell>

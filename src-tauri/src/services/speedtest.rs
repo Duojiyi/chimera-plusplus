@@ -1,6 +1,7 @@
 use futures::future::join_all;
 use reqwest::{Client, Url};
 use serde::Serialize;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::error::AppError;
@@ -8,6 +9,8 @@ use crate::error::AppError;
 const DEFAULT_TIMEOUT_SECS: u64 = 8;
 const MAX_TIMEOUT_SECS: u64 = 30;
 const MIN_TIMEOUT_SECS: u64 = 2;
+const MAX_SPEEDTEST_URLS: usize = 32;
+const MAX_SPEEDTEST_CONCURRENCY: usize = 6;
 
 /// 端点测速结果
 #[derive(Debug, Clone, Serialize)]
@@ -30,6 +33,11 @@ impl SpeedtestService {
         if urls.is_empty() {
             return Ok(vec![]);
         }
+        if urls.len() > MAX_SPEEDTEST_URLS {
+            return Err(AppError::InvalidInput(format!(
+                "单次最多测试 {MAX_SPEEDTEST_URLS} 个端点"
+            )));
+        }
 
         let mut results: Vec<Option<EndpointLatency>> = vec![None; urls.len()];
         let mut valid_targets = Vec::new();
@@ -48,7 +56,17 @@ impl SpeedtestService {
             }
 
             match Url::parse(&trimmed) {
-                Ok(parsed_url) => valid_targets.push((idx, trimmed, parsed_url)),
+                Ok(parsed_url) if matches!(parsed_url.scheme(), "http" | "https") => {
+                    valid_targets.push((idx, trimmed, parsed_url));
+                }
+                Ok(_) => {
+                    results[idx] = Some(EndpointLatency {
+                        url: trimmed,
+                        latency: None,
+                        status: None,
+                        error: Some("仅支持 http/https URL".to_string()),
+                    });
+                }
                 Err(err) => {
                     results[idx] = Some(EndpointLatency {
                         url: trimmed,
@@ -66,10 +84,13 @@ impl SpeedtestService {
 
         let timeout = Self::sanitize_timeout(timeout_secs);
         let (client, request_timeout) = Self::build_client(timeout)?;
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_SPEEDTEST_CONCURRENCY));
 
         let tasks = valid_targets.into_iter().map(|(idx, trimmed, parsed_url)| {
             let client = client.clone();
+            let semaphore = semaphore.clone();
             async move {
+                let _permit = semaphore.acquire_owned().await.ok();
                 // 先进行一次热身请求，忽略结果，仅用于复用连接/绕过首包惩罚。
                 let _ = client
                     .get(parsed_url.clone())
@@ -117,10 +138,10 @@ impl SpeedtestService {
     }
 
     fn build_client(timeout_secs: u64) -> Result<(Client, std::time::Duration), AppError> {
-        // 使用全局 HTTP 客户端（已包含代理配置）
-        // 返回 timeout Duration 供请求级别使用
+        // 复用禁用重定向的探测客户端，避免测速请求跟随 3xx 跳转到非预期目标
         let timeout = std::time::Duration::from_secs(timeout_secs);
-        Ok((crate::proxy::http_client::get(), timeout))
+        let client = crate::proxy::http_client::get_for_auth_probe().map_err(AppError::Message)?;
+        Ok((client, timeout))
     }
 
     fn sanitize_timeout(timeout_secs: Option<u64>) -> u64 {

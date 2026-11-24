@@ -33,7 +33,8 @@ describe("FullScreenPanel", () => {
       </FullScreenPanel>,
     );
     const panel = screen.getByText("表单内容").closest(".fixed");
-    expect(panel).toHaveClass("top-10", "min-h-0");
+    expect(panel).toHaveClass("top-[var(--size-titlebar,52px)]", "min-h-0");
+    expect(panel).toHaveAttribute("aria-modal", "true");
     const scroll = screen.getByText("表单内容").closest(".overflow-y-auto");
     expect(scroll).not.toContainElement(
       screen.getByRole("button", { name: "保存线路" }),

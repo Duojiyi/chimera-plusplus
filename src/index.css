@@ -11,7 +11,7 @@
     --popover: 0 0% 100%;
     --popover-foreground: 240 10% 3.9%;
 
-    --primary: 200 100% 31%;
+    --primary: 223 14% 10%;
     --primary-foreground: 0 0% 100%;
 
     --secondary: 240 4.8% 95.9%;
@@ -27,7 +27,7 @@
 
     --border: 240 5.9% 90%;
     --input: 240 5.9% 90%;
-    --ring: 200 100% 31%;
+    --ring: 187 78% 25%;
 
     --radius: 0.5rem;
   }
@@ -109,7 +109,8 @@ html.dark {
 }
 
 *:focus-visible {
-  @apply outline-2 outline-blue-500 outline-offset-2;
+  outline: 2px solid var(--focus, #0e6470);
+  outline-offset: 2px;
 }
 
 @layer utilities {

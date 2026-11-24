@@ -14,7 +14,9 @@ export default defineConfig(({ command }) => ({
   ].filter(Boolean),
   base: "./",
   build: {
-    outDir: "../dist",
+    outDir: process.env.CHIMERA_RENDERER_BUILD_ROOT
+      ? path.resolve(process.env.CHIMERA_RENDERER_BUILD_ROOT, "dist")
+      : "../dist",
     emptyOutDir: true,
     chunkSizeWarningLimit: 850,
     rollupOptions: {
@@ -48,6 +50,12 @@ export default defineConfig(({ command }) => ({
             return "vendor-react";
           }
           if (id.includes("/@tauri-apps/")) return "vendor-tauri";
+          if (id.includes("/@lezer/")) {
+            return "vendor-editor-lezer";
+          }
+          if (id.includes("/@codemirror/lang-")) {
+            return "vendor-editor-langs";
+          }
           if (id.includes("/@codemirror/") || id.includes("/codemirror/")) {
             return "vendor-editor";
           }

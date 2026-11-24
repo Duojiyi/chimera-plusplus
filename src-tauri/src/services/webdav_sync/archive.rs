@@ -46,12 +46,14 @@ pub(crate) fn zip_skills_ssot(dest_path: &Path) -> Result<(), AppError> {
         let canonical_root = fs::canonicalize(&source).unwrap_or_else(|_| source.clone());
         let mut visited = HashSet::new();
         mark_visited_dir(&canonical_root, &mut visited)?;
+        let mut total_zip_bytes: u64 = 0;
         zip_dir_recursive(
             &canonical_root,
             &canonical_root,
             &mut writer,
             options,
             &mut visited,
+            &mut total_zip_bytes,
         )?;
     }
 
@@ -63,6 +65,39 @@ pub(crate) fn zip_skills_ssot(dest_path: &Path) -> Result<(), AppError> {
         )
     })?;
     Ok(())
+}
+
+fn has_unsafe_archive_component(path: &Path) -> bool {
+    path.components().any(|component| {
+        let Some(name) = component.as_os_str().to_str() else {
+            return true;
+        };
+        if name.is_empty() || name.ends_with([' ', '.']) {
+            return true;
+        }
+        if name
+            .chars()
+            .any(|c| c < ' ' || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
+        {
+            return true;
+        }
+        let stem = name
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        matches!(
+            stem.as_str(),
+            "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+        ) || ["COM", "LPT"].iter().any(|prefix| {
+            stem.strip_prefix(*prefix).is_some_and(|suffix| {
+                matches!(
+                    suffix,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            })
+        })
+    })
 }
 
 pub(crate) fn restore_skills_zip(raw: &[u8]) -> Result<(), AppError> {
@@ -115,6 +150,13 @@ pub(crate) fn restore_skills_zip(raw: &[u8]) -> Result<(), AppError> {
         let Some(safe_name) = entry.enclosed_name() else {
             continue;
         };
+        if has_unsafe_archive_component(&safe_name) {
+            return Err(localized(
+                "webdav.sync.skills_zip_unsafe_entry",
+                "skills.zip 包含不安全的文件名（保留设备名或非法字符），已拒绝解压".to_string(),
+                "skills.zip contains an unsafe entry name (reserved device name or invalid characters)".to_string(),
+            ));
+        }
         let out_path = extracted.join(safe_name);
         if entry.is_dir() {
             fs::create_dir_all(&out_path).map_err(|e| AppError::io(&out_path, e))?;
@@ -140,20 +182,31 @@ pub(crate) fn restore_skills_zip(raw: &[u8]) -> Result<(), AppError> {
             format!("Failed to resolve Skills SSOT directory: {e}"),
         )
     })?;
-    let bak = ssot.with_extension("bak");
+    let ssot_parent = ssot.parent().ok_or_else(|| {
+        localized(
+            "webdav.sync.skills_ssot_dir_failed",
+            "Skills SSOT 父目录无效".to_string(),
+            "Invalid Skills SSOT parent directory".to_string(),
+        )
+    })?;
+    fs::create_dir_all(ssot_parent).map_err(|e| AppError::io(ssot_parent, e))?;
+    let bak_holder = tempfile::Builder::new()
+        .prefix(".skills-restore-bak-")
+        .tempdir_in(ssot_parent)
+        .map_err(|e| AppError::io(ssot_parent, e))?;
+    let bak = bak_holder.path().join("skills-backup");
 
     if ssot.exists() {
-        if bak.exists() {
-            let _ = fs::remove_dir_all(&bak);
-        }
         fs::rename(&ssot, &bak).map_err(|e| AppError::io(&ssot, e))?;
     }
 
     if let Err(e) = copy_dir_recursive(&extracted, &ssot) {
         if bak.exists() {
             let mut rollback_errs = Vec::new();
-            if let Err(rm_err) = fs::remove_dir_all(&ssot) {
-                rollback_errs.push(format!("清理失败的目标目录失败: {rm_err}"));
+            if ssot.exists() {
+                if let Err(rm_err) = fs::remove_dir_all(&ssot) {
+                    rollback_errs.push(format!("清理失败的目标目录失败: {rm_err}"));
+                }
             }
             if let Err(rename_err) = fs::rename(&bak, &ssot) {
                 rollback_errs.push(format!("恢复备份目录失败: {rename_err}"));
@@ -175,7 +228,7 @@ pub(crate) fn restore_skills_zip(raw: &[u8]) -> Result<(), AppError> {
         return Err(e);
     }
 
-    let _ = fs::remove_dir_all(&bak);
+    drop(bak_holder);
     Ok(())
 }
 
@@ -248,6 +301,7 @@ fn zip_dir_recursive(
     writer: &mut zip::ZipWriter<fs::File>,
     options: SimpleFileOptions,
     visited: &mut HashSet<PathBuf>,
+    total_zip_bytes: &mut u64,
 ) -> Result<(), AppError> {
     let mut entries: Vec<_> = fs::read_dir(current)
         .map_err(|e| AppError::io(current, e))?
@@ -312,8 +366,23 @@ fn zip_dir_recursive(
                         format!("Failed to write ZIP directory entry: {e}"),
                     )
                 })?;
-            zip_dir_recursive(root, &real_path, writer, options, visited)?;
+            zip_dir_recursive(root, &real_path, writer, options, visited, total_zip_bytes)?;
         } else {
+            let remaining = MAX_SYNC_ARTIFACT_BYTES.saturating_sub(*total_zip_bytes);
+            let buf = crate::security_limits::read_limited(&real_path, remaining).map_err(|e| {
+                localized(
+                    "webdav.sync.skills_zip_too_large",
+                    format!(
+                        "打包 Skills 文件超出安全体积上限: {}: {e}",
+                        real_path.display()
+                    ),
+                    format!(
+                        "Skill file exceeds archive size limit: {}: {e}",
+                        real_path.display()
+                    ),
+                )
+            })?;
+            *total_zip_bytes = total_zip_bytes.saturating_add(buf.len() as u64);
             writer.start_file(&rel_str, options).map_err(|e| {
                 localized(
                     "webdav.sync.zip_start_file_failed",
@@ -321,10 +390,6 @@ fn zip_dir_recursive(
                     format!("Failed to start ZIP file entry: {e}"),
                 )
             })?;
-            let mut file = fs::File::open(&real_path).map_err(|e| AppError::io(&real_path, e))?;
-            let mut buf = Vec::new();
-            file.read_to_end(&mut buf)
-                .map_err(|e| AppError::io(&real_path, e))?;
             writer.write_all(&buf).map_err(|e| {
                 localized(
                     "webdav.sync.zip_write_file_failed",
@@ -339,10 +404,12 @@ fn zip_dir_recursive(
 
 fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), AppError> {
     let mut visited = HashSet::new();
-    copy_dir_recursive_inner(src, dest, &mut visited)
+    let canonical_root = fs::canonicalize(src).unwrap_or_else(|_| src.to_path_buf());
+    copy_dir_recursive_inner(&canonical_root, src, dest, &mut visited)
 }
 
 fn copy_dir_recursive_inner(
+    root: &Path,
     src: &Path,
     dest: &Path,
     visited: &mut HashSet<PathBuf>,
@@ -362,17 +429,30 @@ fn copy_dir_recursive_inner(
         let entry = entry.map_err(|e| AppError::io(src, e))?;
         let path = entry.path();
         let dest_path = dest.join(entry.file_name());
-        if is_skill_link(&path) {
-            if let Err(error) = fs::canonicalize(&path) {
-                log::warn!(
-                    "[WebDAV] Skipping unresolvable link in skills: {}: {error}",
-                    path.display()
-                );
-                continue;
+        let meta = fs::symlink_metadata(&path).map_err(|e| AppError::io(&path, e))?;
+        if crate::security_limits::is_link_or_reparse_point(&meta) {
+            match fs::canonicalize(&path) {
+                Ok(resolved) if resolved.starts_with(root) => {
+                    // Only allow internal links that stay strictly within the source root.
+                }
+                Ok(_) => {
+                    log::warn!(
+                        "[WebDAV] Skipping link escaping skills root: {}",
+                        path.display()
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    log::warn!(
+                        "[WebDAV] Skipping unresolvable link in skills: {}: {error}",
+                        path.display()
+                    );
+                    continue;
+                }
             }
         }
         if path.is_dir() {
-            copy_dir_recursive_inner(&path, &dest_path, visited)?;
+            copy_dir_recursive_inner(root, &path, &dest_path, visited)?;
         } else {
             fs::copy(&path, &dest_path).map_err(|e| AppError::io(&dest_path, e))?;
         }
@@ -537,6 +617,7 @@ mod tests {
             &mut writer,
             zip::write::SimpleFileOptions::default(),
             &mut visited,
+            &mut 0u64,
         )?;
         writer.finish().unwrap();
         let mut archive =

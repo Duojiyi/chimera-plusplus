@@ -244,3 +244,42 @@ pub fn remove_plugins_by_prefixes(prefixes: &[&str]) -> Result<(), AppError> {
 
     write_opencode_config(&config)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonicalize_plugin_name_rewrites_legacy_oh_my_opencode_only() {
+        assert_eq!(
+            canonicalize_plugin_name("oh-my-opencode"),
+            "oh-my-openagent"
+        );
+        assert_eq!(
+            canonicalize_plugin_name("oh-my-opencode@1.2.3"),
+            "oh-my-openagent@1.2.3"
+        );
+        assert_eq!(
+            canonicalize_plugin_name("oh-my-opencode-slim@0.5.0"),
+            "oh-my-opencode-slim@0.5.0"
+        );
+    }
+
+    #[test]
+    fn set_plugin_in_config_enforces_mutual_exclusion_between_standard_and_slim_omo() {
+        let mut config = json!({
+            "plugin": ["other-plugin", "oh-my-opencode@1.0.0"]
+        });
+        set_plugin_in_config(&mut config, "oh-my-opencode-slim@2.0.0");
+        assert_eq!(
+            config["plugin"],
+            json!(["other-plugin", "oh-my-opencode-slim@2.0.0"])
+        );
+
+        set_plugin_in_config(&mut config, "oh-my-opencode@3.0.0");
+        assert_eq!(
+            config["plugin"],
+            json!(["other-plugin", "oh-my-openagent@3.0.0"])
+        );
+    }
+}

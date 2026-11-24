@@ -40,7 +40,9 @@
     "deleting": "Deleting...",
     "auto": "Auto",
     "enabled": "Enabled",
-    "notSet": "Not Set"
+    "notSet": "Not Set",
+    "hidePassword": "Hide password",
+    "showPassword": "Show password"
   },
   "firstRunNotice": {
     "title": "Welcome to CC Switch",
@@ -220,7 +222,8 @@
       "tooltip": {
         "active": "Claude Desktop local routing is running - {{address}}:{{port}}",
         "inactive": "Turn on Claude Desktop local routing for providers that need model mapping or format conversion. Configured address: {{address}}:{{port}}"
-      }
+      },
+      "stopBlockedByTakeover": "Another app is currently using proxy takeover. Disable takeover for that app in Settings before stopping the local route."
     }
   },
   "notifications": {
@@ -992,7 +995,9 @@
     "messageCopied": "Message copied",
     "conversationHistory": "Conversation History",
     "expandContent": "Expand full content",
-    "collapseContent": "Collapse"
+    "collapseContent": "Collapse",
+    "reclaimDeferred": "Reclaimed {{files}} session file(s); {{deferred}} active session file(s) were deferred.",
+    "reclaimDeferredDetail": "Updated {{rows}} index record(s). Stop writing to those sessions and click reclaim again; active files are never overwritten."
   },
   "console": {
     "providerSwitchReceived": "Received provider switch event:",
@@ -1146,7 +1151,8 @@
     "fetchModelsAuthFailed": "API Key is invalid or lacks permission",
     "fetchModelsNotSupported": "This provider does not support fetching model list",
     "fetchModelsEndpointNotFound": "No reachable models endpoint found. Please check the Base URL or confirm whether the provider exposes this API.",
-    "fetchModelsTimeout": "Request timed out, please check network connection"
+    "fetchModelsTimeout": "Request timed out, please check network connection",
+    "requiredFields": "Please fill in provider name, API URL, API Key, and model"
   },
   "copilot": {
     "authSection": "GitHub Copilot Authentication",
@@ -1203,7 +1209,8 @@
     "retry": "Retry",
     "copyCode": "Copy code",
     "fastMode": "FAST mode",
-    "fastModeDescription": "Send service_tier=\"priority\" for lower latency. Off by default — enabling it consumes your ChatGPT quota at a higher rate."
+    "fastModeDescription": "Send service_tier=\"priority\" for lower latency. Off by default — enabling it consumes your ChatGPT quota at a higher rate.",
+    "requiresReauth": "Re-authentication required"
   },
   "xaiOauth": {
     "authStatus": "xAI OAuth authentication",
@@ -1254,7 +1261,8 @@
     "testUnavailable": "Speed test unavailable",
     "noResult": "No result returned",
     "testFailed": "Speed test failed: {{error}}",
-    "empty": "No endpoints"
+    "empty": "No endpoints",
+    "addEndpoint": "Add custom endpoint"
   },
   "providerAdvanced": {
     "pricingConfig": "Pricing Config",
@@ -1349,7 +1357,20 @@
     "reasoningEffortHint": "Enable when the upstream supports thinking-depth control such as low/high/max. Enabling this also turns on thinking mode and converts Codex's reasoning.effort into the upstream Chat parameter.",
     "reasoningGroupTitle": "Reasoning Capability",
     "reasoningSectionHint": "Preset providers are configured automatically; custom providers are inferred from name/URL. Override manually only when auto-detection is wrong.",
-    "advancedSectionHint": "Includes upstream format, model mapping, reasoning overrides and custom User-Agent. Providers using the Chat Completions protocol require routing takeover to be enabled."
+    "advancedSectionHint": "Includes upstream format, model mapping, reasoning overrides and custom User-Agent. Providers using the Chat Completions protocol require routing takeover to be enabled.",
+    "catalogColumnImage": "Image Input",
+    "modelRouteToggle": "Dedicated Upstream Route",
+    "modelRouteTitle": "Dedicated Upstream Route: {{model}}",
+    "modelRouteEnabled": "Enable Route",
+    "modelRouteRemove": "Remove Route",
+    "modelRouteHint": "Requests for this model are routed to the dedicated upstream below; blank fields inherit the line's default configuration.",
+    "modelRouteBaseUrlPlaceholder": "Upstream URL, e.g. https://api.example.com/v1",
+    "modelRouteBaseUrl": "Route Upstream URL",
+    "modelRouteApiKeyPlaceholder": "Route API Key (optional)",
+    "modelRouteApiKey": "Route API Key",
+    "modelRouteFormatInherit": "Protocol: Default by model family",
+    "modelRouteFullUrl": "URL is a full API endpoint",
+    "noCommonConfigToApply": "Common config snippet is empty or has no writable content"
   },
   "geminiConfig": {
     "envFile": "Environment Variables (.env)",
@@ -1618,7 +1639,10 @@
     "modelsDevTruncated": "Showing first {{shown}} of {{total}} results — refine your search",
     "modelsDevDefaultHint": "Showing the {{shown}} most recently released models (of {{total}}) — type to search all",
     "cacheReadCostPerMillion": "Cache Read Cost (per million tokens, USD)",
-    "cacheCreationCostPerMillion": "Cache Write Cost (per million tokens, USD)"
+    "cacheCreationCostPerMillion": "Cache Write Cost (per million tokens, USD)",
+    "unpriced": "Unpriced",
+    "previousMonth": "Previous month",
+    "nextMonth": "Next month"
   },
   "usageScript": {
     "title": "Configure Usage Query",
@@ -2289,7 +2313,8 @@
     },
     "importSuccessActivated": "Switched to \"{{name}}\".",
     "mcpImportNone": "MCP servers not imported",
-    "mcpImportNoneDescription": "{{ids}}: invalid configuration. To avoid a partial import, none were imported."
+    "mcpImportNoneDescription": "{{ids}}: invalid configuration. To avoid a partial import, none were imported.",
+    "importFinalizeError": "Import completed, but refreshing or finalizing cleanup failed. Click \"Done\" to retry without re-importing."
   },
   "iconPicker": {
     "search": "Search Icons",
@@ -2471,7 +2496,8 @@
       "removeFailed": "Failed to remove",
       "reorderSuccess": "Queue order updated",
       "reorderFailed": "Failed to update order",
-      "toggleFailed": "Failed to update status"
+      "toggleFailed": "Failed to update status",
+      "addProvider": "Add to failover queue"
     },
     "autoFailover": {
       "info": "When the failover queue has multiple providers, the system will try them in priority order when requests fail. When a provider reaches the consecutive failure threshold, the circuit breaker will open and skip it temporarily.",
@@ -2516,7 +2542,9 @@
     },
     "server": {
       "started": "Routing service started - {{address}}:{{port}}",
-      "startFailed": "Failed to start routing service: {{detail}}"
+      "startFailed": "Failed to start routing service: {{detail}}",
+      "stopped": "Proxy server stopped",
+      "stopFailed": "Failed to stop proxy server: {{detail}}"
     },
     "stoppedWithRestore": "Routing service stopped, all routing configs restored",
     "stopWithRestoreFailed": "Stop failed: {{detail}}"

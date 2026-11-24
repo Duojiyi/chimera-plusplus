@@ -269,14 +269,14 @@ export function NewRuntimeView({
     () => setMaintenanceOpen(false),
     maintenanceOpen,
   );
-  const historyDialogRef = useDialogFocus<HTMLElement>(
-    () => setHistoryOpen(false),
-    historyOpen,
-  );
-  const offlineDialogRef = useDialogFocus<HTMLElement>(
-    () => setOfflineInspection(null),
-    Boolean(offlineInspection),
-  );
+  const historyDialogRef = useDialogFocus<HTMLElement>(() => {
+    if (!installingHistory) setHistoryOpen(false);
+  }, historyOpen);
+  const offlineDialogRef = useDialogFocus<HTMLElement>(() => {
+    if (!installingOffline) setOfflineInspection(null);
+  }, Boolean(offlineInspection));
+  const historyListSeqRef = useRef(0);
+  const historyPlanSeqRef = useRef(0);
 
   const loadRecovery = useCallback(async () => {
     if (!runningInTauri) return;
@@ -346,6 +346,7 @@ export function NewRuntimeView({
         setHistoryPage(page);
         return;
       }
+      const seq = ++historyListSeqRef.current;
       setHistoryLoading(true);
       setHistoryError(null);
       try {
@@ -353,9 +354,13 @@ export function NewRuntimeView({
           "list_codex_runtime_releases",
           { page },
         );
+        if (!preferencesMounted.current || historyListSeqRef.current !== seq)
+          return;
         setHistoryReleases(items);
         setHistoryPage(page);
       } catch (reason) {
+        if (!preferencesMounted.current || historyListSeqRef.current !== seq)
+          return;
         // An empty list would read as "no versions"; say the read failed.
         setHistoryError({
           title: "无法读取版本目录",
@@ -363,7 +368,9 @@ export function NewRuntimeView({
           retry: () => void loadHistoryReleases(page),
         });
       } finally {
-        setHistoryLoading(false);
+        if (preferencesMounted.current && historyListSeqRef.current === seq) {
+          setHistoryLoading(false);
+        }
       }
     },
     [designSample],
@@ -379,6 +386,7 @@ export function NewRuntimeView({
 
   const planHistoryRelease = async (tag: string) => {
     if (designSample || packageActionsLocked) return;
+    const seq = ++historyPlanSeqRef.current;
     setPlanningTag(tag);
     setHistoryError(null);
     try {
@@ -386,15 +394,21 @@ export function NewRuntimeView({
         "plan_codex_runtime_release",
         { tag },
       );
+      if (!preferencesMounted.current || historyPlanSeqRef.current !== seq)
+        return;
       setPendingPlan(plan);
     } catch (reason) {
+      if (!preferencesMounted.current || historyPlanSeqRef.current !== seq)
+        return;
       setHistoryError({
         title: "无法读取这个版本的安装包信息",
         raw: errorText(reason),
         retry: () => void planHistoryRelease(tag),
       });
     } finally {
-      setPlanningTag(null);
+      if (preferencesMounted.current && historyPlanSeqRef.current === seq) {
+        setPlanningTag(null);
+      }
     }
   };
 

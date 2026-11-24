@@ -140,6 +140,18 @@ describe("station design sample isolation", () => {
     }
     expect(action).not.toHaveBeenCalled();
   });
+  it("opens a sample draft without calling the live editor", () => {
+    const onPreviewDraft = vi.fn();
+    const onEdit = vi.fn();
+    render(
+      <StationSignboard currentProvider={sampleProvider} designSample={CANONICAL_STATION}
+        onEdit={onEdit} onPreviewDraft={onPreviewDraft} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    expect(onPreviewDraft).toHaveBeenCalledTimes(1);
+    expect(onEdit).not.toHaveBeenCalled();
+  });
+
   it.each(["mismatched provider", "production", "Tauri"])(
     "rejects design samples for %s",
     (mode) => {

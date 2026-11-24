@@ -684,7 +684,8 @@ export const iconMetadata: Record<string, IconMetadata> = {
 };
 
 export function getIconMetadata(name: string): IconMetadata | undefined {
-  return iconMetadata[name.toLowerCase()];
+  const key = name.toLowerCase();
+  return Object.hasOwn(iconMetadata, key) ? iconMetadata[key] : undefined;
 }
 
 export function searchIcons(query: string): string[] {

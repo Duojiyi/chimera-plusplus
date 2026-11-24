@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { settingsApi } from "@/lib/api/settings";
 import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 const directories = [
   ["claude", "Claude Code", "claudeConfigDir"],
@@ -31,6 +32,7 @@ export function ConfigDirectoriesPanel({
   useLightweightCloseBlocker(busy);
   useEffect(() => {
     onBusyChange?.(busy);
+    return () => onBusyChange?.(false);
   }, [busy, onBusyChange]);
   const load = async () => {
     setLoaded(false);
@@ -85,18 +87,20 @@ export function ConfigDirectoriesPanel({
           ? `应用数据目录已保存，重启后将使用：${path || "默认目录"}。当前仍使用旧目录；不会自动迁移内容。`
           : "工具目录已保存；不会自动迁移文件或启动工具。",
       );
-      const pathNow =
-        field === "app"
-          ? configFolder(await settingsApi.getAppConfigPath())
-          : await settingsApi.getConfigDir(
-              directories.find(([, , key]) => key === field)![0],
-            );
-      setResolved((current) => ({ ...current, [field]: pathNow }));
+      try {
+        const pathNow =
+          field === "app"
+            ? configFolder(await settingsApi.getAppConfigPath())
+            : await settingsApi.getConfigDir(
+                directories.find(([, , key]) => key === field)![0],
+              );
+        setResolved((current) => ({ ...current, [field]: pathNow }));
+      } catch {
+        // Save already succeeded; keep the saved notice even if readback fails.
+      }
     } catch (error) {
       setMessage(
-        error instanceof Error
-          ? error.message
-          : "保存目录失败，请重新读取后确认。",
+        extractErrorMessage(error) || "保存目录失败，请重新读取后确认。",
       );
     } finally {
       lock.current = false;

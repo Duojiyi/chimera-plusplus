@@ -381,166 +381,210 @@
 }
 
 /* ============================================================
-   v3.0 · 液态玻璃（单套浅色）
+   v5.2 · 天光钛银 · 曜石液态玻璃（Anti-AI 多平面浅色体系）
    ------------------------------------------------------------
-   这一层覆盖前面 v2.8 的语义令牌，不做破坏性重命名：
-   class 名与变量名保持不变，只换值，因此旧组件会一起换上新配色。
-   深色主题（.dark / [data-theme="dark"]）同样收到这套值 ——
-   v3.0 只提供一套外观，避免出现「没人设计过」的深色界面。
+   四平面空间景深体系（打破「一个一个卡片堆砌」）：
+   - Plane 0：Studio Titanium-Mist 自然日光钛雾基底（无蓝紫极光、无网格）
+   - Plane 1：下潜式烟熏磨砂侧栏与顶栏（肉眼可见退后一个 Z 平面）
+   - Plane 2：单一悬浮水晶液态玻璃主舞台（顶部 1px 菲涅尔高光）
+   - Plane 3：无框连续磨砂台账与微凹槽（1px 发丝线分隔）
+   权威主操作采用液态曜石黑（#16181d），克制点缀色采用深矿物石油绿（#0e6470）。
+   全局低视力友好字阶下限 ≥ 13px–14px，并支持「舒适大字」档位。
    ============================================================ */
 
 :root {
-  /* 页面与玻璃层 */
-  --v3-page-top: #f2f5f1;
-  --v3-page-mid: #e8ede7;
-  --v3-page-bottom: #dde4dd;
-  --v3-grid-line: #0b1c2a04;
+  /* 页面与四平面玻璃层（v5.2 天光钛银：Studio Titanium-Mist 钛雾基底 + 下沉烟熏侧栏 + 晶白水晶舞台） */
+  --v3-page-top: #e1e5ec;
+  --v3-page-mid: #e8ecf2;
+  --v3-page-bottom: #d8dee7;
+  --v3-grid-line: transparent;
   --v3-grid-size: 24px;
-  --v3-glass-fill: #ffffffd0;
-  --v3-glass-fill-soft: #ffffff9e;
-  --v3-glass-border: #ffffff;
-  --v3-glass-blur: 30px;
-  --v3-glass-radius: 14px;
-  --v3-shadow-outer: 0 10px 24px #1236681a;
-  --v3-shadow-inner-top: inset 0 -1px 0 0 #ffffffd9;
-  --v3-shadow-inner-bottom: inset 0 1px 2px 0 #ffffffcc;
-  --v3-scrim: #0b1c2a47;
-  --v3-sheen: linear-gradient(180deg, #ffffffe0 0%, #ffffff00 100%);
-  --v3-hairline: #0b1c2a12;
+  --v5-sidebar-glass: rgba(212, 218, 228, 0.72);
+  --v5-titlebar-glass: rgba(238, 241, 246, 0.82);
+  --v5-ledger-glass: rgba(235, 240, 246, 0.72);
+  --v5-recessed-well: rgba(17, 19, 24, 0.045);
+  --v3-glass-fill: rgba(255, 255, 255, 0.88);
+  --v3-glass-fill-soft: rgba(255, 255, 255, 0.72);
+  --v3-glass-border: rgba(17, 19, 24, 0.085);
+  --v3-glass-blur: 36px;
+  --v3-glass-radius: 18px;
+  --v3-shadow-outer:
+    0 14px 36px -10px rgba(17, 19, 24, 0.095), 0 1px 3px rgba(17, 19, 24, 0.05);
+  --v3-shadow-inner-top: inset 0 1px 0 0 rgba(255, 255, 255, 0.98);
+  --v3-shadow-inner-bottom: inset 0 -1px 0 0 rgba(17, 19, 24, 0.04);
+  --v3-scrim: rgba(17, 19, 24, 0.28);
+  --v3-sheen: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.82) 0%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  --v3-hairline: rgba(17, 19, 24, 0.085);
+  --v5-btn-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.96), 0 1px 2px rgba(17, 19, 24, 0.055);
+
+  /* 低视力友好字号阶梯（标准清晰档） */
+  --fs-xs: 13px;
+  --fs-sm: 13.5px;
+  --fs-base: 14px;
+  --fs-nav: 14.5px;
+  --fs-md: 15px;
+  --fs-lg: 17px;
+  --fs-xl: 20px;
+  --fs-h1: 26px;
 
   /* 表面 */
-  --bg-base: #e6e9e5;
-  --bg-base-hover: #dfe3df;
-  --bg-base-active: #d7dbd7;
-  --bg-surface: #f7f8f7;
-  --bg-subtle: #edf0ee;
-  --bg-selected: #eef1ee;
-  --bg-sunken: #e2e5e1;
-  --bg-raised: #fafbfa;
-  --bg-well: #dfe3df;
+  --bg-base: #dde1e7;
+  --bg-base-hover: rgba(255, 255, 255, 0.66);
+  --bg-base-active: rgba(255, 255, 255, 0.82);
+  --bg-surface: rgba(255, 255, 255, 0.84);
+  --bg-subtle: rgba(244, 246, 249, 0.74);
+  --bg-selected: rgba(255, 255, 255, 0.92);
+  --bg-sunken: rgba(17, 19, 24, 0.038);
+  --bg-raised: rgba(255, 255, 255, 0.9);
+  --bg-well: rgba(17, 19, 24, 0.055);
   --bg-thumb: #ffffff;
-  --bg-hover: #e9ede9;
-  --row-bg-hover: #eef1ee;
-  --row-bg-current: #eef1ee;
-  --meter-track: #dfe3df;
+  --bg-hover: rgba(17, 19, 24, 0.045);
+  --row-bg-hover: rgba(255, 255, 255, 0.56);
+  --row-bg-current: rgba(255, 255, 255, 0.88);
+  --meter-track: rgba(17, 19, 24, 0.09);
 
   /* 线 */
-  --border-subtle: #dfe3df;
-  --border-control: #b6bdb8;
-  --shell-edge: #0b1c2a1f;
-  --dialog-border: #ffffff;
+  --border-subtle: rgba(17, 19, 24, 0.085);
+  --border-control: rgba(17, 19, 24, 0.16);
+  --shell-edge: rgba(17, 19, 24, 0.12);
+  --dialog-border: rgba(255, 255, 255, 0.92);
 
-  /* 字 */
-  --text-1: #0c1a24;
-  --text-2: #33454f;
-  --text-3: #454e58;
-  --text-disabled: #7d878b;
+  /* 高对比度低视力友好墨水（严格守住 WCAG AA ≥ 4.5:1） */
+  --text-1: #111318;
+  --text-2: #3b414c;
+  --text-3: #52606d;
+  --text-disabled: #5d6875;
   --text-inverse: #ffffff;
   --text-on-accent: #ffffff;
 
-  /* 强调色 = 石墨绿（唯一饱和色） */
-  --brand: #1f4d3a;
-  --brand-hover: #1a4232;
-  --brand-pressed: #15352a;
-  --brand-text: #1f4d3a;
-  --brand-indicator: #1f4d3a;
-  --btn-primary-bg: #1f4d3a;
-  --btn-primary-bg-hover: #1a4232;
-  --btn-primary-bg-pressed: #15352a;
+  /* 权威主行动 = 液态曜石黑；精密指示/开关/图表峰值 = 深矿物石油绿 */
+  --accent-petrol: #0e6470;
+  --accent-petrol-hover: #0b515b;
+  --accent-petrol-soft: rgba(14, 100, 112, 0.1);
+  --cta-obsidian: linear-gradient(180deg, #23262e 0%, #16181d 100%);
+  --cta-obsidian-hover: linear-gradient(180deg, #2d313b 0%, #1e2128 100%);
+
+  --brand: #16181d;
+  --brand-hover: #242730;
+  --brand-pressed: #0e1014;
+  --brand-text: #0e6470;
+  --brand-indicator: #0e6470;
+  --btn-primary-bg: #16181d;
+  --btn-primary-bg-hover: #242730;
+  --btn-primary-bg-pressed: #0e1014;
   --btn-primary-fg: #ffffff;
-  --action-primary: #1f4d3a;
-  --action-primary-hover: #1a4232;
-  --action-primary-pressed: #15352a;
-  --focus: #1f4d3a;
-  --focus-ring: #1f4d3a;
-  --focus-on-plate: #a9cdb8;
-  --check-on-bg: #1f4d3a;
+  --action-primary: #16181d;
+  --action-primary-hover: #242730;
+  --action-primary-pressed: #0e1014;
+  --focus: #0e6470;
+  --focus-ring: #0e6470;
+  --focus-on-plate: #0e6470;
+  --check-on-bg: #0e6470;
   --check-glyph: #ffffff;
-  --switch-on-bg: #0d7340;
+  --switch-on-bg: #0e6470;
   --switch-thumb-on: #ffffff;
-  --meter-fill: #1f4d3a;
-  --tab-indicator: #1f4d3a;
+  --meter-fill: #0e6470;
+  --tab-indicator: #0e6470;
   --text-on-indicator: #ffffff;
 
-  /* 状态：绿只表达「可用/连通/已启用」，绝不用于失败次数 */
-  --success-fg: #0d7340;
-  --success-solid: #0d7340;
-  --success-bg: #e7f0ea;
-  --success-border: #b9d4c4;
-  --warning-fg: #8a5209;
-  --warning-solid: #8a5209;
-  --warning-bg: #f6efe1;
-  --warning-border: #e6d3b3;
-  --danger-fg: #b4342c;
-  --danger-solid: #b4342c;
-  --danger-bg: #f9e7e5;
-  --danger-border: #e8c2bd;
-  --info-fg: #1f4d3a;
-  --info-solid: #1f4d3a;
-  --info-bg: #e7ece7;
-  --info-border: #c3d2c8;
+  /* 状态矿物色（克制、高对比、零荧光） */
+  --success-fg: #16794f;
+  --success-solid: #16794f;
+  --success-bg: rgba(22, 121, 79, 0.1);
+  --success-border: rgba(22, 121, 79, 0.24);
+  --warning-fg: #b45309;
+  --warning-solid: #b45309;
+  --warning-bg: rgba(180, 83, 9, 0.1);
+  --warning-border: rgba(180, 83, 9, 0.26);
+  --danger-fg: #c22525;
+  --danger-solid: #c22525;
+  --danger-bg: rgba(194, 37, 37, 0.09);
+  --danger-border: rgba(194, 37, 37, 0.24);
+  --info-fg: #0e6470;
+  --info-solid: #0e6470;
+  --info-bg: rgba(14, 100, 112, 0.1);
+  --info-border: rgba(14, 100, 112, 0.24);
 
-  /* 次/ghost 按钮落到玻璃上 */
-  --btn-secondary-bg: #ffffffa8;
-  --btn-secondary-border: #ffffffd9;
-  --btn-secondary-bg-hover: #ffffffcc;
-  --btn-secondary-bg-pressed: #ffffffdb;
-  --btn-secondary-fg: #33454f;
-  --btn-ghost-fg: #33454f;
-  --btn-ghost-bg-hover: #ffffff8f;
-  --btn-text-fg: #1f4d3a;
+  /* 次/ghost 按钮落到玻璃上（清晰细边，杜绝白底隐形） */
+  --btn-secondary-bg: rgba(255, 255, 255, 0.92);
+  --btn-secondary-border: rgba(17, 19, 24, 0.13);
+  --btn-secondary-border-hover: rgba(17, 19, 24, 0.22);
+  --btn-secondary-bg-hover: #ffffff;
+  --btn-secondary-bg-pressed: rgba(241, 244, 248, 0.96);
+  --btn-secondary-fg: #111318;
+  --btn-ghost-fg: #3b414c;
+  --btn-ghost-bg-hover: rgba(17, 19, 24, 0.05);
+  --btn-text-fg: #0e6470;
 
-  /* 输入、分段、开关 */
-  --input-bg: #ffffffcc;
-  --input-border: #c6ccc7;
-  --input-border-hover: #aeb6b0;
-  --input-fg: #0c1a24;
-  --input-placeholder: #7d878b;
-  --input-label: #33454f;
-  --input-help: #454e58;
-  --seg-track: #0b1c2a0a;
-  --seg-thumb: #ffffffdd;
-  --seg-fg: #454e58;
-  --seg-fg-active: #0c1a24;
-  --keycap-bg: #ffffffb8;
-  --keycap-border: #dfe3df;
-  --keycap-fg: #454e58;
+  /* 输入（玻璃内实色底防发虚）、分段、开关 */
+  --input-bg: #f8f9fb;
+  --input-border: rgba(17, 19, 24, 0.14);
+  --input-border-hover: rgba(17, 19, 24, 0.26);
+  --input-fg: #111318;
+  --input-placeholder: #52606d;
+  --input-label: #3b414c;
+  --input-help: #52606d;
+  --seg-track: rgba(17, 19, 24, 0.06);
+  --seg-thumb: rgba(255, 255, 255, 0.94);
+  --seg-fg: #3b414c;
+  --seg-fg-active: #111318;
+  --keycap-bg: rgba(255, 255, 255, 0.82);
+  --keycap-border: rgba(17, 19, 24, 0.1);
+  --keycap-fg: #3b414c;
 
   /* 外壳 */
-  --sidebar-bg: #ffffff8f;
-  --titlebar-bg: #ffffffb8;
+  --sidebar-bg: var(--v5-sidebar-glass);
+  --titlebar-bg: var(--v5-titlebar-glass);
   --content-bg: transparent;
-  --chrome-bg: #ffffff8f;
-  --chrome-fg-1: #0c1a24;
-  --chrome-fg-2: #33454f;
-  --nav-fg-active: #0c1a24;
-  --nav-bg-hover: #ffffff8f;
-  --nav-bg-active: #ffffffa6;
-  --nav-indicator: #0c1a24;
-  --menu-bg: #fbfcfb;
-  --dialog-bg: #ffffffd9;
-  --toast-bg: #fbfcfb;
-  --scrim: #0b1c2a47;
-  --shadow-overlay: #0b1c2a1a;
-  --shadow-soft: #0b1c2a0f;
-  --tag-current-bg: #ffffffd8;
-  --tag-current-fg: #1f4d3a;
+  --chrome-bg: var(--v5-sidebar-glass);
+  --chrome-fg-1: #111318;
+  --chrome-fg-2: #3b414c;
+  --nav-fg-active: #111318;
+  --nav-bg-hover: rgba(255, 255, 255, 0.44);
+  --nav-bg-active: rgba(255, 255, 255, 0.88);
+  --nav-indicator: #0e6470;
+  --menu-bg: rgba(248, 250, 252, 0.95);
+  --dialog-bg: rgba(255, 255, 255, 0.9);
+  --toast-bg: rgba(255, 255, 255, 0.94);
+  --scrim: rgba(17, 19, 24, 0.28);
+  --shadow-overlay: rgba(17, 19, 24, 0.12);
+  --shadow-soft: rgba(17, 19, 24, 0.06);
+  --tag-current-bg: rgba(14, 100, 112, 0.1);
+  --tag-current-fg: #0e6470;
 
   /* 圆角与尺寸 */
-  --radius-control: 9px;
-  --radius-panel: 14px;
-  --radius-ring: 8px;
+  --radius-control: 10px;
+  --radius-panel: 18px;
+  --radius-ring: 10px;
   --radius-pill: 999px;
   --size-titlebar: 52px;
-  --size-sidebar: 232px;
-  --size-row: 36px;
+  --size-sidebar: 216px;
+  --size-row: 42px;
 
   /* 图表 */
-  --chart-bar: #9aa5a0;
-  --meter-low: #8a5209;
+  --chart-bar: #a9b2bf;
+  --meter-low: #b45309;
 }
 
-/* 页面底：冷灰纵向渐变 + 24px 细网格（液态玻璃的「折射纹理」） */
+/* 舒适大字档位：面向弱视力与高分屏用户，通过设置页「字号与阅读舒适度」即时切换 */
+html[data-text-scale="comfortable"] {
+  --fs-xs: 14.5px;
+  --fs-sm: 15px;
+  --fs-base: 16px;
+  --fs-nav: 16px;
+  --fs-md: 17px;
+  --fs-lg: 19px;
+  --fs-xl: 22px;
+  --fs-h1: 30px;
+  --size-row: 48px;
+}
+
+/* 页面底：Studio Titanium-Mist 自然日光钛雾 */
 :root {
   color-scheme: light;
 }

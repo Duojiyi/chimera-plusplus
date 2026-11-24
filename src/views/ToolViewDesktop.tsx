@@ -20,6 +20,7 @@ import {
 import { providersApi, type ClaudeDesktopStatus } from "@/lib/api/providers";
 import { settingsApi } from "@/lib/api/settings";
 import { ClaudeDesktopRouteToggle } from "@/components/proxy/ClaudeDesktopRouteToggle";
+import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -77,6 +78,8 @@ export default function ToolViewDesktop({
   const generation = useRef(0);
   const actionPending = useRef(false);
   const linkPending = useRef(false);
+
+  useLightweightCloseBlocker(busy !== null || opening);
 
   const load = useCallback(async () => {
     const request = ++generation.current;

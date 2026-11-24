@@ -19,50 +19,48 @@
   position: relative;
   isolation: isolate;
   background: linear-gradient(
-    180deg,
+    155deg,
     var(--v3-page-top) 0%,
-    var(--v3-page-mid) 55%,
+    var(--v3-page-mid) 52%,
     var(--v3-page-bottom) 100%
   );
 }
 
-/* 网格必须压在内容下面：z-index:-1 + isolation，避免盖住非定位子节点。 */
+/* 自然北窗柔光漫反射（替代旧版网格线，让磨砂玻璃形成真实光影折射，零 AI 蓝紫极光） */
 .chimera-shell::before {
   content: "";
   position: absolute;
   inset: 0;
   z-index: -1;
   pointer-events: none;
-  background-image:
-    linear-gradient(to right, var(--v3-grid-line) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--v3-grid-line) 1px, transparent 1px);
-  background-size:
-    var(--v3-grid-size) var(--v3-grid-size),
-    var(--v3-grid-size) var(--v3-grid-size);
+  background: radial-gradient(
+    90% 70% at 14% 6%,
+    rgba(255, 255, 255, 0.52) 0%,
+    rgba(255, 255, 255, 0) 62%
+  );
 }
 
-/* 内容区自己不再铺实色，否则会盖掉渐变与网格。 */
+/* 内容区自己不再铺实色，否则会盖掉钛雾渐变与光学景深。 */
 .chimera-shell .chimera-main {
   background: transparent;
 }
 
-/* ---------- 2. 外壳玻璃 ---------- */
+/* ---------- 2. 外壳玻璃（Plane 1 下潜式烟熏磨砂玻璃） ---------- */
 
-/* 侧栏在 liquid-glass.css 里被写成了深色渐变（`.chimera-shell .chimera-sidebar`），
-   这里用同等特异性 + 更晚的引入顺序把它换回浅色玻璃。 */
 .chimera-shell .chimera-sidebar {
-  background: var(--v3-glass-fill-soft);
-  border-right: 1px solid #ffffffb8;
-  box-shadow: none;
-  -webkit-backdrop-filter: blur(var(--v3-glass-blur)) saturate(140%);
-  backdrop-filter: blur(var(--v3-glass-blur)) saturate(140%);
+  background: var(--v5-sidebar-glass);
+  border-right: 1px solid rgba(255, 255, 255, 0.78);
+  box-shadow: inset -1px 0 0 rgba(17, 19, 24, 0.05);
+  -webkit-backdrop-filter: blur(var(--v3-glass-blur)) saturate(160%);
+  backdrop-filter: blur(var(--v3-glass-blur)) saturate(160%);
 }
 
 .chimera-titlebar {
-  background: var(--v3-glass-fill-soft);
-  border-bottom: 1px solid #ffffffb8;
-  -webkit-backdrop-filter: blur(var(--v3-glass-blur)) saturate(140%);
-  backdrop-filter: blur(var(--v3-glass-blur)) saturate(140%);
+  background: var(--v5-titlebar-glass);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.76);
+  box-shadow: inset 0 -1px 0 rgba(17, 19, 24, 0.045);
+  -webkit-backdrop-filter: blur(var(--v3-glass-blur)) saturate(160%);
+  backdrop-filter: blur(var(--v3-glass-blur)) saturate(160%);
 }
 
 /* ---------- 3. 原语 ---------- */
@@ -139,12 +137,15 @@
   flex: none;
   display: grid;
   place-items: center;
-  border-radius: 8px;
-  background: var(--text-1);
-  color: #ffffff;
-  font-size: 14px;
-  font-weight: 700;
-  line-height: 1;
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.v3-sidebar-logo img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
 }
 
 .v3-sidebar-brandtext {
@@ -155,40 +156,43 @@
 }
 
 .v3-sidebar-wordmark {
-  font-size: 14px;
-  line-height: 18px;
+  font-size: var(--fs-md);
+  line-height: 20px;
   font-weight: 700;
   color: var(--text-1);
   white-space: nowrap;
 }
 
 .v3-sidebar-version {
-  font-size: 10px;
-  line-height: 12px;
+  font-size: 12px;
+  line-height: 15px;
   color: var(--text-3);
+  font-family: var(--font-mono), monospace;
   white-space: nowrap;
 }
 
-/* 工具切换器：一块小玻璃，左侧一条线路色竖条。 */
+/* 工具切换器：微凹烟熏玻璃胶囊，左侧 3px 矿物色竖条。 */
 .v3-tool-switch {
   display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
-  height: 52px;
+  min-height: 54px;
   flex: none;
-  margin: 4px 0 6px;
-  padding: 0 10px;
+  margin: 6px 0 8px;
+  padding: 6px 11px;
   border-radius: 12px;
-  border: 1px solid #ffffffcc;
-  background: #ffffffa8;
-  box-shadow: inset 0 -1px 0 0 #ffffffd9;
+  border: 1px solid rgba(17, 19, 24, 0.09);
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 1px 3px rgba(17, 19, 24, 0.05);
   cursor: pointer;
   text-align: left;
   transition: background 120ms var(--ease);
 }
 .v3-tool-switch:hover {
-  background: #ffffffc4;
+  background: rgba(255, 255, 255, 0.82);
 }
 .v3-tool-switch > svg {
   flex: none;
@@ -198,15 +202,15 @@
 .v3-tool-switch-text {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
   flex: 1;
   min-width: 0;
 }
 
 .v3-tool-switch-name {
-  font-size: 12.5px;
-  line-height: 16px;
-  font-weight: 600;
+  font-size: var(--fs-nav);
+  line-height: 19px;
+  font-weight: 650;
   color: var(--text-1);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -214,80 +218,84 @@
 }
 
 .v3-tool-switch-sub {
-  font-size: 10px;
-  line-height: 12px;
+  font-size: 12px;
+  line-height: 15px;
   color: var(--text-3);
 }
 
 .v3-nav-group {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
   width: 100%;
   flex: none;
 }
 
 .v3-nav-group + .v3-nav-group {
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 .v3-nav-group-label {
-  padding: 0 8px 4px;
-  font-size: 10px;
-  line-height: 12px;
+  padding: 0 10px 4px;
+  font-size: 12px;
+  line-height: 16px;
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.03em;
   color: var(--text-3);
 }
 
-/* 导航项：全站唯一形状 —— 30 高、圆角 9、无边框，选中靠浅底。 */
+/* 导航项：高可读低视力友好高度与字号，选中态为浮起白玻璃药丸 + 3px 深矿物石油绿左条。 */
 .v3-nav-item {
   position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
-  height: 30px;
+  min-height: 36px;
   flex: none;
-  padding: 0 8px;
+  padding: 4px 10px;
   border: 0;
-  border-radius: 9px;
+  border-radius: 10px;
   background: transparent;
   color: var(--text-2);
-  font-size: 12.5px;
-  line-height: 16px;
+  font-size: var(--fs-nav);
+  line-height: 20px;
   text-align: left;
   cursor: pointer;
   transition: background 120ms var(--ease);
 }
 .v3-nav-item:disabled {
   cursor: not-allowed;
-  opacity: 0.45;
+  opacity: 0.48;
 }
 .v3-nav-item:hover:not(:disabled):not([aria-current="page"]) {
-  background: #0b1c2a08;
+  background: var(--nav-bg-hover);
+  color: var(--text-1);
 }
 .v3-nav-item[aria-current="page"] {
   background: var(--nav-bg-active);
   color: var(--text-1);
-  font-weight: 600;
+  font-weight: 650;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.96),
+    0 2px 8px rgba(17, 19, 24, 0.055);
 }
-/* 选中项左缘墨条：与表格当前行、命令面板选中行同一条线。 */
+/* 选中项左缘 3px 深矿物石油绿竖条（全站统一焦点编码） */
 .v3-nav-item[aria-current="page"]::before {
   content: "";
   position: absolute;
   left: 0;
-  top: 7px;
-  bottom: 7px;
-  width: 2px;
-  border-radius: 1px;
-  background: var(--text-1);
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent-petrol);
 }
 .v3-nav-item[aria-current="page"] .v3-nav-icon {
-  color: var(--brand);
+  color: var(--accent-petrol);
 }
 .v3-nav-item:focus-visible {
-  outline: 2px solid var(--brand);
+  outline: 2px solid var(--focus);
   outline-offset: -2px;
 }
 
@@ -306,18 +314,18 @@
 
 .v3-nav-hint {
   flex: none;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-3);
 }
 
 .v3-sidebar-foot {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
   width: 100%;
   flex: none;
   margin-top: auto;
-  padding-top: 8px;
+  padding-top: 10px;
   border-top: 1px solid var(--v3-hairline);
 }
 
@@ -332,8 +340,8 @@
   height: var(--size-titlebar);
   min-height: var(--size-titlebar);
   margin: 0;
-  padding: 0 12px;
-  border-bottom: 1px solid #ffffffb8;
+  padding: 0 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.78);
   user-select: none;
   z-index: 5;
 }
@@ -345,8 +353,8 @@
   flex: 1;
   min-width: 0;
   height: 100%;
-  font-size: 12.5px;
-  line-height: 16px;
+  font-size: var(--fs-base);
+  line-height: 20px;
 }
 
 .v3-crumb-tool {
@@ -359,14 +367,14 @@
 
 .v3-crumb-sep {
   color: var(--text-3);
-  opacity: 0.6;
+  opacity: 0.65;
 }
 
 .v3-crumb-page {
   min-width: 0;
   flex-shrink: 0;
   color: var(--text-1);
-  font-weight: 600;
+  font-weight: 650;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -377,12 +385,12 @@
   overflow: hidden;
   text-overflow: ellipsis;
   margin-left: 4px;
-  padding: 1px 6px;
-  border-radius: 5px;
-  background: #0b1c2a0a;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--v5-recessed-well);
   color: var(--text-3);
-  font-size: 10px;
-  line-height: 14px;
+  font-size: 12px;
+  line-height: 16px;
   white-space: nowrap;
 }
 
@@ -391,14 +399,17 @@
   align-items: center;
   gap: 8px;
   flex: none;
-  width: 300px;
-  max-width: 38%;
+  width: 310px;
+  max-width: 40%;
   min-width: 0;
-  height: 30px;
-  padding: 0 8px 0 10px;
-  border: 1px solid #ffffffcc;
-  border-radius: 9px;
-  background: #ffffffa8;
+  height: 34px;
+  padding: 0 10px 0 12px;
+  border: 1px solid rgba(17, 19, 24, 0.11);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow:
+    inset 0 1px 2px rgba(17, 19, 24, 0.035),
+    0 1px 0 rgba(255, 255, 255, 0.82);
   color: var(--text-3);
   cursor: pointer;
   text-align: left;
@@ -409,13 +420,13 @@
     gap: 8px;
   }
   .v3-search {
-    width: 200px;
-    max-width: 35%;
+    width: 220px;
+    max-width: 36%;
   }
 }
 
 .v3-search:hover {
-  background: #ffffffcc;
+  background: rgba(255, 255, 255, 0.84);
 }
 .v3-search > svg {
   flex: none;
@@ -424,8 +435,8 @@
 .v3-search-placeholder {
   flex: 1;
   min-width: 0;
-  font-size: 12px;
-  line-height: 16px;
+  font-size: var(--fs-sm);
+  line-height: 18px;
   color: var(--text-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -434,13 +445,13 @@
 
 .v3-kbd {
   flex: none;
-  padding: 1px 5px;
-  border: 1px solid #ffffff;
-  border-radius: 5px;
-  background: #ffffffd8;
-  color: var(--text-3);
-  font-family: var(--font-mono);
-  font-size: 10px;
+  padding: 2px 6px;
+  border: 1px solid rgba(17, 19, 24, 0.11);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--text-2);
+  font-family: var(--font-mono), monospace;
+  font-size: 12px;
   line-height: 14px;
   white-space: nowrap;
 }
@@ -455,26 +466,27 @@
 .v3-update-chip {
   display: flex;
   align-items: center;
-  gap: 4px;
-  height: 26px;
-  padding: 0 8px;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
   border: 0;
-  border-radius: 7px;
-  background: var(--brand);
+  border-radius: 8px;
+  background: var(--cta-obsidian);
   color: #ffffff;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
 }
 .v3-update-chip:hover {
-  background: var(--brand-hover);
+  background: var(--cta-obsidian-hover);
 }
 
 /* ---------- 4. 键盘可达性 ---------- */
 
 .chimera-shell
   :is(button, [role="button"], a, input, select, textarea):focus-visible {
-  outline: 2px solid var(--brand);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
@@ -521,22 +533,21 @@
   --plate-fg-1: var(--text-1);
   --plate-fg-2: var(--text-2);
   --plate-fg-3: var(--text-3);
-  --plate-control-border: transparent;
-  --plate-control-hover: var(--bg-hover);
-  --plate-control-pressed: var(--bg-selected);
+  --plate-control-border: rgba(17, 19, 24, 0.08);
+  --plate-control-hover: rgba(255, 255, 255, 0.92);
+  --plate-control-pressed: rgba(244, 246, 249, 0.96);
   --plate-success: var(--success-fg);
   --plate-warning: var(--warning-fg);
   --plate-danger: var(--danger-fg);
-  border-bottom: 0;
+  border: 1px solid var(--v3-glass-border);
   outline: 0;
   border-radius: 20px;
   background: var(--v3-glass-fill);
   box-shadow:
-    inset 0 -1px 0 0 #ffffffd9,
-    inset 0 1px 2px 0 #ffffffcc,
-    0 10px 24px #1236681a;
-  -webkit-backdrop-filter: blur(30px) saturate(140%);
-  backdrop-filter: blur(30px) saturate(140%);
+    var(--v3-shadow-inner-top), var(--v3-shadow-inner-bottom),
+    var(--v3-shadow-outer);
+  -webkit-backdrop-filter: blur(var(--v3-glass-blur)) saturate(160%);
+  backdrop-filter: blur(var(--v3-glass-blur)) saturate(160%);
   color: var(--text-1);
 }
 
@@ -546,44 +557,47 @@
 }
 
 .chimera-shell .station-body {
-  gap: 10px;
-  padding: 14px 20px;
+  gap: 12px;
+  padding: 18px 22px;
 }
 
 .chimera-shell .station-eyebrow {
-  color: var(--text-3);
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  line-height: 14px;
+  color: var(--accent-petrol);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 18px;
 }
 
 .chimera-shell .station-name {
   color: var(--text-1);
-  font-size: 19px;
-  font-weight: 600;
-  line-height: 26px;
+  font-size: var(--fs-xl);
+  font-weight: 700;
+  line-height: 28px;
 }
 
 .chimera-shell .station-kind {
-  border: 0;
-  background: var(--v3-glass-fill-soft);
+  border: 1px solid var(--v3-hairline);
+  background: var(--v5-recessed-well);
   color: var(--text-2);
-  font-size: 10px;
-  line-height: 16px;
-  padding: 1px 7px;
+  font-size: var(--fs-xs);
+  line-height: 18px;
+  padding: 2px 9px;
+  white-space: nowrap;
 }
 
 .chimera-shell .station-latency {
   color: var(--text-1);
-  font-size: 19px;
-  font-weight: 600;
-  line-height: 24px;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 28px;
+  font-variant-numeric: tabular-nums;
 }
 
 .chimera-shell .station-state {
-  font-size: 10px;
-  font-weight: 500;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .chimera-shell .station-state-time {
@@ -591,75 +605,84 @@
 }
 
 .chimera-shell .station-action {
-  height: 28px;
-  padding: 0 12px;
-  gap: 5px;
-  border: 0;
-  background: var(--v3-glass-fill-soft);
-  color: var(--text-2);
-  font-size: 11px;
-  font-weight: 500;
+  height: 36px;
+  padding: 0 14px;
+  gap: 6px;
+  border: 1px solid var(--btn-secondary-border);
+  border-radius: 10px;
+  background: var(--btn-secondary-bg);
+  box-shadow: var(--v5-btn-shadow);
+  color: var(--text-1);
+  font-size: var(--fs-sm);
+  font-weight: 550;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .chimera-shell
   .station-action:hover:not(:disabled):not([aria-disabled="true"]) {
-  background: #ffffffc4;
+  border-color: var(--btn-secondary-border-hover);
+  background: var(--btn-secondary-bg-hover);
 }
 
-/* The last action on the plate is the page's primary one. */
-.chimera-shell .station-actions .station-action:last-child:not(:disabled) {
-  background: var(--brand);
+/* The last action on the plate is the page's primary Liquid Obsidian CTA. */
+.chimera-shell .station-actions .station-action:last-child {
+  border-color: #16181d;
+  background: var(--cta-obsidian);
   color: #ffffff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 2px 8px rgba(17, 19, 24, 0.16);
 }
 
 .chimera-shell
   .station-actions
   .station-action:last-child:not(:disabled):hover {
-  background: var(--brand-hover);
+  background: var(--cta-obsidian-hover);
 }
 
 /* ---------- 7. 内容区：撤销条与余额 ---------- */
 
 .chimera-shell .station-receipt {
-  border-top: 0;
-  border-radius: 10px;
+  border: 1px solid var(--v3-glass-border);
+  border-left: 3px solid var(--accent-petrol);
+  border-radius: 12px;
   background: var(--v3-glass-fill);
-  color: var(--text-2);
-  font-size: 11px;
+  color: var(--text-1);
+  font-size: var(--fs-sm);
   box-shadow:
-    inset 0 -1px 0 0 #ffffffd9,
-    0 4px 12px #12366814;
-  padding: 0 10px;
-  height: 34px;
+    var(--v3-shadow-inner-top),
+    0 6px 18px rgba(17, 19, 24, 0.06);
+  padding: 6px 14px;
+  min-height: 44px;
 }
 
 .chimera-shell .station-receipt button {
-  height: 22px;
-  border: 0;
-  border-radius: 6px;
-  background: var(--v3-glass-fill-soft);
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--btn-secondary-border);
+  border-radius: 8px;
+  background: var(--btn-secondary-bg);
+  box-shadow: var(--v5-btn-shadow);
   color: var(--text-1);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .chimera-shell .station-receipt button:hover:not(:disabled) {
-  background: #ffffffc4;
-}
-
-/* 撤销条：撤销（白）+ 重启 Codex（石墨绿实底），设计稿 L01 */
-.chimera-shell .station-receipt button {
-  padding: 0 12px;
   background: #ffffff;
-  font-weight: 600;
 }
 
 .chimera-shell .station-receipt .station-receipt-primary {
-  background: var(--brand, #1f4d3a);
+  border-color: #16181d;
+  background: var(--cta-obsidian);
   color: #ffffff;
 }
 
 .chimera-shell .station-receipt .station-receipt-primary:hover:not(:disabled) {
-  background: #173c2d;
+  background: var(--cta-obsidian-hover);
 }
 
 .chimera-shell .station-receipt .station-receipt-text {
@@ -671,83 +694,92 @@
 }
 
 .chimera-shell .route-balance-bar {
-  height: 30px;
+  min-height: 34px;
   border: 0;
   background: transparent;
   color: var(--text-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .chimera-shell .route-balance-value {
   color: var(--text-1);
   font-family: var(--font-mono), monospace;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
 }
 
 /* ---------- 8. 内容区：页面标题与工具条 ---------- */
 
 .chimera-shell .provider-page {
-  padding: 18px 26px 24px;
+  padding: 20px 28px 28px;
 }
 
 .chimera-shell .provider-page-heading {
-  height: 44px;
+  min-height: 48px;
   align-items: flex-start;
 }
 
 .chimera-shell .provider-page-heading h2 {
-  font-size: 24px;
+  font-size: var(--fs-h1);
   font-weight: 700;
-  line-height: 30px;
-  letter-spacing: -0.01em;
+  line-height: 32px;
+  letter-spacing: -0.015em;
 }
 
 .chimera-shell .provider-page-heading p {
   color: var(--text-2);
-  font-size: 11.5px;
-  line-height: 15px;
-  margin-top: 1px;
+  font-size: var(--fs-base);
+  line-height: 20px;
+  margin-top: 3px;
 }
 
 .chimera-shell .provider-page-heading button {
-  height: 30px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 9px;
-  background: var(--v3-glass-fill-soft);
-  color: var(--text-2);
-  font-size: 11px;
-  font-weight: 500;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--btn-secondary-border);
+  border-radius: 10px;
+  background: var(--btn-secondary-bg);
+  box-shadow: var(--v5-btn-shadow);
+  color: var(--text-1);
+  font-size: var(--fs-sm);
+  font-weight: 550;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .chimera-shell .provider-page-heading button:hover:not(:disabled) {
-  background: #ffffffc4;
+  border-color: var(--btn-secondary-border-hover);
+  background: var(--btn-secondary-bg-hover);
 }
 
 .chimera-shell .provider-page-heading button.provider-add {
-  background: var(--brand);
+  border-color: #16181d;
+  background: var(--cta-obsidian);
   color: #ffffff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 2px 8px rgba(17, 19, 24, 0.16);
 }
 
 .chimera-shell .provider-page-heading button.provider-add:hover:not(:disabled) {
-  background: var(--brand-hover);
+  background: var(--cta-obsidian-hover);
 }
 
 .chimera-shell .provider-page-signboard {
-  padding-top: 12px;
+  padding-top: 14px;
 }
 /* ===== 6d. 站牌底部信息行（地址 / 模型 / 协议） ===== */
 .chimera-shell .station-foot {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 14px;
-  margin-top: 10px;
-  padding-top: 10px;
+  gap: 6px 16px;
+  margin-top: 12px;
+  padding-top: 12px;
   border-top: 1px solid var(--v3-hairline);
-  font-size: 10.5px;
-  line-height: 15px;
-  color: var(--text-3);
+  font-size: var(--fs-xs);
+  line-height: 18px;
+  color: var(--text-2);
 }
 
 .chimera-shell .station-foot-item {
@@ -759,12 +791,12 @@
 
 .chimera-shell .station-foot-address {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 10.5px;
-  color: var(--text-2);
+  font-size: var(--fs-xs);
+  color: var(--text-1);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 260px;
+  max-width: 280px;
 }
 
 .chimera-shell .station-foot-state,
@@ -774,18 +806,18 @@
 
 .chimera-shell .station-foot-model {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 10.5px;
-  color: var(--text-2);
+  font-size: var(--fs-xs);
+  color: var(--text-1);
 }
 
-/* ===== 10. 其余视图共用骨架（页头 / 卡 / 表 / 空态） ===== */
+/* ===== 10. 其余视图共用骨架（页头 / Plane 3 磨砂台账 / 表 / 空态） ===== */
 .chimera-shell .usage-design-view,
 .chimera-shell .new-settings-view,
 .chimera-shell .prompts-page,
 .chimera-shell .skills-mcp-page,
 .chimera-shell .config-health-page,
 .chimera-shell .official-accounts-page {
-  padding: 18px 26px 24px;
+  padding: 20px 28px 28px;
   color: var(--text-1);
 }
 
@@ -795,18 +827,18 @@
 .chimera-shell .skills-mcp-page h1,
 .chimera-shell .config-health-page h1 {
   margin: 0;
-  font-size: 24px;
-  line-height: 30px;
+  font-size: var(--fs-h1);
+  line-height: 32px;
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
   color: var(--text-1);
 }
 
 .chimera-shell .usage-design-view > * > p,
 .chimera-shell .prompts-page > header p,
 .chimera-shell .config-health-page > header p {
-  font-size: 11.5px;
-  line-height: 16px;
+  font-size: var(--fs-base);
+  line-height: 20px;
   color: var(--text-2);
 }
 
@@ -818,43 +850,45 @@
   align-items: flex-end;
   justify-content: space-between;
   gap: 16px;
-  min-height: 44px;
+  min-height: 48px;
 }
 
 /* 统一页头按钮 */
 .chimera-shell .prompts-page header button,
 .chimera-shell .health-header button,
 .chimera-shell .tool-header button {
-  height: 30px;
-  border-radius: 9px;
-  font-size: 11px;
-  font-weight: 500;
+  height: 36px;
+  border-radius: 10px;
+  font-size: var(--fs-sm);
+  font-weight: 550;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
-/* 通用玻璃面板：把 v2.8 的高阴影/深底收敛成同一种材质 */
+/* Plane 3 哑光磨砂台账：比 Plane 2 主舞台低一阶明度，避免全页白盒堆砌 */
 .chimera-shell .prompts-page article,
 .chimera-shell .skills-mcp-page section,
 .chimera-shell .config-health-page section,
 .chimera-shell .usage-design-view section {
-  background: var(--v3-glass-fill);
-  border: 1px solid var(--v3-hairline);
-  border-radius: 14px;
-  box-shadow: none;
+  background: var(--v5-ledger-glass);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 18px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
-/* 表格：只留发丝线，不要斑马纹与重边框 */
+/* 表格：只留发丝线，低视力友好字号 */
 .chimera-shell .usage-design-view table,
 .chimera-shell .skills-mcp-page table {
   border-collapse: collapse;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
 }
 
 .chimera-shell .usage-design-view th,
 .chimera-shell .skills-mcp-page th {
-  height: 30px;
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
+  height: 36px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
   color: var(--text-3);
   border-bottom: 1px solid var(--v3-hairline);
   background: transparent;
@@ -862,28 +896,47 @@
 
 .chimera-shell .usage-design-view td,
 .chimera-shell .skills-mcp-page td {
-  height: 36px;
+  height: 42px;
   border-bottom: 1px solid var(--v3-hairline);
-  color: var(--text-2);
+  color: var(--text-1);
 }
 
 /* 数字一律等宽 */
 .chimera-shell .usage-design-view [class*="value"],
 .chimera-shell .usage-design-view [class*="metric"] strong {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-variant-numeric: tabular-nums;
 }
 
-/* 空态 / 错误态统一形状（对应 src/components/ui 新增原语） */
+/* 全局主按钮统一曜石黑（覆盖旧版 liquid-glass.css 蓝渐变与蓝阴影） */
+.chimera-shell button.primary {
+  border: 1px solid #16181d;
+  border-radius: var(--radius-control);
+  background: var(--cta-obsidian);
+  color: #ffffff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 2px 8px rgba(17, 19, 24, 0.16);
+}
+
+.chimera-shell button.primary:hover:not(:disabled) {
+  background: var(--cta-obsidian-hover);
+}
+
+/* 空态 / 错误态统一液态玻璃原语 */
 .chimera-shell .empty-state,
 .chimera-shell .error-state {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 8px;
-  padding: 24px 20px;
-  border-radius: 14px;
+  justify-content: flex-start;
+  text-align: left;
+  gap: 10px;
+  padding: 28px 24px;
+  border-radius: 18px;
   background: var(--v3-glass-fill);
-  border: 1px solid var(--v3-hairline);
+  border: 1px solid rgba(255, 255, 255, 0.88);
+  box-shadow: var(--v3-shadow-inner-top), var(--v3-shadow-outer);
   color: var(--text-2);
 }
 
@@ -891,41 +944,47 @@
 .chimera-shell .error-state-icon {
   display: grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 18px;
-  background: var(--v3-glass-fill-soft);
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  background: var(--v5-recessed-well);
   color: var(--text-2);
 }
 
 .chimera-shell .empty-state h2,
 .chimera-shell .error-state h2 {
   margin: 0;
-  font-size: 15px;
-  font-weight: 600;
+  font-size: var(--fs-lg);
+  font-weight: 650;
   color: var(--text-1);
 }
 
 .chimera-shell .empty-state p,
 .chimera-shell .error-state p {
   margin: 0;
-  font-size: 11.5px;
-  line-height: 17px;
+  font-size: var(--fs-base);
+  line-height: 22px;
   color: var(--text-2);
 }
 
 .chimera-shell .error-state {
-  border-color: #b4342c33;
+  border-color: var(--danger-border);
+  border-left: 3px solid var(--danger-solid);
 }
 
 .chimera-shell .error-state-icon {
-  color: #b4342c;
-  background: #fbe2df66;
+  color: var(--danger-fg);
+  background: var(--danger-bg);
 }
 
 .chimera-shell .skeleton {
   border-radius: 8px;
-  background: linear-gradient(90deg, #0b1c2a0a, #0b1c2a14, #0b1c2a0a);
+  background: linear-gradient(
+    90deg,
+    rgba(17, 19, 24, 0.045),
+    rgba(17, 19, 24, 0.095),
+    rgba(17, 19, 24, 0.045)
+  );
   background-size: 200% 100%;
   animation: v3-skeleton 1.4s ease-in-out infinite;
 }
@@ -949,22 +1008,24 @@
 
 /* 14.1 通用玻璃卡（v2.8 的 .glass-card 是重阴影厚边框，统一收敛） */
 .chimera-shell .glass-card {
-  border: 1px solid var(--v3-hairline);
-  border-radius: 14px;
-  background: var(--v3-glass-fill);
-  box-shadow: 0 1px 2px #1236680d;
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  border-radius: 18px;
+  background: var(--v5-ledger-glass);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    0 2px 10px rgba(17, 19, 24, 0.04);
 }
 
 .chimera-shell .glass-card-header {
-  min-height: 40px;
-  padding: 0 14px;
+  min-height: 46px;
+  padding: 0 18px;
   border-bottom: 1px solid var(--v3-hairline);
   background: transparent;
 }
 
 .chimera-shell .glass-card-title {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: var(--fs-md);
+  font-weight: 650;
   color: var(--text-1);
 }
 
@@ -972,8 +1033,8 @@
 .chimera-shell .runtime-reference-view {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 18px 26px 24px;
+  gap: 16px;
+  padding: 20px 28px 28px;
   color: var(--text-1);
 }
 
@@ -982,77 +1043,78 @@
   align-items: flex-end;
   justify-content: space-between;
   gap: 16px;
-  min-height: 44px;
+  min-height: 48px;
 }
 
 .chimera-shell .runtime-page-heading h1 {
-  font-size: 24px;
-  line-height: 30px;
+  font-size: var(--fs-h1);
+  line-height: 32px;
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
   color: var(--text-1);
 }
 
 .chimera-shell .runtime-page-heading p {
-  margin: 2px 0 0;
-  font-size: 11.5px;
+  margin: 3px 0 0;
+  font-size: var(--fs-base);
   color: var(--text-2);
 }
 
-/* ===== 15. v2.8 玻璃变量族整体改色 =====
-   liquid-glass.css 在 :root 上定义了一整套画报蓝（accent / focus / ink /
-   canvas / primary / selection）。组件大量直接引用它们，所以只改 --brand
-   不够：主按钮、焦点环、选中态、开关都会继续发蓝。这一节把它们全部映射
-   到石墨绿 + 中性灰，作为唯一的色源。 */
+/* ===== 15. v5.2 天光钛银 · 曜石液态玻璃全局映射 ===== */
 :root {
-  --radius-control: 8px;
+  --radius-control: 10px;
   --radius-ring: 10px;
 
-  --glass-surface: #ffffffd0;
-  --glass-surface-strong: #ffffffe8;
-  --glass-border: #0b1c2a14;
-  --glass-control-border: #8a939b;
-  --glass-highlight: #ffffffd9;
-  --glass-shadow: 0 8px 24px -16px #12366826, inset 0 1px 0 #ffffffd9;
-  --glass-blur: 30px;
-  --glass-control-bg: #ffffff9e;
-  --glass-control-hover: #ffffffc8;
+  --glass-surface: rgba(255, 255, 255, 0.84);
+  --glass-surface-strong: rgba(255, 255, 255, 0.94);
+  --glass-border: rgba(17, 19, 24, 0.09);
+  --glass-control-border: rgba(17, 19, 24, 0.16);
+  --glass-highlight: rgba(255, 255, 255, 0.94);
+  --glass-shadow:
+    0 12px 32px rgba(17, 19, 24, 0.065), inset 0 1px 0 rgba(255, 255, 255, 0.94);
+  --glass-blur: 36px;
+  --glass-control-bg: rgba(255, 255, 255, 0.72);
+  --glass-control-hover: rgba(255, 255, 255, 0.94);
 
-  --glass-accent: #1f4d3a;
-  --glass-accent-strong: #163a2c;
-  --glass-accent-soft: #1f4d3a14;
-  --glass-focus: #1f4d3a;
-  --glass-ink: #0c1a24;
-  --glass-muted: #454e58;
-  --glass-canvas: #e4e7e2;
-  --glass-canvas-glow: #ffffff66;
-  --glass-sheen: #ffffff73;
+  --glass-accent: #0e6470;
+  --glass-accent-strong: #0b515b;
+  --glass-accent-soft: rgba(14, 100, 112, 0.1);
+  --glass-focus: #0e6470;
+  --glass-ink: #111318;
+  --glass-muted: #52606d;
+  --glass-canvas: #dce0e6;
+  --glass-canvas-glow: rgba(255, 255, 255, 0.5);
+  --glass-sheen: rgba(255, 255, 255, 0.65);
 
-  --glass-primary-top: #2a5f49;
-  --glass-primary-bottom: #1f4d3a;
-  --glass-primary-edge: #1a4433;
+  --glass-primary-top: #23262e;
+  --glass-primary-bottom: #16181d;
+  --glass-primary-edge: #16181d;
 
-  --glass-selection: #eef1ee;
-  --glass-selection-ink: #0c1a24;
-  --glass-switch-off-track: #0b1c2a1f;
+  --glass-selection: rgba(255, 255, 255, 0.92);
+  --glass-selection-ink: #111318;
+  --glass-switch-off-track: #cbd2dc;
   --glass-switch-off-thumb: #ffffff;
 }
 
-/* 主按钮：石墨绿实底，白字；hover 略深，按下更深 */
+/* 主按钮：液态曜石黑实底 + 顶部微光高光，零 AI 蓝 */
 .chimera-shell .glass-button--default {
-  background-color: var(--glass-primary-bottom);
-  background-image: none;
+  background: var(--cta-obsidian);
   border-color: var(--glass-primary-edge);
   color: #ffffff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 2px 8px rgba(17, 19, 24, 0.16);
 }
 
-/* 错误态不再独占整页：回到文档流，靠左，宽 340。
-   只作用于「页体里只有状态卡」的情形；有数据时页体仍是 legacy 的纵向 flex，
-   否则 .session-workspace 会被塞进 340 列（实机：详情栏被挤到 84px）。 */
+.chimera-shell .glass-button--default:hover:not(:disabled) {
+  background: var(--cta-obsidian-hover);
+}
+
+/* 错误态不再独占整页：回到文档流，靠左，宽 360。 */
 .chimera-shell .session-page-body:has(> .session-state.is-page) {
   display: grid;
-  grid-template-columns: minmax(0, 340px) minmax(0, 1fr);
-  gap: 14px;
+  grid-template-columns: minmax(0, 360px) minmax(0, 1fr);
+  gap: 16px;
   align-items: start;
   min-height: 0;
 }
@@ -1062,51 +1124,42 @@
   justify-self: stretch;
   width: 100%;
   height: auto;
-  padding: 18px 16px;
-  border: 1px solid var(--v3-hairline);
-  border-radius: 14px;
+  padding: 20px 18px;
+  border: 1px solid var(--danger-border);
+  border-left: 3px solid var(--danger-solid);
+  border-radius: 16px;
   background: var(--v3-glass-fill);
   text-align: left;
   align-items: flex-start;
 }
 
 .chimera-shell .session-state.is-page > svg {
-  width: 20px;
-  height: 20px;
-  color: #b4342c;
+  width: 22px;
+  height: 22px;
+  color: var(--danger-fg);
 }
 
-/* ===== 16. Codex 管理页（L09/L19/L20/L21）：把深色四站板改成浅色数字带 ===== */
-
-/* 说明条：玻璃软底一行，不抢视线 */
-
-/* 维护列表：行高分 12 的卡片内行 */
-
-/* 16b. 运行时状态带：三个子块是「已安装状态 + 三列信息 + 文件夹按钮」，
-   不是四个等宽格，用 flex 布局才不会挤成一团。 */
-
-/* 17. 工具视图页头徽标：橙/紫/青的实心色块违背「同一时刻只有一种饱和色」，
-   改成中性玻璃方块，身份靠底部 14×3 线路色杠表达（身份一律用线，不用填色）。 */
-
-/* 页头 h1 对齐设计稿 24/700 */
+/* 页头 h1 与动作按钮低视力友好规格 */
 .chimera-shell .tool-header h1 {
-  font-size: 24px;
-  line-height: 30px;
+  font-size: var(--fs-h1);
+  line-height: 32px;
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
   color: var(--text-1);
 }
 
 .chimera-shell .tool-header p {
-  font-size: 11.5px;
-  line-height: 16px;
-  color: var(--text-3);
+  font-size: var(--fs-base);
+  line-height: 20px;
+  color: var(--text-2);
 }
 
-/* 页头按钮统一 30 高 r9，最后一个（主作用）用 accent 白字 */
 .chimera-shell .tool-header button {
-  height: 30px;
-  border-radius: 9px;
-  font-size: 11px;
-  font-weight: 500;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 10px;
+  font-size: var(--fs-sm);
+  font-weight: 550;
+  white-space: nowrap;
+  flex-shrink: 0;
 }

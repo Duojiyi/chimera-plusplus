@@ -668,7 +668,7 @@ describe("liquid glass stylesheet safeguards", () => {
     });
     expect(declarations.get("color")).toBe("#fff");
     expect(declarations.get("background-image")).toMatch(
-      /linear-gradient\(\s*180deg,\s*var\(--glass-primary-top, #117cb9\),\s*var\(--glass-primary-bottom, #0866a3\)\s*\)/,
+      /linear-gradient\(\s*180deg,\s*var\(--glass-primary-top, #242730\),\s*var\(--glass-primary-bottom, #16181d\)\s*\)/,
     );
     for (const rule of primaryRules) {
       const backgrounds: Declaration[] = [];
@@ -679,7 +679,7 @@ describe("liquid glass stylesheet safeguards", () => {
         backgrounds.find(
           (declaration) => declaration.prop === "background-color",
         )?.value,
-      ).toBe("var(--glass-primary-bottom, #0866a3)");
+      ).toBe("var(--glass-primary-bottom, #16181d)");
       expect(
         backgrounds.map((declaration) => declaration.value).join(" "),
       ).not.toMatch(/--glass-accent|rgb\(|transparent/);
@@ -813,7 +813,7 @@ describe("liquid glass stylesheet safeguards", () => {
         "(prefers-reduced-transparency: reduce)",
       );
       expect(declarations.get("background-color")?.value).toBe(
-        "var(--bg-surface, #f8fbff)",
+        "var(--bg-surface, #ffffff)",
       );
       expect(declarations.get("background-image")?.value).toBe("none");
       for (const property of ["backdrop-filter", "-webkit-backdrop-filter"]) {
@@ -847,7 +847,7 @@ describe("liquid glass stylesheet safeguards", () => {
         "(prefers-reduced-transparency: reduce)",
       );
       expect(declarations.get("background-color")?.value).toBe(
-        "var(--bg-surface, #f8fbff)",
+        "var(--bg-surface, #ffffff)",
       );
       expect(declarations.get("background-image")?.value).toBe("none");
       expect(declarations.get("backdrop-filter")?.value).toBe("none");

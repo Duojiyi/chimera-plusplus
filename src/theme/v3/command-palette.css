@@ -6,48 +6,63 @@
    ============================================================ */
 
 .command-palette-backdrop {
-  padding-top: 150px;
-  background: #d9ddd866;
-  -webkit-backdrop-filter: blur(6px) saturate(120%);
-  backdrop-filter: blur(6px) saturate(120%);
+  padding-top: 140px;
+  background: rgba(17, 19, 24, 0.24);
+  -webkit-backdrop-filter: blur(10px) saturate(130%);
+  backdrop-filter: blur(10px) saturate(130%);
 }
 
 .command-palette {
-  width: min(600px, 100%);
-  border: 1px solid #ffffff;
-  border-radius: 16px;
-  background: #fbfbfaf0;
+  width: min(640px, 100%);
+  border: 1px solid rgba(255, 255, 255, 0.94);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.88);
   box-shadow:
-    inset 0 1px 0 #ffffffd9,
-    0 24px 60px #12366829;
-  -webkit-backdrop-filter: blur(30px) saturate(150%);
-  backdrop-filter: blur(30px) saturate(150%);
+    inset 0 1px 0 #ffffff,
+    0 24px 64px rgba(17, 19, 24, 0.18),
+    0 2px 8px rgba(17, 19, 24, 0.06);
+  -webkit-backdrop-filter: blur(36px) saturate(160%);
+  backdrop-filter: blur(36px) saturate(160%);
+  overflow: hidden;
 }
 
 .command-palette-search {
-  height: 62px;
+  height: 60px;
   gap: 12px;
   padding: 0 20px 0 22px;
-  border-bottom: 1px solid var(--v3-hairline, #0b1c2a12);
+  border-bottom: 1px solid var(--v3-hairline, rgba(17, 19, 24, 0.085));
   color: var(--text-3);
 }
 
 .command-palette-search input {
-  font-size: 15px;
+  font-size: var(--fs-md);
   line-height: 22px;
   color: var(--text-1);
+  border: 0;
+  outline: none;
+  box-shadow: none;
+  caret-color: var(--accent-petrol);
+}
+
+.chimera-shell .command-palette-search input:focus,
+.chimera-shell .command-palette-search input:focus-visible,
+.command-palette-search input:focus,
+.command-palette-search input:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 
 .command-palette-keycap {
-  height: 20px;
+  height: 22px;
   padding: 0 7px;
-  border: 1px solid #0b1c2a14;
+  border: 1px solid rgba(17, 19, 24, 0.1);
   border-radius: 6px;
-  background: #ffffffb3;
-  color: var(--text-3);
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--text-2);
   font-family: var(--font-mono, "Overpass Mono"), monospace;
-  font-size: 10px;
+  font-size: 12px;
   box-shadow: none;
+  white-space: nowrap;
 }
 
 .command-palette-list {
@@ -56,38 +71,38 @@
 
 .command-palette-group {
   padding: 12px 10px 6px;
-  color: var(--text-2);
-  font-size: 10.5px;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0;
   text-transform: none;
 }
 
-/* 行：44 高，r10；选中 = 中性高光底 + 左缘 2×44 墨条（母题，规范 §4.1.1） */
+/* 行：选中态 = 柔和矿物高光 + 左缘 3px 深矿物石油绿竖条 */
 .command-palette-item {
   position: relative;
   height: auto;
-  min-height: 46px;
+  min-height: 48px;
   gap: 12px;
-  padding: 6px 12px;
-  border-radius: 10px;
+  padding: 7px 14px;
+  border-radius: 11px;
   color: var(--text-1);
 }
 
 .command-palette-item[aria-selected="true"] {
-  background: #eef1ee;
+  background: rgba(14, 100, 112, 0.08);
 }
 
 .command-palette-item[aria-selected="true"]::before {
   content: "";
   position: absolute;
   left: 0;
-  top: 0;
-  bottom: 0;
-  width: 2px;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
   height: auto;
-  border-radius: 0;
-  background: #0c1a24;
+  border-radius: 2px;
+  background: var(--accent-petrol);
   transform: none;
 }
 
@@ -103,7 +118,7 @@
 
 .command-palette-item[aria-selected="true"]
   .command-palette-icon:not([data-line]) {
-  color: var(--brand, #1f4d3a);
+  color: var(--accent-petrol);
 }
 
 /* 标题在上、副行在下（L16） */
@@ -116,13 +131,13 @@
 }
 
 .command-palette-title {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--text-1);
 }
 
 .command-palette-subtitle {
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
 }
 
@@ -133,27 +148,124 @@
   border: 1px solid #ffffff;
   border-radius: 10px;
   background: #ffffff;
-  color: #1f4d3a;
-  font-size: 10.5px;
+  color: var(--accent-petrol);
+  font-size: var(--fs-xs);
   font-weight: 600;
 }
 
 .command-palette-empty {
   padding: 28px 12px;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .command-palette-footer {
-  height: 38px;
+  height: 42px;
   padding: 0 22px;
-  border-top: 1px solid var(--v3-hairline, #0b1c2a12);
-  background: transparent;
-  color: var(--text-3);
-  font-size: 10.5px;
+  border-top: 1px solid var(--v3-hairline, rgba(17, 19, 24, 0.085));
+  background: rgba(214, 220, 228, 0.42);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
 }
 
 .command-palette-footer .command-palette-keycap {
-  height: 18px;
-  background: transparent;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+/* The desktop palette begins 90px inside the 850px reference window. */
+.command-palette-count {
+  margin-inline-start: 0.5em;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+@media (min-width: 760px) and (min-height: 620px) {
+  .command-palette-backdrop {
+    align-items: flex-start;
+    padding-block-start: clamp(32px, 10.6vh, 112px);
+  }
+
+  .command-palette-backdrop .command-palette {
+    max-height: min(596px, calc(100dvh - clamp(32px, 10.6vh, 112px) - 24px));
+  }
+
+  .command-palette-item .command-palette-text {
+    display: flex;
+    align-items: baseline;
+    flex-direction: row;
+    gap: 0.65em;
+    min-width: 0;
+  }
+
+  .command-palette-item .command-palette-title,
+  .command-palette-item .command-palette-subtitle {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .command-palette-list > [role="group"] + [role="group"] {
+    border-block-start: 1px solid var(--glass-border);
+    margin-block-start: 6px;
+  }
+}
+
+/* The result list scrolls independently; search and keyboard help stay visible. */
+.command-palette-backdrop .command-palette {
+  display: flex;
+  flex-direction: column;
+  max-height: min(592px, 100%);
+}
+.command-palette .command-palette-list {
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+}
+.command-palette .command-palette-search,
+.command-palette .command-palette-footer {
+  flex: none;
+}
+.command-palette .command-palette-group {
+  box-sizing: border-box;
+  min-height: 42px;
+}
+.command-palette .command-palette-item {
+  min-height: 56px;
+}
+.command-palette .command-palette-glyph {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--bg-subtle, rgba(116, 129, 145, 0.1));
+  color: var(--text-2);
+}
+.command-palette .command-palette-glyph[data-kind="line"] {
+  background: var(--text-1, #171a20);
+  color: var(--bg-surface, #fff);
+  font-weight: 650;
+}
+.command-palette .command-palette-hints {
+  display: inline-flex;
+  flex: none;
+  gap: 5px;
+}
+.command-palette .command-palette-location {
+  flex: none;
+  font: 12px var(--font-mono, monospace);
+  color: var(--text-3);
+}
+.command-palette .command-palette-footer > span:last-child {
+  margin-inline-start: auto;
+}
+@media (max-width: 600px) {
+  .command-palette .command-palette-location,
+  .command-palette-hints kbd:nth-child(2) {
+    display: none;
+  }
 }

@@ -1,59 +1,59 @@
 ---
-version: alpha
-name: Chimera++ Precision Desktop
-description: A restrained, high-confidence Windows desktop system for Codex connection and runtime management.
+version: v3
+name: Chimera++ v3 Light Liquid Glass Desktop
+description: A restrained, high-confidence Windows desktop system for Codex connection, multi-account, and runtime management.
 colors:
-  canvas: "oklch(0.975 0.004 260)"
-  surface: "oklch(0.995 0.002 260)"
+  canvas: "#e4e9e4"
+  surface: "rgba(255, 255, 255, 0.72)"
   surface-raised: "#FFFFFF"
-  surface-subtle: "oklch(0.955 0.008 260)"
-  ink: "oklch(0.205 0.018 260)"
-  ink-muted: "oklch(0.48 0.015 260)"
-  line: "oklch(0.88 0.008 260)"
-  sidebar: "oklch(0.18 0.018 260)"
-  sidebar-raised: "oklch(0.245 0.018 260)"
-  accent: "oklch(0.61 0.205 32)"
-  accent-hover: "oklch(0.55 0.205 32)"
-  accent-soft: "oklch(0.94 0.04 32)"
-  success: "oklch(0.62 0.13 165)"
-  success-soft: "oklch(0.94 0.035 165)"
-  warning: "oklch(0.73 0.15 75)"
-  error: "oklch(0.56 0.20 28)"
-  focus: "oklch(0.56 0.16 240)"
+  surface-subtle: "#eef2ee"
+  ink: "#151b18"
+  ink-muted: "#536059"
+  line: "rgba(21, 27, 24, 0.09)"
+  sidebar: "rgba(255, 255, 255, 0.56)"
+  sidebar-raised: "rgba(31, 106, 74, 0.10)"
+  accent: "#1f6a4a"
+  accent-hover: "#18563b"
+  accent-soft: "rgba(31, 106, 74, 0.12)"
+  success: "#1f7a4c"
+  success-soft: "rgba(31, 122, 76, 0.12)"
+  warning: "#9a5b13"
+  error: "#b4342c"
+  focus: "#1f6a4a"
 typography:
   title-lg:
-    fontFamily: "Inter, Microsoft YaHei UI, Segoe UI, sans-serif"
-    fontSize: 24px
+    fontFamily: "Overpass, Noto Sans SC, system-ui, sans-serif"
+    fontSize: 22px
     fontWeight: 650
     lineHeight: 1.25
     letterSpacing: 0px
   title-md:
-    fontFamily: "Inter, Microsoft YaHei UI, Segoe UI, sans-serif"
-    fontSize: 18px
-    fontWeight: 650
+    fontFamily: "Overpass, Noto Sans SC, system-ui, sans-serif"
+    fontSize: 16px
+    fontWeight: 600
     lineHeight: 1.35
     letterSpacing: 0px
   body-md:
-    fontFamily: "Inter, Microsoft YaHei UI, Segoe UI, sans-serif"
-    fontSize: 14px
+    fontFamily: "Overpass, Noto Sans SC, system-ui, sans-serif"
+    fontSize: 13.5px
     fontWeight: 400
     lineHeight: 1.5
     letterSpacing: 0px
   body-sm:
-    fontFamily: "Inter, Microsoft YaHei UI, Segoe UI, sans-serif"
-    fontSize: 13px
+    fontFamily: "Overpass, Noto Sans SC, system-ui, sans-serif"
+    fontSize: 12px
     fontWeight: 400
     lineHeight: 1.45
     letterSpacing: 0px
   label-md:
-    fontFamily: "Inter, Microsoft YaHei UI, Segoe UI, sans-serif"
-    fontSize: 13px
+    fontFamily: "Overpass, Noto Sans SC, system-ui, sans-serif"
+    fontSize: 12.5px
     fontWeight: 550
     lineHeight: 1.3
     letterSpacing: 0px
   data-md:
-    fontFamily: "JetBrains Mono, Cascadia Mono, Consolas, monospace"
-    fontSize: 13px
+    fontFamily: "Overpass Mono, ui-monospace, Cascadia Mono, Consolas, monospace"
+    fontSize: 12.5px
     fontWeight: 500
     lineHeight: 1.4
     letterSpacing: 0px
@@ -85,7 +85,7 @@ components:
     height: 36px
   nav-active:
     backgroundColor: "{colors.sidebar-raised}"
-    textColor: "#FFFFFF"
+    textColor: "{colors.accent}"
     rounded: "{rounded.sm}"
   input-default:
     backgroundColor: "{colors.surface-raised}"
@@ -98,49 +98,44 @@ components:
 
 ## Overview
 
-Chimera++ is a precision desktop utility, not a consumer dashboard. The visual experience should feel intentional from the first second: calm neutral surfaces, confident typography, selective signal-red actions, and crisp state changes. The reference composition is a connection console: users should immediately recognize what Codex is using, whether it is healthy, and what they can change.
+Chimera++ is a precision desktop utility, not a consumer dashboard. The visual experience should feel intentional from the first second: calm light liquid-glass surfaces, confident typography, selective forest-green (`#1f6a4a`) actions, and crisp state changes. The reference composition is a connection console: users should immediately recognize what Codex is using, whether it is healthy, and what they can change.
 
-Use a light workspace and a dark graphite navigation rail. The color accent is a signal, not decoration. Keep the interface dense enough for repeated work, but give the current connection and its next action enough space to be read at a glance. Avoid beige, blue-slate monoculture, gradients, glass effects, glowing ornaments, and generic metric-card grids.
+Use a light sage-tinted workspace (`#f3f7f4`) and a translucent light liquid-glass navigation rail (`232px`). The color accent is a signal, not decoration. Keep the interface dense enough for repeated work, but give the current connection and its next action enough space to be read at a glance. Avoid loud gradients, neon ornaments, and generic metric-card grids.
 
 ## Colors
 
-- **Canvas:** `canvas` is a cool near-neutral workspace background. It provides separation without making every region a card.
-- **Surfaces:** `surface` and `surface-raised` create a maximum of three tonal layers. Use borders only where they explain containment or interaction.
-- **Signal red:** `accent` identifies the one primary action on a screen, the active provider route, and critical confirmation states. It is never a page background or a decorative gradient.
+- **Canvas:** `canvas` is a cool sage-tinted neutral workspace background (`#f3f7f4`). It provides separation without making every region a card.
+- **Surfaces:** `surface` and `surface-raised` create a maximum of three tonal layers. Use hairline borders (`--v3-hairline`) where they explain containment or interaction.
+- **Forest-green accent:** `accent` (`#1f6a4a`) identifies the one primary action on a screen, the active provider route, and key focus states. Destructive actions use semantic danger red (`--danger-fg`/`--danger-bg`).
 - **Semantic states:** success is green, warning is amber, error is red. Status text and icons must accompany color.
-- **Sidebar:** dark graphite is structural, not a second brand color. Selected navigation uses `sidebar-raised`; do not use a colored stripe or a glow.
+- **Sidebar:** translucent light glass (`--sidebar-bg`, `232px` via `--size-sidebar`) is structural, not a second brand color. Selected navigation uses a subtle tonal fill; do not use a glow.
 
 ## Typography
 
-Use Inter with `Microsoft YaHei UI` / `Segoe UI` fallback for Chinese Windows installations. UI text must not drop below 13px. Reserve the monospace face for URLs, model IDs, versions, file paths, and diagnostic output; it must not become the general visual voice.
+Bundled offline variable fonts (`Overpass`, `Noto Sans SC`, and `Overpass Mono`) provide consistent cross-platform rendering without any runtime CDN or system-font dependency. Reserve the monospace face (`Overpass Mono`) for URLs, model IDs, versions, token fingerprints, file paths, and diagnostic output.
 
 Page titles use `title-lg`; panel titles use `title-md`. Labels, button text, and navigation all use `label-md`. Body copy uses `body-md` or `body-sm`. Avoid uppercase English section kickers and wide tracking; Chinese interface labels should stay compact and natural.
 
 ## Layout
 
-The desktop shell has a Windows-native title area, a scrollable workspace with `28px` outer gutters, and a floating pill navigation centred at the bottom of the workspace carrying the six destinations. There is no persistent sidebar: the earlier `208px` rail was replaced by this bottom bar when the v2 route interface landed, and v2.2.0 removed the leftover variant CSS. `.chimera-sidebar` now survives only as a `display: none` rule with no remaining references. The active page owns scrolling. Content should align to a 4px spacing system.
+The v3 desktop shell combines a persistent `232px` light liquid-glass sidebar (`--size-sidebar: 232px`, `aside.chimera-sidebar`), a `52px` top titlebar (`--size-titlebar: 52px`) with breadcrumb context, global search (`Ctrl+K`), and native window controls, and a scrollable light liquid-glass workspace (`section.chimera-content`). Full-screen overlay panels (`FullScreenPanel`) start below the `52px` titlebar (`top-[var(--size-titlebar,52px)]`) so window dragging and window controls remain accessible at all times.
 
-The window itself is frameless and transparent with the OS shadow disabled, so the shell's own 1px ring is the only thing separating the app from the desktop. That ring must be a translucent ink, not an opaque near-white: the divider tone sits at 1.26:1 against a white backdrop and disappears, while the shipped `--shell-edge` measures 2.00:1 there and still composites correctly over a dark one.
-
-The control console uses a two-column desktop layout: a primary route area and a compact inspection panel. The active connection is the first visual object, not a small card buried in a grid. Provider switching is a dense list or a destination selector; provider editing opens inline or in a focused sheet.
-
-The tools page groups health scan, connection test, backup, config transfer, and folder access into operational sections. Historical events are secondary and appear beneath useful actions, never as a standalone top-level page.
+The window itself is frameless with a 1px structural edge ring separating the app from the desktop. Within the sidebar, the tool switcher popover switches between Codex and enabled multi-tools, the middle workspace/local sections support keyboard arrow navigation, and global destinations (`会话` and `设置`) remain anchored at the bottom of the rail.
 
 ## Elevation & Depth
 
-Use tonal layers and one-pixel borders for normal surfaces. Do not combine decorative borders with large soft shadows. Only sheets, menus, and dialogs may use elevation: `0 8px 24px rgba(20, 24, 32, 0.14)`. Modal backdrops use a solid translucent ink layer; no blur is required.
-
-Liquid glass is reserved for three surfaces: the floating bottom navigation, the provider switcher, and the provider line rail. It is not frosted glass: keep the transmitted content clear, use edge refraction, a narrow specular highlight, subtle saturation/contrast, and physical press deformation. Do not use broad blur, cloudy translucent panels, or glass cards elsewhere in the product. Unsupported environments fall back to the same translucent fill and crisp edge treatment without filtering.
+Surfaces use the v3 Light Liquid Glass tokens (`--v3-glass-fill`, `--v3-hairline`, `--v3-shadow-inner-top`, `--v3-shadow-outer`) over the sage-tinted neutral canvas. Solid or high-opacity backings keep text legible at WCAG 2.2 AA contrast. Sheets, menus, and dialogs use crisp hairline borders and restrained elevation.
 
 ## Shapes
 
-The shipped radius scale is `4px` / `8px` / `12px` / `16px`. Use the small end for controls (buttons land at `7px`), `8px` for panels, `12px` for large dialogs and preview frames, and `16px` for the window shell itself. Pills are reserved for compact state tags and for the floating bottom navigation. Windows window controls must use correct Windows behavior and recognizable symbols; never imitate macOS traffic lights.
+The radius scale uses `6px`–`8px` for compact controls and badges, `10px`–`14px` for cards, signboards, and dialogs, and `16px` for the window shell. Windows window controls sit at the top right (and macOS controls at the top left on macOS) and operate the real Tauri window.
 
 ## Components
 
-- **Connection hero:** displays provider, model, endpoint health, and one primary action. It has a restrained status indicator, never a radar, threat overlay, or network-topology visualization. One deliberate exception, added in v2.3.0: a dotted globe (`RouteGlobe`) sits behind the route area. It is scoped tightly — geometry from a 110m Natural Earth land mask, dots tinted from the active palette, a static halo, no routes, arcs, markers, or scanning motion, and no threat semantics. It spins slowly and honours `prefers-reduced-motion` in JS (slow / freeze / spin, default slow, re-read on preference change rather than once at setup), so the blanket CSS reduced-motion rule is not what carries it. Where WebGL is unavailable it degrades to a pure-CSS dotted disc in the same colours.
-- **Provider destination list:** each row contains provider name, endpoint domain, selected model, and connection state. Selection changes the inspector with a 180ms crossfade and 4px horizontal settle.
-- **Buttons:** primary is signal-red; secondary is bordered white; tertiary is icon-only with a tooltip. Every button has default, hover, pressed, focus, disabled, loading, and error recovery states.
+- **Station signboard (`StationSignboard`):** displays the active Codex route, provider badge, model, endpoint latency, runtime status, 10-minute switch undo bar, and primary launch/restart action. (The historical v2.3 `RouteGlobe` has been retired.)
+- **Provider line table (`ProviderLineTable`):** lists configured routes with search, one-click switch, inline latency test, and route manager dialog.
+- **Official account cards (`OfficialAccountsView`, `ClaudeAccountsCard`):** manage multiple ChatGPT and Claude accounts with quota progress bars, tags, groups, notes, and relogin indicators.
+- **Buttons:** primary uses forest-green `--btn-primary-bg`; secondary is bordered light surface; tertiary is icon-only with a tooltip; destructive actions use danger red. Every button has default, hover, pressed, focus, disabled, loading, and error recovery states.
 - **Inputs:** labels stay above inputs. URL, key, and model fields have clear helper text. Key reveal, model picker, folder picker, and test connection use familiar icon actions with tooltips.
 - **Segmented controls:** use for stable versus portable distribution and automatic versus manual update source. They do not resize on selection.
 - **Tool rows:** health scan, backup, import/export, and open-folder actions use a title, one concise explanation, current status, and an icon action.
@@ -173,5 +168,5 @@ No page-load choreography, looping glows, parallax, or universal staggered entra
 - Don't build screens from repeated same-size metric cards.
 - Don't use upstream author names, sponsor marks, provider advertising, or repository labels in the customer interface.
 - Don't hide expert settings, but don't put them in the beginner flow.
-- Don't use fake macOS controls, gradient page backgrounds, frosted-glass cards, or large rounded rectangles as decoration.
+- Don't use fake macOS controls, loud gradient page backgrounds, or decorative neon glows.
 - Don't make a full page scroll just to change a skin or switch a provider.

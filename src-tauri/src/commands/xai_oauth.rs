@@ -44,7 +44,9 @@ pub async fn get_xai_oauth_models(
         .await
         .map_err(|error| format!("xAI OAuth token unavailable: {error}"))?;
 
-    let response = crate::proxy::http_client::get()
+    let client = crate::proxy::http_client::get_for_auth_probe()
+        .map_err(|error| format!("Failed to build xAI HTTP client: {error}"))?;
+    let response = client
         .get(format!("{XAI_API_BASE_URL}/models"))
         .bearer_auth(token)
         .timeout(Duration::from_secs(15))

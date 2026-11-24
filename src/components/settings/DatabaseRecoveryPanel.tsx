@@ -37,6 +37,7 @@ export function DatabaseRecoveryPanel({
   useLightweightCloseBlocker(busy);
   useEffect(() => {
     onBusyChange?.(busy);
+    return () => onBusyChange?.(false);
   }, [busy, onBusyChange]);
   const run = async (job: () => Promise<unknown>) => {
     if (lock.current) return;

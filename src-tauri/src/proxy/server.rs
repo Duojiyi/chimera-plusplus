@@ -188,8 +188,13 @@ impl ProxyServer {
                             // before hyper parses (and lowercases) the header names.
                             let original_cases = {
                                 let mut peek_buf = vec![0u8; 8192];
-                                match stream.peek(&mut peek_buf).await {
-                                    Ok(n) => {
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_secs(5),
+                                    stream.peek(&mut peek_buf),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(n)) => {
                                         let cases = super::hyper_client::OriginalHeaderCases::from_raw_bytes(&peek_buf[..n]);
                                         log::debug!(
                                             "[ProxyServer] Peeked {} bytes, captured {} header casings",
@@ -197,8 +202,12 @@ impl ProxyServer {
                                         );
                                         cases
                                     }
-                                    Err(e) => {
+                                    Ok(Err(e)) => {
                                         log::debug!("[ProxyServer] peek failed (non-fatal): {e}");
+                                        super::hyper_client::OriginalHeaderCases::default()
+                                    }
+                                    Err(_) => {
+                                        log::debug!("[ProxyServer] peek timed out (non-fatal)");
                                         super::hyper_client::OriginalHeaderCases::default()
                                     }
                                 }
@@ -457,29 +466,17 @@ impl ProxyServer {
             // Request bodies are buffered whole; image-heavy Responses requests
             // are the largest legitimate callers, well inside this cap.
             .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
-            // Browsers never carry the proxy token, but a page can still fire
-            // credential-less requests at this port, so a browser-context
-            // request is turned away before anything else sees it. `Origin`
-            // is a browser-context header: fetch/XHR
-            // from a page always sets it — even on a same-site "simple"
-            // request that never triggers a CORS preflight, a bare
-            // `text/plain` POST included — while every legitimate caller
-            // here (Codex CLI's Rust HTTP client, curl, this app's own
-            // reqwest-based tooling) never does. A `CorsLayer` alone would
-            // NOT close this gap: CORS only stops the browser from *reading*
-            // the response, not the server from *acting on* the request —
-            // and burning the user's quota / injecting a prompt under their
-            // authenticated line doesn't require reading the reply. Reject
-            // at the door instead.
-            .layer(middleware::from_fn(reject_browser_origin_requests))
-            // Outermost, so an unauthenticated caller costs nothing beyond the
-            // header check: loopback Host, then the install's proxy token, then
-            // the global concurrency cap.
+            // In Axum, `.layer()` wraps outer-last. Execution order is therefore:
+            // reject_browser_origin_requests → require_local_proxy_auth → limit_concurrent_requests.
+            .layer(middleware::from_fn(limit_concurrent_requests))
             .layer(middleware::from_fn_with_state(
                 self.state.clone(),
                 require_local_proxy_auth,
             ))
-            .layer(middleware::from_fn(limit_concurrent_requests))
+            // Browsers never carry the proxy token, but a page can still fire
+            // credential-less requests at this port, so a browser-context
+            // request is turned away before anything else sees it.
+            .layer(middleware::from_fn(reject_browser_origin_requests))
             .with_state(self.state.clone())
     }
 
@@ -519,7 +516,7 @@ impl ProxyServer {
 }
 
 /// Largest request body any proxy endpoint buffers.
-const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
 /// Requests being read or forwarded at once; a local flood gets 429 instead of
 /// exhausting memory with large bodies.
 const MAX_CONCURRENT_REQUESTS: usize = 128;
@@ -551,21 +548,30 @@ async fn limit_concurrent_requests(request: Request, next: Next) -> Response {
         )
             .into_response();
     };
-    next.run(request).await
+    // Enforce the byte cap on chunked / Content-Length-less bodies too, since
+    // handlers take raw `Request` and bypass Axum's `DefaultBodyLimit`.
+    let (parts, body) = request.into_parts();
+    let limited = axum::body::Body::new(http_body_util::Limited::new(body, MAX_REQUEST_BODY_BYTES));
+    next.run(Request::from_parts(parts, limited)).await
 }
 
 /// Endpoints and requests that need no credential: the liveness probe, the
-/// Claude Desktop gateway (it checks its own token), and WebSocket handshakes,
-/// which are only answered with 426 so the client falls back to HTTP.
+/// Claude Desktop gateway (it checks its own token), and GET WebSocket
+/// handshakes on Responses endpoints, which are only answered with 426 so the
+/// client falls back to HTTP.
 fn proxy_request_is_public(request: &Request) -> bool {
     let path = request.uri().path();
-    path == "/health"
-        || path.starts_with("/claude-desktop/")
-        || request
+    let is_responses_ws_probe = request.method() == axum::http::Method::GET
+        && matches!(
+            path,
+            "/responses" | "/v1/responses" | "/v1/v1/responses" | "/codex/v1/responses"
+        )
+        && request
             .headers()
             .get(header::UPGRADE)
             .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+            .is_some_and(|value| value.eq_ignore_ascii_case("websocket"));
+    path == "/health" || path.starts_with("/claude-desktop/") || is_responses_ws_probe
 }
 
 /// Only callers that name the loopback interface and present the install's
@@ -578,18 +584,30 @@ async fn require_local_proxy_auth(
 ) -> Response {
     use super::local_auth::{authorize, host_is_loopback, proxy_token, ProxyAuth};
 
-    if let Some(host) = request
-        .headers()
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-    {
-        if !host_is_loopback(host) {
+    let mut host_values = request.headers().get_all(header::HOST).iter();
+    let first_host = match (host_values.next(), host_values.next()) {
+        (Some(value), None) => value,
+        _ => {
             return (
                 StatusCode::MISDIRECTED_REQUEST,
-                "The local Chimera++ proxy only answers requests addressed to the loopback interface.",
+                "The local Chimera++ proxy requires a single loopback Host header.",
             )
                 .into_response();
         }
+    };
+    let Ok(host) = first_host.to_str() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "The local Chimera++ proxy rejected a non-UTF-8 Host header.",
+        )
+            .into_response();
+    };
+    if !host_is_loopback(host) {
+        return (
+            StatusCode::MISDIRECTED_REQUEST,
+            "The local Chimera++ proxy only answers requests addressed to the loopback interface.",
+        )
+            .into_response();
     }
     if proxy_request_is_public(&request) {
         return next.run(request).await;
@@ -715,6 +733,7 @@ mod tests {
             let request = http::Request::builder()
                 .method("GET")
                 .uri(path)
+                .header(http::header::HOST, "127.0.0.1:15721")
                 .header(http::header::CONNECTION, "Upgrade")
                 .header(http::header::UPGRADE, "websocket")
                 .header("sec-websocket-version", "13")
@@ -748,6 +767,7 @@ mod tests {
         builder
             .method("POST")
             .uri("/v1/responses")
+            .header(http::header::HOST, "127.0.0.1:15721")
             .header(http::header::CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from("{}"))
             .unwrap()
@@ -789,12 +809,36 @@ mod tests {
         // The status page is not public either.
         let status = http::Request::builder()
             .uri("/status")
+            .header(http::header::HOST, "127.0.0.1:15721")
             .body(axum::body::Body::empty())
             .unwrap();
         assert_eq!(
             call(&mut router, status).await.status(),
             http::StatusCode::UNAUTHORIZED
         );
+
+        // Sending `Upgrade: websocket` on non-426 routes or POST requests must not bypass auth.
+        for (method, path) in [
+            ("POST", "/v1/messages"),
+            ("POST", "/v1/responses"),
+            ("POST", "/v1/chat/completions"),
+            ("GET", "/status"),
+            ("GET", "/v1/models"),
+        ] {
+            let bypass_attempt = http::Request::builder()
+                .method(method)
+                .uri(path)
+                .header(http::header::HOST, "127.0.0.1:15721")
+                .header(http::header::UPGRADE, "websocket")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from("{}"))
+                .unwrap();
+            assert_eq!(
+                call(&mut router, bypass_attempt).await.status(),
+                http::StatusCode::UNAUTHORIZED,
+                "{method} {path} with Upgrade: websocket must require auth"
+            );
+        }
     }
 
     #[tokio::test]
@@ -803,6 +847,42 @@ mod tests {
         let server = ProxyServer::new(ProxyConfig::default(), db, None);
         let mut router = server.build_router();
         let token = crate::proxy::local_auth::proxy_token();
+
+        // Missing Host header must fail closed.
+        let missing_host = http::Request::builder()
+            .uri("/health")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            call(&mut router, missing_host).await.status(),
+            http::StatusCode::MISDIRECTED_REQUEST
+        );
+
+        // Duplicate Host headers must fail closed.
+        let duplicate_host = http::Request::builder()
+            .uri("/health")
+            .header(http::header::HOST, "127.0.0.1:15721")
+            .header(http::header::HOST, "attacker.example:15721")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            call(&mut router, duplicate_host).await.status(),
+            http::StatusCode::MISDIRECTED_REQUEST
+        );
+
+        // Non-UTF-8 Host header must fail closed.
+        let bad_utf8_host = http::Request::builder()
+            .uri("/health")
+            .header(
+                http::header::HOST,
+                http::HeaderValue::from_bytes(b"127.0.0.1:\xff").unwrap(),
+            )
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            call(&mut router, bad_utf8_host).await.status(),
+            http::StatusCode::BAD_REQUEST
+        );
 
         // DNS rebinding: the page's own host name resolves to 127.0.0.1.
         for path in ["/health", "/v1/models"] {
@@ -839,6 +919,7 @@ mod tests {
         let request = http::Request::builder()
             .method("POST")
             .uri("/v1/responses")
+            .header(http::header::HOST, "127.0.0.1:15721")
             .header(http::header::AUTHORIZATION, format!("Bearer {token}"))
             .header(http::header::CONTENT_LENGTH, body.len())
             .body(axum::body::Body::from(body))
@@ -858,6 +939,7 @@ mod tests {
         let browser_request = http::Request::builder()
             .method("GET")
             .uri("/health")
+            .header(http::header::HOST, "127.0.0.1:15721")
             .header(http::header::ORIGIN, "https://evil.example")
             .body(axum::body::Body::empty())
             .unwrap();
@@ -872,6 +954,7 @@ mod tests {
         let cli_request = http::Request::builder()
             .method("GET")
             .uri("/health")
+            .header(http::header::HOST, "127.0.0.1:15721")
             .body(axum::body::Body::empty())
             .unwrap();
         let response = <Router as tower::Service<http::Request<axum::body::Body>>>::call(

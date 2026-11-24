@@ -40,7 +40,9 @@
     "deleting": "削除中...",
     "auto": "自動",
     "enabled": "有効",
-    "notSet": "未設定"
+    "notSet": "未設定",
+    "hidePassword": "パスワードを非表示",
+    "showPassword": "パスワードを表示"
   },
   "firstRunNotice": {
     "title": "CC Switch へようこそ",
@@ -220,7 +222,8 @@
       "tooltip": {
         "active": "Claude Desktop ローカルルーティングは起動中です - {{address}}:{{port}}",
         "inactive": "モデルマッピングや形式変換が必要なプロバイダー向けに Claude Desktop ローカルルーティングを起動します。設定アドレス: {{address}}:{{port}}"
-      }
+      },
+      "stopBlockedByTakeover": "他のアプリがプロキシ引き継ぎを使用中です。ローカルルートを停止する前に、設定で該当アプリの引き継ぎを無効にしてください。"
     }
   },
   "notifications": {
@@ -992,7 +995,9 @@
     "messageCopied": "メッセージがコピーされました",
     "conversationHistory": "会話履歴",
     "expandContent": "全文を表示",
-    "collapseContent": "折りたたむ"
+    "collapseContent": "折りたたむ",
+    "reclaimDeferred": "{{files}} 件のセッションファイルを復元しました。{{deferred}} 件のアクティブなセッションファイルは延期されました。",
+    "reclaimDeferredDetail": "{{rows}} 件のインデックスレコードを更新しました。該当セッションの書き込みを停止してから再度復元をクリックしてください。アクティブなファイルは上書きされません。"
   },
   "console": {
     "providerSwitchReceived": "プロバイダー切り替えイベントを受信:",
@@ -1146,7 +1151,8 @@
     "fetchModelsAuthFailed": "API Key が無効か、権限がありません",
     "fetchModelsNotSupported": "このプロバイダーはモデル一覧の取得に対応していません",
     "fetchModelsEndpointNotFound": "利用可能なモデル一覧エンドポイントが見つかりません。Base URL を確認するか、プロバイダーが該当 API を公開しているかご確認ください",
-    "fetchModelsTimeout": "リクエストがタイムアウトしました。ネットワーク接続を確認してください"
+    "fetchModelsTimeout": "リクエストがタイムアウトしました。ネットワーク接続を確認してください",
+    "requiredFields": "プロバイダー名、API URL、API キー、モデルを入力してください"
   },
   "copilot": {
     "authSection": "GitHub Copilot 認証",
@@ -1203,7 +1209,8 @@
     "retry": "再試行",
     "copyCode": "コードをコピー",
     "fastMode": "FAST モード",
-    "fastModeDescription": "低遅延のため service_tier=\"priority\" を送信します。既定ではオフ——オンにすると ChatGPT のクォータがより速く消費されます。"
+    "fastModeDescription": "低遅延のため service_tier=\"priority\" を送信します。既定ではオフ——オンにすると ChatGPT のクォータがより速く消費されます。",
+    "requiresReauth": "再認証が必要"
   },
   "xaiOauth": {
     "authStatus": "xAI OAuth 認証",
@@ -1254,7 +1261,8 @@
     "testUnavailable": "速度テストを実行できません",
     "noResult": "結果がありません",
     "testFailed": "速度テストに失敗しました: {{error}}",
-    "empty": "エンドポイントがありません"
+    "empty": "エンドポイントがありません",
+    "addEndpoint": "カスタムエンドポイントを追加"
   },
   "providerAdvanced": {
     "pricingConfig": "課金設定",
@@ -1349,7 +1357,20 @@
     "reasoningEffortHint": "上流が low/high/max などの思考の深さの制御に対応している場合に有効化します。有効にすると思考モードも自動的にオンになり、Codex の reasoning.effort を上流の Chat パラメータに変換します。",
     "reasoningGroupTitle": "思考能力",
     "reasoningSectionHint": "プリセットの供給元は自動的に設定され、カスタム供給元は名前/URL から自動推論されます。自動識別が正しくない場合のみ手動で上書きしてください。",
-    "advancedSectionHint": "上流フォーマット、モデルマッピング、思考能力、カスタム User-Agent の設定を含みます。Chat Completions プロトコルを使用するプロバイダーはルーティング引き継ぎの有効化が必要です。"
+    "advancedSectionHint": "上流フォーマット、モデルマッピング、思考能力、カスタム User-Agent の設定を含みます。Chat Completions プロトコルを使用するプロバイダーはルーティング引き継ぎの有効化が必要です。",
+    "catalogColumnImage": "画像入力",
+    "modelRouteToggle": "専用アップストリームルート",
+    "modelRouteTitle": "専用アップストリームルート：{{model}}",
+    "modelRouteEnabled": "ルートを有効化",
+    "modelRouteRemove": "ルートを削除",
+    "modelRouteHint": "このモデルのリクエストは以下の専用アップストリームに送信されます。空欄の項目はこのルートのデフォルト設定を引き継ぎます。",
+    "modelRouteBaseUrlPlaceholder": "アップストリーム URL（例: https://api.example.com/v1）",
+    "modelRouteBaseUrl": "ルートアップストリーム URL",
+    "modelRouteApiKeyPlaceholder": "ルート API キー（任意）",
+    "modelRouteApiKey": "ルート API キー",
+    "modelRouteFormatInherit": "プロトコル：モデルファミリーのデフォルト",
+    "modelRouteFullUrl": "URL は完全な API エンドポイントです",
+    "noCommonConfigToApply": "共通設定スニペットが空か、書き込める内容がありません"
   },
   "geminiConfig": {
     "envFile": "環境変数 (.env)",
@@ -1618,7 +1639,10 @@
     "modelsDevTruncated": "{{total}} 件中、先頭 {{shown}} 件のみ表示しています。検索条件を絞り込んでください",
     "modelsDevDefaultHint": "最新リリース順に {{shown}} 件を表示しています（全 {{total}} 件）。キーワード入力で全件検索できます",
     "cacheReadCostPerMillion": "キャッシュ読み取りコスト（100万トークンあたり、USD）",
-    "cacheCreationCostPerMillion": "キャッシュ書き込みコスト（100万トークンあたり、USD）"
+    "cacheCreationCostPerMillion": "キャッシュ書き込みコスト（100万トークンあたり、USD）",
+    "unpriced": "価格未設定",
+    "previousMonth": "前月",
+    "nextMonth": "翌月"
   },
   "usageScript": {
     "title": "利用状況を設定",
@@ -2285,7 +2309,12 @@
     "envConfirm": "次の変数は {{tool}} のよく使う変数リストにありません。チェックしたものだけインポートします。",
     "importSuccessActivated": "「{{name}}」に切り替えました。",
     "mcpImportNone": "MCP サーバーはインポートされませんでした",
-    "mcpImportNoneDescription": "{{ids}} の設定が無効です。一部だけのインポートを避けるため、どのサーバーもインポートしていません。"
+    "mcpImportNoneDescription": "{{ids}} の設定が無効です。一部だけのインポートを避けるため、どのサーバーもインポートしていません。",
+    "importFinalizeError": "インポートは完了しましたが、更新またはクリーンアップの確認に失敗しました。「完了」をクリックして再試行してください（重複インポートはされません）。",
+    "targetPaths": "変更される設定ファイル",
+    "writesLive": "上記のライブ設定ファイルにただちに書き込まれます",
+    "importOnly": "アプリデータベースにのみインポートされ、有効化するまでライブ設定ファイルは変更されません",
+    "previewError": "リンク先のプレビューを読み込めませんでした。インポート時にバックエンドで検証されます"
   },
   "iconPicker": {
     "search": "アイコンを検索",
@@ -2467,7 +2496,8 @@
       "removeFailed": "削除に失敗しました",
       "reorderSuccess": "キュー順序を更新しました",
       "reorderFailed": "順序の更新に失敗しました",
-      "toggleFailed": "状態の更新に失敗しました"
+      "toggleFailed": "状態の更新に失敗しました",
+      "addProvider": "フェイルオーバーキューに追加"
     },
     "autoFailover": {
       "info": "フェイルオーバーキューに複数のプロバイダーが設定されている場合、リクエストが失敗すると優先度順に試行します。プロバイダーが連続失敗のしきい値に達すると、サーキットブレーカーが開き、一時的にスキップされます。",
@@ -2512,7 +2542,9 @@
     },
     "server": {
       "started": "ルーティングサービスが開始されました - {{address}}:{{port}}",
-      "startFailed": "ルーティングサービスの開始に失敗しました: {{detail}}"
+      "startFailed": "ルーティングサービスの開始に失敗しました: {{detail}}",
+      "stopped": "プロキシサーバーを停止しました",
+      "stopFailed": "プロキシサーバーの停止に失敗しました: {{detail}}"
     },
     "stoppedWithRestore": "ルーティングサービスが停止し、すべてのルーティング設定が復元されました",
     "stopWithRestoreFailed": "停止に失敗しました: {{detail}}"

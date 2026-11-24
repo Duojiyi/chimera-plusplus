@@ -131,8 +131,9 @@ pub async fn test_proxy_url(url: String) -> Result<ProxyTestResult, String> {
                 });
             }
             Err(e) => {
-                log::debug!("[GlobalProxy] Test to {test_url} failed: {e}");
-                last_error = Some(e);
+                let safe_err = e.without_url();
+                log::debug!("[GlobalProxy] Test to {test_url} failed: {safe_err}");
+                last_error = Some(safe_err);
             }
         }
     }
@@ -140,7 +141,7 @@ pub async fn test_proxy_url(url: String) -> Result<ProxyTestResult, String> {
     // 所有测试目标都失败
     let latency = start.elapsed().as_millis() as u64;
     let error_msg = last_error
-        .map(|e| e.to_string())
+        .map(|e| e.without_url().to_string())
         .unwrap_or_else(|| "All test targets failed".to_string());
 
     log::debug!(

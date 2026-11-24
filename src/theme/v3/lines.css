@@ -1,20 +1,14 @@
-/* ============================================================
-   v3.0 · 线路页（设计稿 L01）——表格卡头、表格卡
-   未分层（见 postcss.config.cjs），覆盖 ProviderLineTable.css 与
-   liquid-glass.css 里的 `.chimera-shell .provider-table`。
-   ============================================================ */
+/* Chimera++ v5.2 Liquid Glass */
 
 /* 玻璃卡挪到外层 section：卡头与表格同在一张卡里 */
-.chimera-shell .provider-table-card {
-  margin-top: 10px;
-  border: 1px solid #ffffff;
+/* The station is the raised surface. Its ledger sits flush with the canvas. */
+.chimera-shell.v5-workbench .provider-table-card {
+  flex-shrink: 0;
+  margin-top: 18px;
+  border: 0;
   border-radius: 14px;
-  background: var(--v3-glass-fill, #ffffffd0);
-  box-shadow:
-    var(--v3-shadow-inner-top, inset 0 1px 0 #ffffffd9),
-    var(--v3-shadow-outer, 0 10px 24px #1236681a);
-  -webkit-backdrop-filter: blur(var(--v3-glass-blur, 30px)) saturate(150%);
-  backdrop-filter: blur(var(--v3-glass-blur, 30px)) saturate(150%);
+  background: rgba(249, 251, 254, 0.48);
+  box-shadow: none;
   overflow: hidden;
 }
 
@@ -29,14 +23,13 @@
   backdrop-filter: none;
 }
 
-/* 卡头恒 44 高（规范 §3.1），下方发丝线 */
 .chimera-shell .provider-table-cardhead {
   display: flex;
   align-items: center;
   justify-content: space-between;
   height: 44px;
   padding: 0 19px;
-  border-bottom: 1px solid var(--v3-hairline, #0b1c2a12);
+  border-bottom: 1px solid var(--v3-hairline, rgba(17, 19, 24, 0.08));
 }
 
 .chimera-shell .provider-table-cardtitle {
@@ -44,26 +37,25 @@
   align-items: baseline;
   gap: 10px;
   color: var(--text-1);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 
 .chimera-shell .provider-table-cardtitle > span {
   color: var(--text-3);
   font-family: var(--font-mono), monospace;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   font-weight: 500;
 }
 
-/* 文字按钮：accent 字，无底（规范 §3.2） */
 .chimera-shell .provider-table-cardhead .provider-group-manage {
-  height: 26px;
+  min-height: 36px;
   margin: 0;
   padding: 0 4px;
   border: 0;
   background: transparent;
-  color: var(--brand, #1f4d3a);
-  font-size: 11px;
+  color: var(--accent-petrol);
+  font-size: var(--fs-xs);
   font-weight: 500;
 }
 
@@ -94,4 +86,64 @@
   font-family: var(--font-latin), var(--font-cjk), sans-serif;
   font-size: 14px;
   font-weight: 600;
+}
+
+.chimera-shell.v5-workbench [data-route-monogram] {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background-color: var(--v5-ink-1, #171a20);
+  box-shadow: inset 0 0 0 18px rgb(17 19 24 / 58%);
+  color: #fff;
+  font-size: var(--fs-sm, 14px);
+  font-style: normal;
+  font-weight: 650;
+  line-height: 1;
+}
+.chimera-shell.v5-workbench [data-route-model] {
+  display: flex;
+  flex-flow: row wrap;
+  align-items: baseline;
+  column-gap: 0.35em;
+  min-width: 0;
+}
+.chimera-shell.v5-workbench [data-route-model] > :nth-child(2)::before {
+  content: "· ";
+}
+.chimera-shell.v5-workbench .provider-actions-heading {
+  text-align: end;
+  padding-inline-end: 8px;
+}
+@media (min-width: 1050px) {
+  .chimera-shell.v5-workbench .provider-table-row {
+    grid-template-columns:
+      3px 28px minmax(12ch, 0.9fr) minmax(15ch, 1.1fr)
+      104px 136px;
+    column-gap: 12px;
+  }
+  .chimera-shell.v5-workbench .provider-table-row:not(.provider-table-head) {
+    min-height: 64px;
+  }
+}
+
+/* The desktop reference places the station at y=161 and its ledger at y=349. */
+@media (min-width: 1050px) {
+  .chimera-shell.v5-workbench .provider-page-signboard {
+    padding-top: 33px;
+  }
+
+  .chimera-shell.v5-workbench .provider-page-signboard .station-body {
+    min-block-size: 162px;
+    padding-block: 28px;
+  }
+
+  .chimera-shell.v5-workbench .provider-table-card {
+    margin-top: 24px;
+  }
+
+  .chimera-shell.v5-workbench .provider-table-cardhead {
+    min-block-size: 56px;
+  }
 }

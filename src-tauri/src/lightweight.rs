@@ -130,6 +130,11 @@ pub(crate) fn activate_main_window(
         .and_then(|()| window.show())
         .and_then(|()| window.set_focus())
         .map_err(|error| format!("打开主窗口失败: {error}"))?;
+    #[cfg(target_os = "windows")]
+    {
+        let _ = window.set_decorations(false);
+        let _ = window.set_shadow(false);
+    }
     #[cfg(target_os = "linux")]
     crate::linux_fix::nudge_main_window(window.clone());
     #[cfg(target_os = "macos")]

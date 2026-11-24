@@ -59,12 +59,12 @@ describe("Chimera-only new-line template", () => {
     const { initial } = setup();
     expect(initial.baseUrl).toBe("https://api.chimerahub.org/v1");
     expect(initial.apiKey).toBe("");
-    expect(screen.getByText("配置模板 · ChimeraHub")).toBeInTheDocument();
+    expect(screen.getByText("快速填充模板")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "选择预设" }),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "恢复 Chimera 模板" }),
+      screen.getByRole("button", { name: /从.*ChimeraHub.*模板填充/ }),
     ).toBeInTheDocument();
   });
   it("keeps addresses editable", () => {
@@ -78,7 +78,7 @@ describe("Chimera-only new-line template", () => {
     );
   });
   it("does not overwrite an existing route", () => {
-    const { initial } = setup({
+    const { initial, onDraftChange } = setup({
       original: {
         id: "existing",
         name: "已有线路",
@@ -86,13 +86,14 @@ describe("Chimera-only new-line template", () => {
       },
     });
     expect(initial.baseUrl).toBe("");
-    expect(
-      screen.queryByRole("button", { name: "恢复 Chimera 模板" }),
-    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /从.*ChimeraHub.*模板填充/ }));
+    expect(onDraftChange).not.toHaveBeenCalled();
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "恢复模板" }));
+    expect(onDraftChange.mock.lastCall![0]).toMatchObject({id: initial.id, original: initial.original, name: initial.name, baseUrl: "https://api.chimerahub.org/v1"});
   });
   it("requires confirmation before restoring and clearing a key", () => {
     const { onDraftChange } = setup({ apiKey: "sk-entered", name: "我的线路" });
-    fireEvent.click(screen.getByRole("button", { name: "恢复 Chimera 模板" }));
+    fireEvent.click(screen.getByRole("button", { name: /从.*ChimeraHub.*模板填充/ }));
     expect(onDraftChange).not.toHaveBeenCalled();
     fireEvent.click(
       within(screen.getByRole("alertdialog")).getByRole("button", {

@@ -243,6 +243,8 @@ describe("unified prompt library", () => {
     render(<PromptsView />);
     await ready();
     fireEvent.click(screen.getByRole("button", { name: template.name }));
+    expect(screen.getByRole("heading", { name: template.name })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "查看全文" }));
     expect(await screen.findByLabelText("Prompt content")).toHaveValue(
       template.content,
     );
@@ -280,6 +282,8 @@ describe("unified prompt library", () => {
     render(<PromptsView />);
     await ready();
     fireEvent.click(screen.getByRole("button", { name: template.name }));
+    expect(screen.getByRole("heading", { name: template.name })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "查看全文" }));
     fireEvent.click(
       await screen.findByRole("button", { name: "启用此提示词" }),
     );
@@ -908,6 +912,8 @@ describe("tool-specific file semantics", () => {
     render(<PromptsView initialApp="claude" />);
     await ready();
     fireEvent.click(screen.getByRole("button", { name: template.name }));
+    expect(screen.getByRole("heading", { name: template.name })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "查看全文" }));
     fireEvent.click(await screen.findByRole("button", { name: "设为当前" }));
     consent();
     await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(1));
@@ -1410,6 +1416,8 @@ describe("audited prompt write races", () => {
     const view = render(<PromptsView />);
     await ready();
     fireEvent.click(screen.getByRole("button", { name: item.name }));
+    expect(screen.getByRole("heading", { name: item.name })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "查看全文" }));
     await screen.findByLabelText("Prompt content");
     rows.real.content = "Newer saved content";
     rows.real.categoryId = "writing";

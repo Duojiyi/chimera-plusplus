@@ -1,6 +1,6 @@
 //! Windows tray flyout and mouse gestures.
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Mutex};
 use std::time::Duration;
 
@@ -12,11 +12,28 @@ use crate::app_config::AppType;
 use crate::store::AppState;
 
 pub const LABEL: &str = "tray-panel";
-const WIDTH: u32 = 368;
-const HEIGHT: u32 = 454;
+const WIDTH: u32 = 388;
+const HEIGHT: u32 = 532;
 const GAP: u32 = 8;
 static BUILD: Mutex<()> = Mutex::new(());
 static INTENT: Mutex<WindowIntent> = Mutex::new(WindowIntent::new());
+static ACTIVE_PANEL_OPS: AtomicUsize = AtomicUsize::new(0);
+const LIGHTWEIGHT_PANEL_IDLE_REAP: Duration = Duration::from_secs(20);
+
+struct PanelOpGuard;
+
+impl PanelOpGuard {
+    fn enter() -> Self {
+        ACTIVE_PANEL_OPS.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
+}
+
+impl Drop for PanelOpGuard {
+    fn drop(&mut self) {
+        ACTIVE_PANEL_OPS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 struct WindowIntent {
     panel: u64,
@@ -363,7 +380,70 @@ pub(crate) fn enter_lightweight_from_worker(
         }
     })
     .map_err(|error| error.to_string())?;
-    result.recv().map_err(|_| "关闭主窗口已中断")?
+    let outcome = result.recv().map_err(|_| "关闭主窗口已中断")?;
+    if outcome.is_ok() {
+        schedule_idle_reap(app);
+    }
+    outcome
+}
+
+fn schedule_idle_reap(app: &AppHandle) {
+    if !crate::lightweight::is_lightweight_mode() || app.get_webview_window(LABEL).is_none() {
+        return;
+    }
+    let expected_panel = intents().panel;
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(LIGHTWEIGHT_PANEL_IDLE_REAP).await;
+        if !crate::lightweight::is_lightweight_mode()
+            || !intents().is_panel_current(expected_panel)
+            || ACTIVE_PANEL_OPS.load(Ordering::Acquire) > 0
+        {
+            return;
+        }
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            let Ok(_creation) = BUILD.lock() else {
+                return;
+            };
+            if !crate::lightweight::is_lightweight_mode()
+                || !intents().is_panel_current(expected_panel)
+                || ACTIVE_PANEL_OPS.load(Ordering::Acquire) > 0
+            {
+                return;
+            }
+            let handle = app.clone();
+            let (complete, result) = mpsc::channel();
+            if app
+                .run_on_main_thread(move || {
+                    if !crate::lightweight::is_lightweight_mode()
+                        || !intents().is_panel_current(expected_panel)
+                        || ACTIVE_PANEL_OPS.load(Ordering::Acquire) > 0
+                    {
+                        let _ = complete.send(());
+                        return;
+                    }
+                    if let Some(window) = handle.get_webview_window(LABEL) {
+                        if !window.is_visible().unwrap_or(true) {
+                            let done = complete.clone();
+                            window.on_window_event(move |event| {
+                                if matches!(event, tauri::WindowEvent::Destroyed) {
+                                    let _ = done.send(());
+                                }
+                            });
+                            if window.destroy().is_ok() {
+                                return;
+                            }
+                        }
+                    }
+                    let _ = complete.send(());
+                })
+                .is_ok()
+            {
+                let _ = result.recv_timeout(Duration::from_secs(5));
+            }
+        })
+        .await;
+    });
 }
 
 async fn open_main_from_panel(app: AppHandle) -> Result<(), String> {
@@ -382,6 +462,7 @@ fn hide_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(LABEL) {
         let _ = window.hide();
     }
+    schedule_idle_reap(app);
 }
 
 fn show_from_worker(app: &AppHandle, icon: Rect, intent: u64) -> Result<(), String> {
@@ -403,19 +484,24 @@ fn show_from_worker(app: &AppHandle, icon: Rect, intent: u64) -> Result<(), Stri
     }
     let window = match app.get_webview_window(LABEL) {
         Some(window) => window,
-        None => tauri::WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
-            .title("Chimera++ · 托盘")
-            .decorations(false)
-            .shadow(true)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .resizable(false)
-            .drag_and_drop(false)
-            .visible(false)
-            .focused(false)
-            .inner_size(f64::from(WIDTH), f64::from(HEIGHT))
-            .build()
-            .map_err(|error| error.to_string())?,
+        None => {
+            let built =
+                tauri::WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
+                    .title("Chimera++ · 托盘")
+                    .decorations(false)
+                    .shadow(true)
+                    .always_on_top(true)
+                    .skip_taskbar(true)
+                    .resizable(false)
+                    .drag_and_drop(false)
+                    .visible(false)
+                    .focused(false)
+                    .inner_size(f64::from(WIDTH), f64::from(HEIGHT))
+                    .build()
+                    .map_err(|error| error.to_string())?;
+            apply_tray_rounded_corners(&built);
+            built
+        }
     };
     app.run_on_main_thread(move || {
         if !intents().is_panel_current(intent) {
@@ -431,6 +517,25 @@ fn show_from_worker(app: &AppHandle, icon: Rect, intent: u64) -> Result<(), Stri
         }
     })
     .map_err(|error| error.to_string())
+}
+
+fn apply_tray_rounded_corners(window: &WebviewWindow) {
+    use windows_sys::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+    };
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let preference = DWMWCP_ROUND;
+    // SAFETY: hwnd is a valid HWND owned by Tauri and `preference` is a stack i32 matching DWMWCP_ROUND.
+    let _ = unsafe {
+        DwmSetWindowAttribute(
+            hwnd.0 as _,
+            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+            (&preference as *const i32).cast(),
+            std::mem::size_of_val(&preference) as u32,
+        )
+    };
 }
 
 fn place(window: &WebviewWindow, icon: Rect) -> tauri::Result<()> {
@@ -539,6 +644,7 @@ pub async fn get_tray_panel(
     state: tauri::State<'_, AppState>,
 ) -> Result<TrayPanelState, String> {
     require_panel(&window)?;
+    let _op = PanelOpGuard::enter();
     let settings = crate::settings::get_settings();
     let language = crate::tray::tray_language(&settings);
     let visible = settings.visible_apps.unwrap_or_default();
@@ -609,6 +715,7 @@ pub async fn switch_tray_line(
     id: String,
 ) -> Result<(), String> {
     require_panel(&window)?;
+    let _op = PanelOpGuard::enter();
     let app = window.app_handle();
     let app_type = AppType::from_str(&tool).map_err(|e| e.to_string())?;
     crate::tray::switch_tray_provider(app, app_type, id).await
@@ -627,6 +734,7 @@ pub enum PanelAction {
 #[tauri::command]
 pub async fn tray_panel_action(window: WebviewWindow, action: PanelAction) -> Result<(), String> {
     require_panel(&window)?;
+    let _op = PanelOpGuard::enter();
     let app = window.app_handle();
     if matches!(action, PanelAction::ToggleLightweight)
         && !crate::lightweight::is_lightweight_mode()

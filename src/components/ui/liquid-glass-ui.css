@@ -4,13 +4,13 @@
 .glass-ui.glass-card {
   /* Preserve Card's rounded-lg geometry despite the legacy .glass-card rule. */
   border-radius: 0.5rem;
-  background-color: var(--glass-surface, var(--bg-surface, #f8fbff));
+  background-color: var(--glass-surface, var(--bg-surface, #ffffff));
   background-image: linear-gradient(
     145deg,
     var(--glass-highlight, rgb(255 255 255 / 45%)),
     transparent 48%
   );
-  border-color: var(--glass-border, var(--border-default, #cbd5e1));
+  border-color: var(--glass-border, var(--border-subtle, #cbd5e1));
   color: var(--glass-ink, var(--text-1, #172536));
   box-shadow:
     inset 0 1px 0 var(--glass-highlight, rgb(255 255 255 / 45%)),
@@ -27,7 +27,7 @@
   .glass-tooltip,
   .glass-command
 ) {
-  background-color: var(--bg-surface, #f8fbff);
+  background-color: var(--bg-surface, #ffffff);
   background-image:
     linear-gradient(
       145deg,
@@ -35,10 +35,10 @@
       transparent 42%
     ),
     linear-gradient(
-      var(--glass-surface-strong, var(--bg-surface, #f8fbff)),
-      var(--glass-surface-strong, var(--bg-surface, #f8fbff))
+      var(--glass-surface-strong, var(--bg-surface, #ffffff)),
+      var(--glass-surface-strong, var(--bg-surface, #ffffff))
     );
-  border-color: var(--glass-border, var(--border-default, #cbd5e1));
+  border-color: var(--glass-border, var(--border-subtle, #cbd5e1));
   color: var(--glass-ink, var(--text-1, #172536));
   box-shadow:
     inset 0 1px 0 var(--glass-highlight, rgb(255 255 255 / 45%)),
@@ -49,7 +49,7 @@
 .glass-command-list,
 .glass-command-group,
 .glass-command-empty {
-  background-color: var(--bg-surface, #f8fbff);
+  background-color: var(--bg-surface, #ffffff);
   background-image: linear-gradient(
     var(--glass-surface-strong, transparent),
     var(--glass-surface-strong, transparent)
@@ -71,7 +71,7 @@
 .glass-card-header,
 .glass-card-footer {
   background-color: var(--glass-control-bg, var(--bg-subtle, #f1f5f9));
-  border-color: var(--glass-border, var(--border-default, #cbd5e1));
+  border-color: var(--glass-border, var(--border-subtle, #cbd5e1));
 }
 
 .glass-ui.glass-dialog-overlay {
@@ -79,7 +79,7 @@
 }
 
 .glass-ui.glass-dialog--fullscreen {
-  background-color: var(--bg-surface, #f8fbff);
+  background-color: var(--bg-surface, #ffffff);
   background-image: none;
   box-shadow: none;
 }
@@ -101,13 +101,13 @@
   .glass-checkbox[data-state="indeterminate"]
 ) {
   /* Accent ink is pale in dark mode; use an opaque blue/white contrast pair. */
-  background-color: var(--glass-primary-bottom, #0866a3);
+  background-color: var(--glass-primary-bottom, #16181d);
   background-image: linear-gradient(
     180deg,
-    var(--glass-primary-top, #117cb9),
-    var(--glass-primary-bottom, #0866a3)
+    var(--glass-primary-top, #242730),
+    var(--glass-primary-bottom, #16181d)
   );
-  border-color: var(--glass-primary-edge, var(--glass-primary-bottom, #0866a3));
+  border-color: var(--glass-primary-edge, var(--glass-primary-bottom, #16181d));
   color: #fff;
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 22%),
@@ -117,14 +117,14 @@
 .glass-ui.glass-button--default:not(:disabled):not(
     [aria-disabled="true"]
   ):hover {
-  background-color: var(--glass-primary-bottom, #0866a3);
+  background-color: var(--glass-primary-bottom, #16181d);
   background-image: none;
 }
 
 .glass-ui.glass-button--default:not(:disabled):not(
     [aria-disabled="true"]
   ):active {
-  background-color: var(--glass-primary-bottom, #0866a3);
+  background-color: var(--glass-primary-bottom, #16181d);
   background-image: none;
   box-shadow: inset 0 1px 3px rgb(15 23 42 / 20%);
 }
@@ -149,7 +149,7 @@
 }
 
 .glass-ui:is(.glass-button--secondary, .glass-button--outline) {
-  background-color: var(--bg-surface, #f8fbff);
+  background-color: var(--bg-surface, #ffffff);
   background-image: linear-gradient(
     var(--glass-control-bg, transparent),
     var(--glass-control-bg, transparent)
@@ -184,7 +184,7 @@
 }
 
 .glass-ui.glass-button--link {
-  color: var(--glass-accent-strong, var(--brand, #1d4ed8));
+  color: var(--glass-accent-strong, var(--brand, #0e6470));
   text-decoration-color: currentColor;
 }
 
@@ -204,14 +204,14 @@
   .glass-command-input
 ),
 .glass-command-input-shell {
-  background-color: var(--bg-surface, #f8fbff);
+  background-color: var(--bg-surface, #ffffff);
   background-image: linear-gradient(
     var(--glass-control-bg, transparent),
     var(--glass-control-bg, transparent)
   );
   border-color: var(--glass-border, var(--border-control, #cbd5e1));
   color: var(--glass-ink, var(--text-1, #172536));
-  caret-color: var(--glass-accent-strong, var(--brand, #1d4ed8));
+  caret-color: var(--glass-accent-strong, var(--brand, #0e6470));
   box-shadow:
     inset 0 1px 2px rgb(15 23 42 / 5%),
     inset 0 -1px 0 var(--glass-highlight, rgb(255 255 255 / 30%));
@@ -234,13 +234,13 @@
 }
 
 .glass-ui.glass-select-trigger[data-state="open"] {
-  border-color: var(--glass-focus, var(--brand, #2563eb));
+  border-color: var(--glass-focus, var(--brand, #0e6470));
 }
 
 .glass-select-scroll,
 .glass-ui:is(.glass-select-item, .glass-dropdown-item, .glass-command-item) {
   /* Opaque item backings also cover content scrolled behind a menu. */
-  background-color: var(--bg-surface, #f8fbff);
+  background-color: var(--bg-surface, #ffffff);
   background-image: linear-gradient(
     var(--glass-surface-strong, transparent),
     var(--glass-surface-strong, transparent)
@@ -254,32 +254,31 @@
   ),
 .glass-ui.glass-command-item:not([data-disabled="true"])[data-selected="true"] {
   background-image: linear-gradient(
-    var(--glass-accent-soft, var(--bg-selected, #e3edff)),
-    var(--glass-accent-soft, var(--bg-selected, #e3edff))
+    var(--glass-accent-soft, var(--bg-selected, rgba(14, 100, 112, 0.1))),
+    var(--glass-accent-soft, var(--bg-selected, rgba(14, 100, 112, 0.1)))
   );
   /* Text inherits the readable surface color; semantic caller colors are intact. */
-  box-shadow: inset 0 0 0 1px
-    var(--glass-border, var(--border-default, #cbd5e1));
+  box-shadow: inset 0 0 0 1px var(--glass-border, var(--border-subtle, #cbd5e1));
 }
 
 .glass-ui.glass-select-item[data-state="checked"] {
-  box-shadow: inset 2px 0 0 var(--glass-accent-strong, var(--brand, #1d4ed8));
+  box-shadow: inset 2px 0 0 var(--glass-accent-strong, var(--brand, #0e6470));
 }
 
 .glass-select-separator,
 .glass-dropdown-separator {
-  background-color: var(--glass-border, var(--border-default, #cbd5e1));
+  background-color: var(--glass-border, var(--border-subtle, #cbd5e1));
 }
 
 .glass-ui.glass-tabs-list {
-  background-color: var(--bg-surface, #f8fbff);
+  background-color: var(--bg-surface, #ffffff);
   background-image: linear-gradient(
     var(--glass-control-bg, transparent),
     var(--glass-control-bg, transparent)
   );
   color: var(--glass-muted, var(--text-2, #526174));
   box-shadow:
-    inset 0 0 0 1px var(--glass-border, var(--border-default, #cbd5e1)),
+    inset 0 0 0 1px var(--glass-border, var(--border-subtle, #cbd5e1)),
     inset 0 1px 0 var(--glass-highlight, rgb(255 255 255 / 35%));
 }
 
@@ -346,7 +345,7 @@
     .glass-checkbox,
     .glass-popover
   ):focus-visible {
-  outline: 2px solid var(--glass-focus, var(--brand, #2563eb));
+  outline: 2px solid var(--glass-focus, var(--brand, #0e6470));
   outline-offset: 2px;
 }
 
@@ -355,7 +354,7 @@
     .glass-dropdown-item,
     .glass-command-item
   ):focus-visible {
-  outline: 2px solid var(--glass-focus, var(--brand, #2563eb));
+  outline: 2px solid var(--glass-focus, var(--brand, #0e6470));
   outline-offset: -2px;
 }
 
@@ -417,7 +416,7 @@
     .glass-tooltip,
     .glass-command
   ) {
-    background-color: var(--bg-surface, #f8fbff);
+    background-color: var(--bg-surface, #ffffff);
     background-image: none;
   }
 }
@@ -433,7 +432,7 @@
     .glass-tooltip,
     .glass-command
   ) {
-    background-color: var(--bg-surface, #f8fbff);
+    background-color: var(--bg-surface, #ffffff);
     background-image: none;
     -webkit-backdrop-filter: none;
     backdrop-filter: none;

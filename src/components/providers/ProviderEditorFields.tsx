@@ -441,7 +441,7 @@ export function EditorInUseNotice({
 }) {
   const location = useLiveConfigLocation(appId, true);
   return (
-    <p className="editor-model-notice" role="note">
+    <p className="editor-model-notice is-warning" role="note">
       <Info size={15} aria-hidden="true" />
       <span className="editor-in-use-text">
         {inUseNoticeText(toolName, location)}

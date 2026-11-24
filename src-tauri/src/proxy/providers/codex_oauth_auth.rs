@@ -271,7 +271,9 @@ impl CodexOAuthManager {
     pub async fn start_device_flow(&self) -> Result<GitHubDeviceCodeResponse, CodexOAuthError> {
         log::info!("[CodexOAuth] 启动 Device Code 流程");
 
-        let response = crate::proxy::http_client::get()
+        let client = crate::proxy::http_client::get_for_auth_probe()
+            .map_err(CodexOAuthError::NetworkError)?;
+        let response = client
             .post(DEVICE_AUTH_USERCODE_URL)
             .header("Content-Type", "application/json")
             .header("User-Agent", CODEX_USER_AGENT)
@@ -353,7 +355,9 @@ impl CodexOAuthManager {
 
         log::debug!("[CodexOAuth] 轮询 Device Code");
 
-        let poll_response = crate::proxy::http_client::get()
+        let client = crate::proxy::http_client::get_for_auth_probe()
+            .map_err(CodexOAuthError::NetworkError)?;
+        let poll_response = client
             .post(DEVICE_AUTH_TOKEN_URL)
             .header("Content-Type", "application/json")
             .header("User-Agent", CODEX_USER_AGENT)
@@ -434,7 +438,9 @@ impl CodexOAuthManager {
         code: &str,
         code_verifier: &str,
     ) -> Result<OAuthTokenResponse, CodexOAuthError> {
-        let response = crate::proxy::http_client::get()
+        let client = crate::proxy::http_client::get_for_auth_probe()
+            .map_err(CodexOAuthError::NetworkError)?;
+        let response = client
             .post(OAUTH_TOKEN_URL)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .header("User-Agent", CODEX_USER_AGENT)
@@ -467,7 +473,9 @@ impl CodexOAuthManager {
         &self,
         refresh_token: &str,
     ) -> Result<OAuthTokenResponse, CodexOAuthError> {
-        let response = crate::proxy::http_client::get()
+        let client = crate::proxy::http_client::get_for_auth_probe()
+            .map_err(CodexOAuthError::NetworkError)?;
+        let response = client
             .post(OAUTH_TOKEN_URL)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .header("User-Agent", CODEX_USER_AGENT)

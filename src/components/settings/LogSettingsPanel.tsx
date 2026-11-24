@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { settingsApi, type LogConfig } from "@/lib/api/settings";
+import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import { SettingsRow, SwitchRow } from "./SettingsRow";
 
 const levels = [
@@ -22,7 +23,9 @@ export function LogSettingsPanel({ native }: { native: boolean }) {
   );
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
   const [notice, setNotice] = useState("");
+  useLightweightCloseBlocker(busy);
 
   const load = async () => {
     setFailed(false);
@@ -37,7 +40,8 @@ export function LogSettingsPanel({ native }: { native: boolean }) {
   }, [native]);
 
   const save = async (next: LogConfig) => {
-    if (!native || busy || !config) return;
+    if (!native || busyRef.current || !config) return;
+    busyRef.current = true;
     const previous = config;
     setBusy(true);
     setNotice("");
@@ -49,6 +53,7 @@ export function LogSettingsPanel({ native }: { native: boolean }) {
       setConfig(previous);
       setNotice("日志设置没有保存，请重试");
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   };

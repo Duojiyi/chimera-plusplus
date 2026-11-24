@@ -21,6 +21,9 @@ export interface UpdateDownloadProgress {
 
 export type UpdateErrorOperation = "check" | "stage" | "install";
 
+export type InstallUpdateOutcome =
+  "started" | "opened_releases" | "unavailable" | "busy";
+
 export interface UpdateContextValue {
   // 更新状态
   hasUpdate: boolean;
@@ -42,7 +45,7 @@ export interface UpdateContextValue {
 
   // 操作方法
   checkUpdate: () => Promise<boolean>;
-  installUpdate: () => Promise<boolean>;
+  installUpdate: () => Promise<InstallUpdateOutcome>;
   resetDismiss: () => void;
 }
 
@@ -60,7 +63,7 @@ const DEFAULT_UPDATE_CONTEXT: UpdateContextValue = {
   isDismissed: false,
   dismissUpdate: () => undefined,
   checkUpdate: async () => false,
-  installUpdate: async () => false,
+  installUpdate: async () => "unavailable",
   resetDismiss: () => undefined,
 };
 
@@ -195,9 +198,13 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   const isInstallingRef = useRef(false);
   const progressUnlistenRef = useRef<(() => void) | null>(null);
   const stageAttemptedRef = useRef<string | null>(null);
+  const stageSeqRef = useRef(0);
+  const mountedRef = useRef(true);
 
   useEffect(
     () => () => {
+      mountedRef.current = false;
+      stageSeqRef.current += 1;
       progressUnlistenRef.current?.();
       progressUnlistenRef.current = null;
     },
@@ -233,6 +240,8 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         setUpdateInfo(null);
         setStagedVersion(null);
         stageAttemptedRef.current = null;
+        stageSeqRef.current += 1;
+        setIsStaging(false);
         setIsDismissed(false);
         const checkedAt = Date.now();
         lastCheckedAtRef.current = checkedAt;
@@ -279,20 +288,30 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!isTauri()) return;
     const version = updateInfo?.availableVersion;
-    if (!hasUpdate || !version) return;
-    if (stagedVersion === version) return;
+    if (!hasUpdate || !version) {
+      setIsStaging(false);
+      return;
+    }
+    if (stagedVersion === version) {
+      setIsStaging(false);
+      return;
+    }
     if (stageAttemptedRef.current === version) return;
 
     stageAttemptedRef.current = version;
+    const seq = ++stageSeqRef.current;
     let cancelled = false;
     setIsStaging(true);
     settingsApi
       .stageUpdateDownload()
       .then((staged) => {
-        if (cancelled) return;
+        if (cancelled || !mountedRef.current || stageSeqRef.current !== seq)
+          return;
         setStagedVersion(staged);
       })
       .catch((err) => {
+        if (cancelled || !mountedRef.current || stageSeqRef.current !== seq)
+          return;
         // A failed pre-download is not user-facing: the install path falls back
         // to downloading normally, so this only costs the head start.
         console.error("预下载更新失败:", err);
@@ -300,34 +319,40 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         setErrorOperation("stage");
       })
       .finally(() => {
-        if (!cancelled) setIsStaging(false);
+        if (mountedRef.current && stageSeqRef.current === seq) {
+          setIsStaging(false);
+        }
       });
 
     return () => {
       cancelled = true;
+      if (stageSeqRef.current === seq) {
+        stageSeqRef.current += 1;
+        setIsStaging(false);
+      }
     };
   }, [hasUpdate, updateInfo?.availableVersion, stagedVersion]);
 
-  const installUpdate = useCallback(async () => {
-    if (!isTauri()) return false;
-    if (isInstallingRef.current) return false;
-
-    // 便携版没有可用的 updater 安装器，跳到发布页手动下载，避免直接安装
-    // 把运行中的绿色版文件替换掉。
-    if (await settingsApi.isPortable()) {
-      await settingsApi.openExternal(
-        "https://github.com/Duojiyi/chimera-plusplus/releases",
-      );
-      return false;
-    }
+  const installUpdate = useCallback(async (): Promise<InstallUpdateOutcome> => {
+    if (!isTauri()) return "unavailable";
+    if (isInstallingRef.current) return "busy";
 
     isInstallingRef.current = true;
-    setIsInstalling(true);
-    setDownloadProgress(null);
-    setError(null);
-    setErrorOperation(null);
-
     try {
+      // 便携版没有可用的 updater 安装器，跳到发布页手动下载，避免直接安装
+      // 把运行中的绿色版文件替换掉。
+      if (await settingsApi.isPortable()) {
+        await settingsApi.openExternal(
+          "https://github.com/Duojiyi/chimera-plusplus/releases",
+        );
+        return "opened_releases";
+      }
+
+      setIsInstalling(true);
+      setDownloadProgress(null);
+      setError(null);
+      setErrorOperation(null);
+
       progressUnlistenRef.current?.();
       progressUnlistenRef.current = await listen<UpdateDownloadProgress>(
         "update-download-progress",
@@ -341,8 +366,9 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         setStagedVersion(null);
         stageAttemptedRef.current = null;
         await checkUpdate();
+        return "unavailable";
       }
-      return installed;
+      return "started";
     } catch (err) {
       console.error("安装应用更新失败:", err);
       setError(extractErrorMessage(err) || "应用更新失败");

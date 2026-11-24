@@ -99,7 +99,7 @@ describe("connected provider line table", () => {
   it("keeps design preview filterable without switching, editing, deleting or probing", () => {
     const callbacks = props();
     render(<ProviderLineTable {...callbacks} readOnly />);
-    for (const name of ["全部测速", "切换到Beta", "编辑Beta", "删除Beta"]) {
+    for (const name of ["全部测速", "切换到Beta", /^Beta，/, "编辑Beta", "删除Beta"]) {
       const button = screen.getByRole("button", { name });
       expect(button).toBeDisabled();
       fireEvent.click(button);
@@ -286,7 +286,10 @@ describe("Pencil populated table states", () => {
     );
     expect(screen.getByText("重新登录")).toBeDisabled();
     expect(
-      screen.getByRole("button", { name: "编辑OpenAI 官方 · 主力" }),
+      screen.queryByRole("button", { name: "编辑OpenAI 官方 · 主力" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /^OpenAI 官方 · 主力，/ }),
     ).toBeDisabled();
     expect(screen.getByText("1200 ms")).toBeVisible();
     expect(screen.getByText("超时")).toBeVisible();
@@ -297,6 +300,17 @@ describe("Pencil populated table states", () => {
     expect(screen.getAllByText("自动 · Chat")).toHaveLength(3);
     expect(vscodeApi.testApiEndpoints).not.toHaveBeenCalled();
   });
+  it("opens only the sample draft from either preview edit entry", () => {
+    const args = sampleProps();
+    const onPreviewDraft = vi.fn();
+    render(<ProviderLineTable {...args} readOnly onPreviewDraft={onPreviewDraft} />);
+    fireEvent.click(screen.getByRole("button", { name: /^OpenRouter，/ }));
+    fireEvent.click(screen.getByRole("button", { name: "编辑OpenRouter" }));
+    expect(onPreviewDraft).toHaveBeenCalledTimes(2);
+    expect(onPreviewDraft).toHaveBeenCalledWith(expect.objectContaining({ name: "OpenRouter" }));
+    expect(args.onEdit).not.toHaveBeenCalled();
+  });
+
   it("does not show sample credentials or measurements in an interactive table", () => {
     render(<ProviderLineTable {...sampleProps()} />);
     expect(screen.queryByText("li***@gmail.com · Pro")).not.toBeInTheDocument();

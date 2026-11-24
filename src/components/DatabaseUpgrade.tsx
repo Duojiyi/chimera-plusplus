@@ -88,7 +88,11 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
     };
   }, []);
 
+  const upgradingRef = useRef(false);
+
   const startUpgrade = useCallback(async () => {
+    if (upgradingRef.current) return;
+    upgradingRef.current = true;
     setPhase("updating");
     setProgress(null);
     setErrorMsg(null);
@@ -103,6 +107,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
       unlistenRef.current?.();
       unlistenRef.current = null;
       if (!updating) {
+        upgradingRef.current = false;
         // 竞态：检查时有更新、安装时已无 → 按不兼容处理
         setPhase("incompatible");
       }
@@ -110,6 +115,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
     } catch (e) {
       unlistenRef.current?.();
       unlistenRef.current = null;
+      upgradingRef.current = false;
       setErrorMsg(e instanceof Error ? e.message : String(e));
       setPhase("error");
     }
@@ -134,8 +140,20 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
   const AccentIcon = accent.Icon;
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-6 text-foreground">
-      <div className="w-full max-w-lg space-y-5 rounded-2xl border border-border/60 bg-card/80 p-7 shadow-xl">
+    <div
+      className="flex min-h-screen items-center justify-center p-6 text-foreground"
+      style={{
+        background:
+          "linear-gradient(155deg, var(--v3-page-top, #eef1f5) 0%, var(--v3-page-mid, #f3f5f8) 55%, var(--v3-page-bottom, #e7ebf1) 100%)",
+      }}
+    >
+      <div
+        className="w-full max-w-lg space-y-5 rounded-[20px] border border-white/95 bg-white/92 p-7 shadow-2xl"
+        style={{
+          backdropFilter: "blur(36px) saturate(160%)",
+          WebkitBackdropFilter: "blur(36px) saturate(160%)",
+        }}
+      >
         <div className="flex items-start gap-4">
           <div
             className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl ${accent.chip}`}
@@ -223,9 +241,16 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
                 </span>
               )}
             </div>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              role="progressbar"
+              aria-label={t("dbUpgrade.downloading", "正在下载更新…")}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={percent ?? undefined}
+              className="h-2 w-full overflow-hidden rounded-full bg-muted"
+            >
               <div
-                className={`h-full rounded-full bg-amber-500 transition-all duration-200 ${
+                className={`h-full rounded-full bg-[var(--accent-petrol)] transition-all duration-200 ${
                   percent === null ? "w-1/3 animate-pulse" : ""
                 }`}
                 style={percent === null ? undefined : { width: `${percent}%` }}
@@ -248,10 +273,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
 
         <div className="flex flex-wrap items-center gap-2">
           {(phase === "upgradable" || phase === "error") && (
-            <Button
-              onClick={startUpgrade}
-              className="gap-2 bg-amber-500 text-white hover:bg-amber-600"
-            >
+            <Button onClick={startUpgrade} className="gap-2">
               {phase === "error" ? (
                 <RefreshCw className="h-4 w-4" />
               ) : (
@@ -268,7 +290,9 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
               variant="outline"
               className="gap-2"
               onClick={() =>
-                void invoke("open_external", { url: RELEASES_URL })
+                void Promise.resolve(
+                  invoke("open_external", { url: RELEASES_URL }),
+                ).catch(() => {})
               }
             >
               <ExternalLink className="h-4 w-4" />
@@ -279,7 +303,11 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
           <Button
             variant="outline"
             className="gap-2"
-            onClick={() => void invoke("open_app_config_folder")}
+            onClick={() =>
+              void Promise.resolve(invoke("open_app_config_folder")).catch(
+                () => {},
+              )
+            }
             disabled={phase === "updating"}
           >
             <FolderOpen className="h-4 w-4" />
@@ -289,7 +317,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
           <Button
             variant="ghost"
             className="ml-auto text-muted-foreground"
-            onClick={() => void exit(0)}
+            onClick={() => void Promise.resolve(exit(0)).catch(() => {})}
             disabled={phase === "updating"}
           >
             {t("dbUpgrade.quit", "退出")}

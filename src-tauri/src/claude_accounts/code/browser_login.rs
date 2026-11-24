@@ -65,7 +65,17 @@ struct Flow {
     submitted: bool,
 }
 
-static FLOW: Mutex<Option<Flow>> = Mutex::new(None);
+enum FlowState {
+    Idle,
+    Starting {
+        id: String,
+        dir: PathBuf,
+        cancelled: bool,
+    },
+    Active(Flow),
+}
+
+static FLOW: Mutex<FlowState> = Mutex::new(FlowState::Idle);
 
 pub(crate) fn browser_login_supported() -> bool {
     cfg!(windows)
@@ -316,21 +326,65 @@ pub(crate) fn begin(vault: &CodeVault, cli: &Path) -> Result<String, AppError> {
     if !browser_login_supported() {
         return Err(unsupported());
     }
-    let mut flow = FLOW.lock()?;
-    if let Some(mut previous) = flow.take() {
-        stop(&mut previous.child);
-        remove_staging(vault, &previous.dir);
+    let (id, dir) = {
+        let mut slot = FLOW.lock()?;
+        match std::mem::replace(&mut *slot, FlowState::Idle) {
+            FlowState::Idle => {}
+            FlowState::Starting { dir: old_dir, .. } => {
+                remove_staging(vault, &old_dir);
+            }
+            FlowState::Active(mut previous) => {
+                stop(&mut previous.child);
+                remove_staging(vault, &previous.dir);
+            }
+        }
+        sweep_orphans(vault, None);
+        let (id, dir) = new_staging(vault)?;
+        *slot = FlowState::Starting {
+            id: id.clone(),
+            dir: dir.clone(),
+            cancelled: false,
+        };
+        (id, dir)
+    };
+
+    // Run the potentially slow (up to 20s) CLI support probe outside `FLOW` so
+    // concurrent `poll` / `cancel` / exit cleanup never block behind it.
+    let probe_result = check_login_supported(cli, &dir).and_then(|()| login_command(cli, &dir));
+    let mut command = match probe_result {
+        Ok(cmd) => cmd,
+        Err(error) => {
+            if let Ok(mut slot) = FLOW.lock() {
+                if matches!(&*slot, FlowState::Starting { id: cur, .. } if cur == &id) {
+                    *slot = FlowState::Idle;
+                }
+            }
+            remove_staging(vault, &dir);
+            return Err(error);
+        }
+    };
+
+    let mut slot = FLOW.lock()?;
+    let still_active = matches!(
+        &*slot,
+        FlowState::Starting {
+            id: cur,
+            cancelled: false,
+            ..
+        } if cur == &id
+    );
+    if !still_active {
+        if matches!(&*slot, FlowState::Starting { id: cur, .. } if cur == &id) {
+            *slot = FlowState::Idle;
+        }
+        remove_staging(vault, &dir);
+        return Err(AppError::Message("授权已取消。".to_string()));
     }
-    sweep_orphans(vault, None);
-    let (id, dir) = new_staging(vault)?;
-    let started = check_login_supported(cli, &dir)
-        .and_then(|()| login_command(cli, &dir))
-        .and_then(|mut command| {
-            command
-                .spawn()
-                .map_err(|_| AppError::Message("无法启动 Claude Code 的授权登录。".to_string()))
-        });
-    match started {
+
+    match command
+        .spawn()
+        .map_err(|_| AppError::Message("无法启动 Claude Code 的授权登录。".to_string()))
+    {
         Ok(mut child) => {
             let output = Arc::new(Mutex::new(String::new()));
             if let Some(stdout) = child.stdout.take() {
@@ -339,7 +393,7 @@ pub(crate) fn begin(vault: &CodeVault, cli: &Path) -> Result<String, AppError> {
             if let Some(stderr) = child.stderr.take() {
                 capture_output(stderr, output.clone());
             }
-            *flow = Some(Flow {
+            *slot = FlowState::Active(Flow {
                 id: id.clone(),
                 dir,
                 child,
@@ -350,6 +404,7 @@ pub(crate) fn begin(vault: &CodeVault, cli: &Path) -> Result<String, AppError> {
             Ok(id)
         }
         Err(error) => {
+            *slot = FlowState::Idle;
             remove_staging(vault, &dir);
             Err(error)
         }
@@ -406,10 +461,23 @@ fn authorization_url(flow: &Flow) -> Option<String> {
 
 pub(crate) fn submit_callback(id: &str, input: &str) -> Result<(), AppError> {
     let mut slot = FLOW.lock()?;
-    let flow = slot
-        .as_mut()
-        .filter(|flow| flow.id == id)
-        .ok_or_else(|| AppError::Message("这次授权已结束，请重新开始。".to_string()))?;
+    let flow = match &mut *slot {
+        FlowState::Active(flow) if flow.id == id => flow,
+        FlowState::Starting {
+            id: cur,
+            cancelled: false,
+            ..
+        } if cur == id => {
+            return Err(AppError::Message(
+                "授权链接还在准备中，请稍后再试。".to_string(),
+            ));
+        }
+        _ => {
+            return Err(AppError::Message(
+                "这次授权已结束，请重新开始。".to_string(),
+            ));
+        }
+    };
     if flow.started.elapsed() >= FLOW_TIMEOUT || !matches!(flow.child.try_wait(), Ok(None)) {
         return Err(AppError::Message(
             "这次授权已结束，请重新开始。".to_string(),
@@ -437,17 +505,27 @@ pub(crate) fn submit_callback(id: &str, input: &str) -> Result<(), AppError> {
 
 pub(crate) fn poll(vault: &CodeVault, id: &str) -> Result<LoginPoll, AppError> {
     let mut slot = FLOW.lock()?;
-    let Some(flow) = slot.as_mut().filter(|flow| flow.id == id) else {
-        return Ok(LoginPoll::Unknown);
+    let flow = match &mut *slot {
+        FlowState::Starting {
+            id: cur,
+            cancelled: false,
+            ..
+        } if cur == id => {
+            return Ok(LoginPoll::Waiting {
+                authorization_url: None,
+            });
+        }
+        FlowState::Active(flow) if flow.id == id => flow,
+        _ => return Ok(LoginPoll::Unknown),
     };
-    match flow.child.try_wait() {
+    let needs_stop = match flow.child.try_wait() {
         Ok(None) if flow.started.elapsed() < FLOW_TIMEOUT => {
             return Ok(LoginPoll::Waiting {
                 authorization_url: authorization_url(flow),
             })
         }
         Ok(None) => {
-            if let Some(mut expired) = slot.take() {
+            if let FlowState::Active(mut expired) = std::mem::replace(&mut *slot, FlowState::Idle) {
                 stop(&mut expired.child);
                 remove_staging(vault, &expired.dir);
             }
@@ -455,11 +533,15 @@ pub(crate) fn poll(vault: &CodeVault, id: &str) -> Result<LoginPoll, AppError> {
                 message: "等待授权超过 15 分钟，已取消。需要的话请重新开始。".to_string(),
             });
         }
-        Ok(Some(_)) | Err(_) => {}
-    }
-    let Some(finished) = slot.take() else {
+        Ok(Some(_)) => false,
+        Err(_) => true,
+    };
+    let FlowState::Active(mut finished) = std::mem::replace(&mut *slot, FlowState::Idle) else {
         return Ok(LoginPoll::Unknown);
     };
+    if needs_stop {
+        stop(&mut finished.child);
+    }
     let result = finish_in(vault, &finished.dir);
     remove_staging(vault, &finished.dir);
     Ok(match result {
@@ -472,13 +554,45 @@ pub(crate) fn poll(vault: &CodeVault, id: &str) -> Result<LoginPoll, AppError> {
 
 pub(crate) fn cancel(vault: &CodeVault, id: &str) -> Result<(), AppError> {
     let mut slot = FLOW.lock()?;
-    if slot.as_ref().is_some_and(|flow| flow.id == id) {
-        if let Some(mut flow) = slot.take() {
-            stop(&mut flow.child);
-            remove_staging(vault, &flow.dir);
+    match &mut *slot {
+        FlowState::Starting {
+            id: cur, cancelled, ..
+        } if cur == id => {
+            *cancelled = true;
         }
+        FlowState::Active(flow) if flow.id == id => {
+            if let FlowState::Active(mut active) = std::mem::replace(&mut *slot, FlowState::Idle) {
+                stop(&mut active.child);
+                remove_staging(vault, &active.dir);
+            }
+        }
+        _ => {}
     }
     Ok(())
+}
+
+/// Stop any active or starting Claude browser login flow and scrub its staging
+/// directory when the application exits or restarts.
+pub(crate) fn cleanup_on_exit() {
+    let Ok(mut slot) = FLOW.lock() else {
+        return;
+    };
+    match &mut *slot {
+        FlowState::Idle => {}
+        FlowState::Starting { cancelled, .. } => {
+            *cancelled = true;
+        }
+        FlowState::Active(_) => {
+            if let FlowState::Active(mut active) = std::mem::replace(&mut *slot, FlowState::Idle) {
+                stop(&mut active.child);
+                if let Ok(vault) = CodeVault::open_default() {
+                    remove_staging(&vault, &active.dir);
+                } else {
+                    let _ = fs::remove_dir_all(&active.dir);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -683,9 +797,15 @@ mod tests {
         impl Drop for Cleanup<'_> {
             fn drop(&mut self) {
                 if let Ok(mut slot) = FLOW.lock() {
-                    if let Some(mut flow) = slot.take() {
-                        stop(&mut flow.child);
-                        remove_staging(self.0, &flow.dir);
+                    match std::mem::replace(&mut *slot, FlowState::Idle) {
+                        FlowState::Active(mut flow) => {
+                            stop(&mut flow.child);
+                            remove_staging(self.0, &flow.dir);
+                        }
+                        FlowState::Starting { dir, .. } => {
+                            remove_staging(self.0, &dir);
+                        }
+                        FlowState::Idle => {}
                     }
                 }
             }
@@ -723,7 +843,10 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
-        let dir = FLOW.lock().unwrap().as_ref().unwrap().dir.clone();
+        let dir = match &*FLOW.lock().unwrap() {
+            FlowState::Active(flow) => flow.dir.clone(),
+            _ => panic!("expected active flow"),
+        };
         assert!(submit_callback(&first, "code#stale").is_err());
         assert!(!dir.join("received.txt").exists());
         submit_callback(&first, "code#current").unwrap();
@@ -749,7 +872,10 @@ mod tests {
             poll(&f.vault, &second).unwrap(),
             LoginPoll::Waiting { .. }
         ));
-        let second_dir = FLOW.lock().unwrap().as_ref().unwrap().dir.clone();
+        let second_dir = match &*FLOW.lock().unwrap() {
+            FlowState::Active(flow) => flow.dir.clone(),
+            _ => panic!("expected active flow"),
+        };
         cancel(&f.vault, &second).unwrap();
         assert!(!second_dir.exists());
         assert!(submit_callback(&second, "code#current").is_err());

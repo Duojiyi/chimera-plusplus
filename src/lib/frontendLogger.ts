@@ -293,6 +293,13 @@ function describeError(error: unknown): string {
   return truncateForProcessing(structured, MAX_RAW_LOG_INPUT_LENGTH);
 }
 
+export function formatFrontendDiagnostics(error: unknown): string {
+  return redactFrontendLogText(describeError(error)).slice(
+    0,
+    MAX_LOG_MESSAGE_LENGTH,
+  );
+}
+
 export function reportFrontendError(
   context: string,
   error: unknown,

@@ -689,7 +689,7 @@ export function OpenCodeFormFields({
                       handleHeaderValueChange(key, e.target.value)
                     }
                     placeholder={t("opencode.headerValuePlaceholder", {
-                      defaultValue: "CC Switch",
+                      defaultValue: "Chimera++",
                     })}
                     className="flex-1"
                   />

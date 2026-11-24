@@ -8,7 +8,7 @@ use crate::error::AppError;
 use chrono::{Local, Utc};
 use rusqlite::backup::Backup;
 use rusqlite::types::ValueRef;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -77,9 +77,15 @@ const EXPORT_SKIP_TABLES: &[&str] = &[
     "official_account_quota",
 ];
 
-/// `settings` rows that describe this device's live files (projection
-/// ledgers) and are dropped from every export.
-const EXPORT_SKIP_SETTINGS: &[&str] = &[crate::mcp::CODEX_MCP_PROJECTION_LEDGER_KEY];
+/// `settings` rows that are machine-local or carry local proxy/gateway secrets:
+/// dropped from every export and preserved on the host across SQL imports.
+const EXPORT_SKIP_SETTINGS: &[&str] = &[
+    crate::mcp::CODEX_MCP_PROJECTION_LEDGER_KEY,
+    "local_proxy_token",
+    "local_proxy_legacy_until",
+    "claude_desktop_gateway_token",
+    "global_proxy_url",
+];
 
 /// MCP spec objects whose values are credentials in practice; every value is
 /// blanked on export (key names stay, so the user knows what to refill).
@@ -295,6 +301,56 @@ pub struct BackupEntry {
     pub created_at: String, // ISO 8601
 }
 
+/// Bounded SQLite online backup loop that handles `SQLITE_BUSY` / `SQLITE_LOCKED`
+/// without either silently dropping an incomplete transfer or hanging forever.
+pub(crate) fn run_backup_to_completion(
+    source: &Connection,
+    dest: &mut Connection,
+    context: &str,
+) -> Result<(), AppError> {
+    use rusqlite::backup::StepResult;
+    use std::time::{Duration, Instant};
+
+    const PAGES_PER_STEP: i32 = 100;
+    const RETRY_SLEEP: Duration = Duration::from_millis(25);
+    const MAX_WAIT: Duration = Duration::from_secs(10);
+
+    let backup =
+        Backup::new(source, dest).map_err(|e| AppError::Database(format!("{context}: {e}")))?;
+    let mut deadline = Instant::now() + MAX_WAIT;
+    loop {
+        match backup.step(PAGES_PER_STEP) {
+            Ok(StepResult::Done) => return Ok(()),
+            Ok(StepResult::More) => {
+                // Normal forward progress — do not sleep or penalize large DBs.
+                deadline = Instant::now() + MAX_WAIT;
+            }
+            Ok(_) => {
+                if Instant::now() >= deadline {
+                    return Err(AppError::Database(format!(
+                        "{context}: database remained busy until timeout"
+                    )));
+                }
+                std::thread::sleep(RETRY_SLEEP);
+            }
+            Err(rusqlite::Error::SqliteFailure(err, _))
+                if matches!(
+                    err.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                ) =>
+            {
+                if Instant::now() >= deadline {
+                    return Err(AppError::Database(format!(
+                        "{context}: database remained locked until timeout"
+                    )));
+                }
+                std::thread::sleep(RETRY_SLEEP);
+            }
+            Err(e) => return Err(AppError::Database(format!("{context}: {e}"))),
+        }
+    }
+}
+
 impl Database {
     /// 导出为 SQLite 兼容的 SQL 文本（内存字符串，完整导出）
     ///
@@ -386,18 +442,29 @@ impl Database {
             )));
         }
 
-        // The whole file is read into memory, so its size is checked first.
-        let size = fs::metadata(source_path)
-            .map_err(|e| AppError::io(source_path, e))?
-            .len();
-        if size > MAX_IMPORT_SQL_BYTES {
-            return Err(AppError::localized(
-                "backup.sql.too_large",
-                format!("SQL 备份文件过大（{size} 字节，上限 {MAX_IMPORT_SQL_BYTES} 字节）。"),
-                format!("The SQL backup is too large ({size} bytes; the limit is {MAX_IMPORT_SQL_BYTES})."),
-            ));
-        }
-        let sql_raw = fs::read_to_string(source_path).map_err(|e| AppError::io(source_path, e))?;
+        // Read bounded without following a final symlink/reparse point to avoid size TOCTOU.
+        let sql_raw = match crate::security_limits::read_to_string_limited(
+            source_path,
+            MAX_IMPORT_SQL_BYTES,
+        ) {
+            Ok(raw) => raw,
+            Err(e) => {
+                if let Some(crate::security_limits::ResourceLimitError::TooLarge { size, limit }) =
+                    e.get_ref().and_then(|err| {
+                        err.downcast_ref::<crate::security_limits::ResourceLimitError>()
+                    })
+                {
+                    return Err(AppError::localized(
+                        "backup.sql.too_large",
+                        format!("SQL 备份文件过大（{size} 字节，上限 {limit} 字节）。"),
+                        format!(
+                            "The SQL backup is too large ({size} bytes; the limit is {limit} bytes)."
+                        ),
+                    ));
+                }
+                return Err(AppError::io(source_path, e));
+            }
+        };
         let sql_content = sql_raw.trim_start_matches('\u{feff}');
         self.import_sql_string(sql_content)
     }
@@ -420,12 +487,6 @@ impl Database {
     ) -> Result<String, AppError> {
         let sql_content = sql_raw.trim_start_matches('\u{feff}');
         Self::validate_cc_switch_sql_export(sql_content)?;
-
-        let local_snapshot = if preserve_tables.is_empty() {
-            None
-        } else {
-            Some(self.snapshot_to_memory()?)
-        };
 
         // 在临时数据库执行导入，确保失败不会污染主库
         let temp_file = NamedTempFile::new().map_err(|e| AppError::IoContext {
@@ -472,31 +533,23 @@ impl Database {
             Self::redact_codex_provider_auth(&temp_conn)?;
         }
         Self::validate_basic_state(&temp_conn)?;
-        if let Some(local_snapshot) = local_snapshot.as_ref() {
-            Self::restore_tables(local_snapshot, &temp_conn, preserve_tables)?;
-            Self::merge_local_mcp_secrets(local_snapshot, &temp_conn)?;
-        }
-        // Validate the final staged state for both local and cloud imports.
-        // Remote Live backups may have been replaced by local-only tables,
-        // but any remaining proxy_config runtime flags must block the commit.
-        Self::validate_stopped_proxy_state_on_conn(&temp_conn)?;
 
-        // 只有暂存库通过全部校验之后，才对现有主库做安全备份并提交导入——
-        // 与 restore_from_backup 的顺序一致。备份挪到这里（而不是函数开头）
-        // 是因为它会占用 cleanup_db_backups 的保留配额：早前在校验之前就
-        // 备份，会让多次失败的导入尝试把真正有价值的旧备份顶掉。
-        let backup_path = self.backup_database_file()?;
-
-        // 使用 Backup 将临时库原子写回主库
-        {
+        // 使用 Backup 将临时库原子写回主库；在持有主库锁期间合并最新本机专属表、
+        // 校验最终停止态、生成主库安全快照并提交，避免导入窗口期间并发写入的本机数据丢失。
+        let backup_path = {
             let mut main_conn = lock_conn!(self.conn);
+            if !preserve_tables.is_empty() {
+                Self::restore_tables(&main_conn, &temp_conn, preserve_tables)?;
+                Self::merge_local_mcp_secrets(&main_conn, &temp_conn)?;
+            }
+            Self::preserve_local_security_settings(&main_conn, &temp_conn)?;
+            Self::validate_stopped_proxy_state_on_conn(&temp_conn)?;
+            let main_snapshot = Self::snapshot_connection_to_memory(&main_conn)?;
+            let backup_path = Self::backup_database_snapshot(&main_snapshot)?;
             Self::preserve_local_account_pins_on_connection(&main_conn, &temp_conn)?;
-            let backup = Backup::new(&temp_conn, &mut main_conn)
-                .map_err(|e| AppError::Database(e.to_string()))?;
-            backup
-                .step(-1)
-                .map_err(|e| AppError::Database(e.to_string()))?;
-        }
+            run_backup_to_completion(&temp_conn, &mut main_conn, "提交 SQL 导入失败")?;
+            backup_path
+        };
 
         let backup_id = backup_path
             .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
@@ -515,18 +568,7 @@ impl Database {
         let mut snapshot =
             Connection::open_in_memory().map_err(|e| AppError::Database(e.to_string()))?;
 
-        {
-            let backup =
-                Backup::new(conn, &mut snapshot).map_err(|e| AppError::Database(e.to_string()))?;
-            let result = backup
-                .step(-1)
-                .map_err(|e| AppError::Database(e.to_string()))?;
-            if !matches!(result, rusqlite::backup::StepResult::Done) {
-                return Err(AppError::Database(
-                    "Database backup did not complete".into(),
-                ));
-            }
-        }
+        run_backup_to_completion(conn, &mut snapshot, "Database backup did not complete")?;
 
         Ok(snapshot)
     }
@@ -687,6 +729,39 @@ impl Database {
         Ok(())
     }
 
+    /// Keep machine-local proxy/gateway credentials and proxy URL settings on the
+    /// host across SQL imports so an untrusted backup cannot implant or overwrite
+    /// local auth tokens or proxy routing.
+    fn preserve_local_security_settings(
+        local_conn: &Connection,
+        target_conn: &Connection,
+    ) -> Result<(), AppError> {
+        if !Self::table_exists(target_conn, "settings")? {
+            return Ok(());
+        }
+        let local_has_settings = Self::table_exists(local_conn, "settings")?;
+        for key in EXPORT_SKIP_SETTINGS {
+            target_conn.execute("DELETE FROM main.settings WHERE key = ?1", [*key])?;
+            if !local_has_settings {
+                continue;
+            }
+            let local_val: Option<String> = local_conn
+                .query_row(
+                    "SELECT value FROM main.settings WHERE key = ?1",
+                    [*key],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(value) = local_val {
+                target_conn.execute(
+                    "INSERT OR REPLACE INTO main.settings (key, value) VALUES (?1, ?2)",
+                    rusqlite::params![*key, value],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// Periodic backup: create a new backup if the latest one is older than the configured interval
     pub(crate) fn periodic_backup_if_needed(&self) -> Result<(), AppError> {
         let interval_hours = crate::settings::effective_backup_interval_hours();
@@ -776,23 +851,33 @@ impl Database {
         fs::create_dir_all(&backup_dir).map_err(|e| AppError::io(&backup_dir, e))?;
 
         let backup_path = Self::unique_backup_path(&backup_dir, DB_BACKUP_PREFIX);
+        let mut partial_name = backup_path.as_os_str().to_owned();
+        partial_name.push(".partial");
+        let partial_path = PathBuf::from(partial_name);
+        match fs::remove_file(&partial_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(AppError::io(&partial_path, error)),
+        }
 
-        {
+        let write_result = (|| -> Result<(), AppError> {
             // Stage through an in-memory snapshot so the takeover Live backup
             // (MH-17) is dropped before any page reaches the backup file.
             Self::strip_proxy_live_backup(snapshot)?;
-            let mut dest_conn =
-                Connection::open(&backup_path).map_err(|e| AppError::Database(e.to_string()))?;
-            let backup = Backup::new(snapshot, &mut dest_conn)
-                .map_err(|e| AppError::Database(e.to_string()))?;
-            let result = backup
-                .step(-1)
-                .map_err(|e| AppError::Database(e.to_string()))?;
-            if !matches!(result, rusqlite::backup::StepResult::Done) {
-                return Err(AppError::Database(
-                    "Database backup did not complete".into(),
-                ));
+            {
+                let mut dest_conn = Connection::open(&partial_path)
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                run_backup_to_completion(
+                    snapshot,
+                    &mut dest_conn,
+                    "Database backup did not complete",
+                )?;
             }
+            fs::rename(&partial_path, &backup_path).map_err(|e| AppError::io(&backup_path, e))
+        })();
+        if let Err(err) = write_result {
+            let _ = fs::remove_file(&partial_path);
+            return Err(err);
         }
 
         #[cfg(unix)]
@@ -1291,16 +1376,10 @@ impl Database {
         {
             let source_conn =
                 Connection::open(&backup_path).map_err(|e| AppError::Database(e.to_string()))?;
-            let staging_conn =
+            let mut staging_conn =
                 Connection::open(&staging_path).map_err(|e| AppError::Database(e.to_string()))?;
-            let mut staging_conn = staging_conn;
 
-            let backup = Backup::new(&source_conn, &mut staging_conn)
-                .map_err(|e| AppError::Database(format!("读取数据库备份失败: {e}")))?;
-            backup
-                .step(-1)
-                .map_err(|e| AppError::Database(format!("复制数据库备份失败: {e}")))?;
-            drop(backup);
+            run_backup_to_completion(&source_conn, &mut staging_conn, "复制数据库备份失败")?;
 
             Self::validate_backup_schema(&staging_conn)?;
             Self::create_tables_on_conn(&staging_conn)?;
@@ -1310,30 +1389,25 @@ impl Database {
             Self::validate_stopped_proxy_state_on_conn(&staging_conn)?;
         }
 
-        // Create a safety snapshot only after the staged database has passed
-        // all checks. This avoids consuming a backup slot for malformed input.
-        let safety_backup = self.backup_database_file()?;
-        let safety_id = safety_backup
-            .as_ref()
-            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-            .unwrap_or_default();
-
-        // Commit the already validated staged database into the live connection.
-        // rusqlite's backup API can still fail during the final copy (for
-        // example, disk/connection errors), so immediately restore the safety
-        // snapshot on that path.
+        // Create a safety snapshot and commit the already validated staged
+        // database under a single live-connection lock so no background writer
+        // can slip between the safety snapshot and DB replacement.
+        let mut safety_backup: Option<PathBuf> = None;
         let commit_result = (|| -> Result<(), AppError> {
             let staged_conn =
                 Connection::open(&staging_path).map_err(|e| AppError::Database(e.to_string()))?;
             let mut main_conn = lock_conn!(self.conn);
+            let main_snapshot = Self::snapshot_connection_to_memory(&main_conn)?;
+            safety_backup = Self::backup_database_snapshot(&main_snapshot)?;
+            Self::preserve_local_security_settings(&main_conn, &staged_conn)?;
             Self::preserve_local_account_pins_on_connection(&main_conn, &staged_conn)?;
-            let backup = Backup::new(&staged_conn, &mut main_conn)
-                .map_err(|e| AppError::Database(format!("提交数据库恢复失败: {e}")))?;
-            backup
-                .step(-1)
-                .map_err(|e| AppError::Database(format!("提交数据库恢复失败: {e}")))?;
+            run_backup_to_completion(&staged_conn, &mut main_conn, "提交数据库恢复失败")?;
             Ok(())
         })();
+        let safety_id = safety_backup
+            .as_ref()
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+            .unwrap_or_default();
 
         if let Err(commit_error) = commit_result {
             if let Some(safety_path) = safety_backup.as_ref() {
@@ -1344,11 +1418,7 @@ impl Database {
                     let safety_snapshot = Self::snapshot_connection_to_memory(&safety_conn)?;
                     let mut main_conn = lock_conn!(self.conn);
                     Self::preserve_local_account_pins_on_connection(&main_conn, &safety_snapshot)?;
-                    let backup = Backup::new(&safety_snapshot, &mut main_conn)
-                        .map_err(|e| AppError::Database(format!("恢复安全备份失败: {e}")))?;
-                    backup
-                        .step(-1)
-                        .map_err(|e| AppError::Database(format!("恢复安全备份失败: {e}")))?;
+                    run_backup_to_completion(&safety_snapshot, &mut main_conn, "恢复安全备份失败")?;
                     Ok(())
                 })();
                 if let Err(rollback_error) = rollback_result {
@@ -1391,16 +1461,29 @@ impl Database {
         let old_path = backup_dir.join(old_filename);
         let new_path = backup_dir.join(&new_filename);
 
-        if !old_path.exists() {
+        let old_meta = match fs::symlink_metadata(&old_path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(AppError::InvalidInput(format!(
+                    "Backup file not found: {old_filename}"
+                )));
+            }
+            Err(e) => return Err(AppError::io(&old_path, e)),
+        };
+        if crate::security_limits::is_link_or_reparse_point(&old_meta) || !old_meta.is_file() {
             return Err(AppError::InvalidInput(format!(
-                "Backup file not found: {old_filename}"
+                "Backup file must be a regular file: {old_filename}"
             )));
         }
 
-        if new_path.exists() {
-            return Err(AppError::InvalidInput(format!(
-                "A backup named '{new_filename}' already exists"
-            )));
+        match fs::symlink_metadata(&new_path) {
+            Ok(_) => {
+                return Err(AppError::InvalidInput(format!(
+                    "A backup named '{new_filename}' already exists"
+                )));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(AppError::io(&new_path, e)),
         }
 
         fs::rename(&old_path, &new_path).map_err(|e| AppError::io(&old_path, e))?;
@@ -1413,9 +1496,18 @@ impl Database {
         validate_backup_filename(filename)?;
 
         let backup_path = get_app_config_dir().join("backups").join(filename);
-        if !backup_path.exists() {
+        let meta = match fs::symlink_metadata(&backup_path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(AppError::InvalidInput(format!(
+                    "Backup file not found: {filename}"
+                )));
+            }
+            Err(e) => return Err(AppError::io(&backup_path, e)),
+        };
+        if crate::security_limits::is_link_or_reparse_point(&meta) || !meta.is_file() {
             return Err(AppError::InvalidInput(format!(
-                "Backup file not found: {filename}"
+                "Backup file must be a regular file: {filename}"
             )));
         }
 
@@ -2994,6 +3086,61 @@ mod tests {
         assert!(
             live.contains("ghp-mcp-secret"),
             "only the export is redacted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sql_import_preserves_local_security_settings_and_export_omits_them() -> Result<(), AppError>
+    {
+        let local_db = Database::memory()?;
+        local_db.set_setting("local_proxy_token", "local-secret-token")?;
+        local_db.set_setting("local_proxy_legacy_until", "0")?;
+        local_db.set_setting("claude_desktop_gateway_token", "local-gateway-secret")?;
+        local_db.set_setting("global_proxy_url", "http://127.0.0.1:7890")?;
+        local_db.set_setting("ui_theme_note", "keep-imported")?;
+
+        let exported = local_db.export_sql_string()?;
+        assert!(!exported.contains("local-secret-token"));
+        assert!(!exported.contains("local-gateway-secret"));
+        assert!(!exported.contains("http://127.0.0.1:7890"));
+
+        let poisoned_db = Database::memory()?;
+        poisoned_db.set_setting("local_proxy_token", "attacker-token")?;
+        poisoned_db.set_setting("local_proxy_legacy_until", "9999999999")?;
+        poisoned_db.set_setting("claude_desktop_gateway_token", "attacker-gateway")?;
+        poisoned_db.set_setting("global_proxy_url", "http://evil.example:8080")?;
+        poisoned_db.set_setting("ui_theme_note", "from-backup")?;
+
+        {
+            let local_conn = crate::database::lock_conn!(local_db.conn);
+            let target_conn = crate::database::lock_conn!(poisoned_db.conn);
+            Database::preserve_local_security_settings(&local_conn, &target_conn)?;
+        }
+
+        assert_eq!(
+            poisoned_db.get_setting("local_proxy_token")?.as_deref(),
+            Some("local-secret-token")
+        );
+        assert_eq!(
+            poisoned_db
+                .get_setting("local_proxy_legacy_until")?
+                .as_deref(),
+            Some("0")
+        );
+        assert_eq!(
+            poisoned_db
+                .get_setting("claude_desktop_gateway_token")?
+                .as_deref(),
+            Some("local-gateway-secret")
+        );
+        assert_eq!(
+            poisoned_db.get_setting("global_proxy_url")?.as_deref(),
+            Some("http://127.0.0.1:7890")
+        );
+        assert_eq!(
+            poisoned_db.get_setting("ui_theme_note")?.as_deref(),
+            Some("from-backup")
         );
         Ok(())
     }

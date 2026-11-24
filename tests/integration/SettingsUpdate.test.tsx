@@ -64,7 +64,7 @@ describe("settings application update", () => {
   });
 
   it("starts the download and install flow directly from the update button", async () => {
-    installUpdateMock.mockResolvedValueOnce(false);
+    installUpdateMock.mockResolvedValueOnce("unavailable");
     render(
       <ThemeProvider>
         <NewSettingsView />

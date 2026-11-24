@@ -1,4 +1,6 @@
-use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use serde::Deserialize;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -122,6 +124,7 @@ pub struct PollLoginDto {
 }
 
 /// Which accounts a filtered request wants back.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum OfficialAccountFilter {
@@ -142,6 +145,7 @@ pub enum OfficialAccountFilter {
 }
 
 /// Sort keys for the account list.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum OfficialAccountSort {
@@ -155,6 +159,7 @@ pub enum OfficialAccountSort {
     Added,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SortDirection {
@@ -167,6 +172,7 @@ pub enum SortDirection {
 ///
 /// `tags` and `groups` describe the *unfiltered* set, so the toolbar can show
 /// the whole vocabulary even while a filter hides most rows.
+#[cfg(test)]
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct OfficialAccountQuery {
@@ -187,6 +193,7 @@ pub struct OfficialAccountQuery {
 
 /// Group filter value meaning "accounts in no group". Chosen over an extra
 /// boolean so the filter stays one string on the wire.
+#[cfg(test)]
 pub const UNGROUPED_GROUP: &str = "";
 
 #[derive(Serialize)]
@@ -199,6 +206,7 @@ pub struct OfficialAccountGroupDto {
     pub account_count: usize,
 }
 
+#[cfg(test)]
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OfficialAccountPageDto {
@@ -216,7 +224,9 @@ pub struct OfficialAccountPageDto {
     pub groups: Vec<OfficialAccountGroupDto>,
 }
 
+#[cfg(test)]
 const DEFAULT_PAGE_SIZE: u32 = 50;
+#[cfg(test)]
 const MAX_PAGE_SIZE: u32 = 200;
 
 /// How stale a `last_used_at` stamp may get before the account list refreshes
@@ -297,19 +307,7 @@ async fn load_official_accounts(
 ///
 /// Kept free of I/O so the ordering rules are unit-testable: the caller hands
 /// in the already-built rows and the metadata index.
-#[tauri::command]
-pub async fn query_official_accounts(
-    state: tauri::State<'_, AppState>,
-    query: Option<OfficialAccountQuery>,
-) -> Result<OfficialAccountPageDto, AppError> {
-    let (accounts, meta_index) = load_official_accounts(&state).await?;
-    Ok(query_official_accounts_from(
-        accounts,
-        &meta_index,
-        &query.unwrap_or_default(),
-    ))
-}
-
+#[cfg(test)]
 fn query_official_accounts_from(
     accounts: Vec<OfficialAccountDto>,
     meta_index: &AccountMetaIndex,
@@ -379,6 +377,7 @@ fn query_official_accounts_from(
 }
 
 /// Case-insensitive substring match over the fields the user can see.
+#[cfg(test)]
 fn matches(account: &OfficialAccountDto, needle: &str) -> bool {
     let haystack = |value: &str| value.to_lowercase().contains(needle);
     haystack(&account.display_name)
@@ -390,6 +389,7 @@ fn matches(account: &OfficialAccountDto, needle: &str) -> bool {
         || account.tags.iter().any(|tag| haystack(tag))
 }
 
+#[cfg(test)]
 fn matches_filter(account: &OfficialAccountDto, filter: OfficialAccountFilter) -> bool {
     match filter {
         OfficialAccountFilter::All => true,
@@ -402,6 +402,7 @@ fn matches_filter(account: &OfficialAccountDto, filter: OfficialAccountFilter) -
     }
 }
 
+#[cfg(test)]
 fn matches_group(account: &OfficialAccountDto, group: Option<&str>) -> bool {
     match group {
         None => true,
@@ -414,6 +415,7 @@ fn matches_group(account: &OfficialAccountDto, group: Option<&str>) -> bool {
 /// needs: the fullest window decides, so an account is not called roomy while
 /// one of its windows is nearly gone. `None` when this machine holds no
 /// successful reading for the account.
+#[cfg(test)]
 fn used_share(account: &OfficialAccountDto) -> Option<f64> {
     let quota = &account.quota.as_ref()?.quota;
     if !quota.success {
@@ -430,6 +432,7 @@ fn used_share(account: &OfficialAccountDto) -> Option<f64> {
 
 /// Sorts by one key whose absence always lands last, in either direction: an
 /// account with no reading must never take the top of the list.
+#[cfg(test)]
 fn sort_accounts(
     items: &mut [OfficialAccountDto],
     sort: OfficialAccountSort,
@@ -482,6 +485,7 @@ fn sort_accounts(
 }
 
 /// Orders present values by `descending`, and keeps absent values last.
+#[cfg(test)]
 fn compare_present_last(
     left: Option<i64>,
     right: Option<i64>,
@@ -504,6 +508,7 @@ fn compare_present_last(
 
 /// `YYYYMMDD` of an RFC 3339 capture time; enough to order accounts saved on
 /// different days, which is all this sort claims.
+#[cfg(test)]
 fn added_key(captured_at: &str) -> Option<i64> {
     let mut parts = captured_at.get(..10)?.split('-');
     let year: i64 = parts.next()?.parse().ok()?;

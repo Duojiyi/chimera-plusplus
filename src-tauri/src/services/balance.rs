@@ -395,7 +395,7 @@ fn parse_chimerahub_response(body: &serde_json::Value) -> Result<Vec<UsageData>,
 }
 
 async fn query_chimerahub(origin: &str, api_key: &str) -> Result<UsageResult, String> {
-    let resp = crate::proxy::http_client::get()
+    let resp = crate::proxy::http_client::get_for_auth_probe()?
         .get(format!("{origin}/api/usage/token/"))
         .header("Authorization", format!("Bearer {api_key}"))
         .header("Accept", "application/json")
@@ -449,7 +449,7 @@ struct ChimeraHubAccount {
 }
 
 async fn query_chimerahub_account(origin: &str, api_key: &str) -> Option<ChimeraHubAccount> {
-    let client = crate::proxy::http_client::get();
+    let client = crate::proxy::http_client::get_for_auth_probe().ok()?;
     let sub = client
         .get(format!("{origin}/v1/dashboard/billing/subscription"))
         .header("Authorization", format!("Bearer {api_key}"))
@@ -489,7 +489,7 @@ async fn query_chimerahub_account(origin: &str, api_key: &str) -> Option<Chimera
 // Response: { balance_infos: [{ currency, total_balance, granted_balance, topped_up_balance }], is_available }
 
 async fn query_deepseek(api_key: &str) -> Result<UsageResult, String> {
-    let client = crate::proxy::http_client::get();
+    let client = crate::proxy::http_client::get_for_auth_probe()?;
 
     let resp = client
         .get("https://api.deepseek.com/user/balance")
@@ -536,7 +536,7 @@ async fn query_deepseek(api_key: &str) -> Result<UsageResult, String> {
 // Response: { object, type, balance, total_cash_balance, total_voucher_balance }
 
 async fn query_stepfun(api_key: &str) -> Result<UsageResult, String> {
-    let client = crate::proxy::http_client::get();
+    let client = crate::proxy::http_client::get_for_auth_probe()?;
 
     let resp = client
         .get("https://api.stepfun.com/v1/accounts")
@@ -583,7 +583,7 @@ async fn query_stepfun(api_key: &str) -> Result<UsageResult, String> {
 // Response: { code, data: { balance, chargeBalance, totalBalance, status } }
 
 async fn query_siliconflow(api_key: &str, is_cn: bool) -> Result<UsageResult, String> {
-    let client = crate::proxy::http_client::get();
+    let client = crate::proxy::http_client::get_for_auth_probe()?;
 
     let domain = if is_cn {
         "api.siliconflow.cn"
@@ -645,7 +645,7 @@ enum JsonReply {
 }
 
 async fn get_json(url: &str, api_key: &str) -> Result<JsonReply, String> {
-    let resp = crate::proxy::http_client::get()
+    let resp = crate::proxy::http_client::get_for_auth_probe()?
         .get(url)
         .header("Authorization", format!("Bearer {api_key}"))
         .header("Accept", "application/json")
@@ -734,7 +734,7 @@ async fn query_moonshot(api_key: &str) -> Result<UsageResult, String> {
 // 金额单位：0.0001 USD
 
 async fn query_novita(api_key: &str) -> Result<UsageResult, String> {
-    let client = crate::proxy::http_client::get();
+    let client = crate::proxy::http_client::get_for_auth_probe()?;
 
     let resp = client
         .get("https://api.novita.ai/v3/user/balance")

@@ -25,6 +25,7 @@ const TOOL_CALL = /^\[Tool: ([^\]\n]+)\]$/;
 
 interface SessionMessageItemProps {
   message: SessionMessage;
+  providerName?: string;
   isActive: boolean;
   searchQuery?: string;
   onCopy: (content: string) => void;
@@ -32,6 +33,7 @@ interface SessionMessageItemProps {
 
 export const SessionMessageItem = memo(function SessionMessageItem({
   message,
+  providerName,
   isActive,
   searchQuery,
   onCopy,
@@ -98,6 +100,11 @@ export const SessionMessageItem = memo(function SessionMessageItem({
         isActive && "session-message-active",
       )}
     >
+      {!isContext && (role === "user" || role === "assistant") && (
+        <span className="session-message-avatar" aria-hidden="true">
+          {role === "user" ? "U" : providerName?.charAt(0) || "A"}
+        </span>
+      )}
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
@@ -112,10 +119,14 @@ export const SessionMessageItem = memo(function SessionMessageItem({
         </TooltipTrigger>
         <TooltipContent>复制内容</TooltipContent>
       </Tooltip>
-      <div className="flex items-center justify-between gap-3 text-xs mb-1.5 pr-8">
+      <div className="session-message-header flex items-center gap-3 text-xs mb-1.5 pr-8">
         <span className="flex items-center gap-2 min-w-0">
           <span className="session-message-role">
-            {isContext ? "系统与环境" : getRoleLabel(message.role)}
+            {isContext
+              ? "系统与环境"
+              : role === "assistant" && providerName
+                ? providerName
+                : getRoleLabel(message.role)}
           </span>
           {truncated ? (
             <span

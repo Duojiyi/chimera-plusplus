@@ -1285,17 +1285,6 @@ impl LiveSnapshot {
     }
 }
 
-/// Write live configuration snapshot for a provider. `codex_snippet` is the
-/// Codex common config (⑤) and is only read for Codex.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn write_live_snapshot(
-    app_type: &AppType,
-    provider: &Provider,
-    codex_snippet: Option<&crate::codex_key_ownership::CodexCommonSnippet>,
-) -> Result<(), AppError> {
-    write_live_snapshot_receipted(app_type, provider, codex_snippet).map(|_| ())
-}
-
 fn write_live_snapshot_receipted(
     app_type: &AppType,
     provider: &Provider,

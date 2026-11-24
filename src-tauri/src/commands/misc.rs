@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 
 use crate::app_config::AppType;
-use crate::init_status::{InitErrorPayload, SkillsMigrationPayload};
+use crate::init_status::InitErrorPayload;
 use crate::services::ProviderService;
 use indexmap::IndexSet;
 use once_cell::sync::Lazy;
@@ -89,20 +89,6 @@ pub async fn is_portable_mode() -> Result<bool, String> {
 #[tauri::command]
 pub async fn get_init_error() -> Result<Option<InitErrorPayload>, String> {
     Ok(crate::init_status::get_init_error())
-}
-
-/// 获取 JSON→SQLite 迁移结果（若有）。
-/// 只返回一次 true，之后返回 false，用于前端显示一次性 Toast 通知。
-#[tauri::command]
-pub async fn get_migration_result() -> Result<bool, String> {
-    Ok(crate::init_status::take_migration_success())
-}
-
-/// 获取 Skills 自动导入（SSOT）迁移结果（若有）。
-/// 只返回一次 Some({count})，之后返回 None，用于前端显示一次性 Toast 通知。
-#[tauri::command]
-pub async fn get_skills_migration_result() -> Result<Option<SkillsMigrationPayload>, String> {
-    Ok(crate::init_status::take_skills_migration_result())
 }
 
 #[derive(serde::Serialize)]
@@ -2252,7 +2238,18 @@ fn brew_formula_from_path(real: &str) -> Option<String> {
     let mut segs = real.split('/');
     while let Some(seg) = segs.next() {
         if seg.eq_ignore_ascii_case("Cellar") {
-            return segs.next().filter(|s| !s.is_empty()).map(|s| s.to_string());
+            return segs
+                .next()
+                .filter(|s| {
+                    !s.is_empty()
+                        && *s != "."
+                        && *s != ".."
+                        && s.bytes().all(|b| {
+                            b.is_ascii_alphanumeric()
+                                || matches!(b, b'@' | b'.' | b'_' | b'+' | b'-')
+                        })
+                })
+                .map(|s| s.to_string());
         }
     }
     None
@@ -2271,21 +2268,19 @@ fn is_grok_native_install(bin_path: &str, real_target: &str) -> bool {
     })
 }
 
-/// 含空格才用 POSIX 单引号包一层,否则保持裸路径——命令展示更干净。
-/// claude / brew / volta / bun / npm 五个锚定分支共用,避免"含空格"判定漂移。
-///
-/// **仅按空格判定,不防其他 shell 元字符**(`$` / `` ` `` / `'` / `"` / `;` 等)。
-/// 调用方传入的是探测得到的可执行路径(`enumerate_tool_installations` 里来源于
-/// `Path::display()`),实际 macOS/Linux 上 home dir 名几乎不允许这类字符、
-/// npm/brew/volta/bun 也不会装到含这类字符的路径,与 diff 前内联在 npm 分支里的
-/// `if npm.contains(' ')` 实现等价。若未来要扩广,改成 `shell_single_quote` 无条件
-/// 包裹即可,但会失去"无空格时的清洁展示"。
+/// 仅当路径全部由 POSIX 安全裸字符组成时保留不加引号（命令展示更干净），
+/// 只要出现空格或任意 shell 元字符（`$` / `` ` `` / `'` / `"` / `;` / `&` / `|` 等）
+/// 一律用 `shell_single_quote` 单引号转义。
 #[cfg(not(target_os = "windows"))]
 fn quote_path_if_spaced(p: &str) -> String {
-    if p.contains(' ') {
-        shell_single_quote(p)
-    } else {
+    if !p.is_empty()
+        && p.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'_' | b'-' | b'+' | b'@' | b':')
+        })
+    {
         p.to_string()
+    } else {
+        shell_single_quote(p)
     }
 }
 
@@ -3133,17 +3128,20 @@ fn launch_macos_terminal(config_file: &std::path::Path, cwd: Option<&Path>) -> R
 
     // Write the shell script to a temp file
     // 脚本使用 POSIX sh 语法确保可移植性，exec 行切换到用户交互式 shell
+    let quoted_launch_dir = shell_single_quote(&launch_dir.to_string_lossy());
+    let quoted_config_path = shell_single_quote(&config_path);
     let script_content = format!(
         r#"#!/usr/bin/env sh
-trap 'rm -rf "{launch_dir}"' EXIT
-echo "Using provider-specific claude config:"
-echo "{config_path}"
+LAUNCH_DIR={quoted_launch_dir}
+trap 'rm -rf -- "$LAUNCH_DIR"' EXIT
+printf '%s\n' "Using provider-specific claude config:"
+printf '%s\n' {quoted_config_path}
 {provider_command}
 {final_cd_command}
 {exec_line}
 "#,
-        config_path = config_path,
-        launch_dir = launch_dir.display(),
+        quoted_launch_dir = quoted_launch_dir,
+        quoted_config_path = quoted_config_path,
         provider_command = provider_command,
         final_cd_command = final_cd_command,
         exec_line = exec_line,
@@ -3151,8 +3149,8 @@ echo "{config_path}"
 
     std::fs::write(&script_file, &script_content).map_err(|e| format!("写入启动脚本失败: {e}"))?;
 
-    // Make script executable
-    std::fs::set_permissions(&script_file, std::fs::Permissions::from_mode(0o755))
+    // Make script executable (owner-only)
+    std::fs::set_permissions(&script_file, std::fs::Permissions::from_mode(0o700))
         .map_err(|e| format!("设置脚本权限失败: {e}"))?;
 
     // Try the preferred terminal first, fall back to Terminal.app if it fails
@@ -3464,17 +3462,20 @@ fn launch_linux_terminal(config_file: &std::path::Path, cwd: Option<&Path>) -> R
     let config_path = config_file.to_string_lossy();
     let provider_command = build_provider_command_line(&shell, &config_path, cwd);
 
+    let quoted_launch_dir = shell_single_quote(&launch_dir.to_string_lossy());
+    let quoted_config_path = shell_single_quote(&config_path);
     let script_content = format!(
         r#"#!/usr/bin/env sh
-trap 'rm -rf "{launch_dir}"' EXIT
-echo "Using provider-specific claude config:"
-echo "{config_path}"
+LAUNCH_DIR={quoted_launch_dir}
+trap 'rm -rf -- "$LAUNCH_DIR"' EXIT
+printf '%s\n' "Using provider-specific claude config:"
+printf '%s\n' {quoted_config_path}
 {provider_command}
 {final_cd_command}
 {exec_line}
 "#,
-        config_path = config_path,
-        launch_dir = launch_dir.display(),
+        quoted_launch_dir = quoted_launch_dir,
+        quoted_config_path = quoted_config_path,
         provider_command = provider_command,
         final_cd_command = final_cd_command,
         exec_line = exec_line,
@@ -3482,26 +3483,28 @@ echo "{config_path}"
 
     std::fs::write(&script_file, &script_content).map_err(|e| format!("写入启动脚本失败: {e}"))?;
 
-    std::fs::set_permissions(&script_file, std::fs::Permissions::from_mode(0o755))
+    std::fs::set_permissions(&script_file, std::fs::Permissions::from_mode(0o700))
         .map_err(|e| format!("设置脚本权限失败: {e}"))?;
 
-    // Build terminal list: preferred terminal first (if specified), then defaults
+    // Build terminal list: preferred terminal first ONLY if it matches the built-in allowlist.
     let terminals_to_try: Vec<(&str, Vec<&str>)> = if let Some(ref pref) = preferred {
-        // Find the preferred terminal's args from default list
-        let pref_args = default_terminals
+        if let Some((allowed_name, pref_args)) = default_terminals
             .iter()
             .find(|(name, _)| *name == pref.as_str())
-            .map(|(_, args)| args.to_vec())
-            .unwrap_or_else(|| vec!["-e"]); // Default args for unknown terminals
-
-        let mut list = vec![(pref.as_str(), pref_args)];
-        // Add remaining terminals as fallbacks
-        for (name, args) in &default_terminals {
-            if *name != pref.as_str() {
-                list.push((*name, args.to_vec()));
+        {
+            let mut list = vec![(*allowed_name, pref_args.to_vec())];
+            for (name, args) in &default_terminals {
+                if *name != *allowed_name {
+                    list.push((*name, args.to_vec()));
+                }
             }
+            list
+        } else {
+            default_terminals
+                .iter()
+                .map(|(name, args)| (*name, args.to_vec()))
+                .collect()
         }
-        list
     } else {
         default_terminals
             .iter()
@@ -3565,6 +3568,8 @@ fn launch_windows_terminal(
 
     let content = format!(
         "@echo off
+setlocal DisableDelayedExpansion
+set \"NoDefaultCurrentDirectoryInExePath=1\"
 {cwd_command}
 echo Using provider-specific claude config:
 echo {}

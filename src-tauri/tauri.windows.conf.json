@@ -4,18 +4,20 @@
     "windows": [
       {
         "label": "main",
-        "title": "",
-        "titleBarStyle": "Overlay",
+        "title": "Chimera++",
         "width": 1140,
         "height": 816,
         "visible": false,
         "minWidth": 960,
         "minHeight": 640,
         "decorations": false,
+        "transparent": true,
+        "shadow": false,
         "resizable": true,
         "maximizable": true,
         "fullscreen": false,
-        "center": true
+        "center": true,
+        "dragDropEnabled": false
       }
     ]
   }

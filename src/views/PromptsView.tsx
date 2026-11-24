@@ -16,16 +16,10 @@ import {
   FolderCog,
   AlertTriangle,
   ArrowDownWideNarrow,
-  BookOpen,
-  Code2,
+  FolderOpen,
+  Plus,
   Copy,
-  Database,
-  FlaskConical,
-  GitCommitHorizontal,
-  Package,
   PenLine,
-  ShieldAlert,
-  type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -73,7 +67,9 @@ import {
   SAMPLE_PROMPT_CATEGORIES,
   SAMPLE_PROMPTS,
 } from "./PromptsView.designSamples";
+import { PromptReadingBody } from "@/components/prompts/PromptReadingBody";
 import { EmptyState } from "@/components/ui/empty-state";
+import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import "./PromptsView.css";
 import "@/theme/v3/prompts.css";
 
@@ -119,24 +115,6 @@ type Sort = "default" | "recent" | "name";
 const designPreview = isPromptsDesignPreview();
 const PREVIEW_REFUSAL = "设计预览不会写入本机文件";
 
-const CATEGORY_ICONS: Record<string, LucideIcon> = {
-  "software-development": Code2,
-  writing: PenLine,
-  conventions: GitCommitHorizontal,
-  quality: FlaskConical,
-  docs: BookOpen,
-  maintenance: Package,
-  security: ShieldAlert,
-  data: Database,
-};
-
-/** `{{name}}` placeholders in a prompt, in first-seen order. */
-function promptVariables(content: string): string[] {
-  const seen = new Set<string>();
-  for (const match of content.matchAll(/\{\{\s*([\w.-]+)\s*\}\}/g))
-    seen.add(match[1]);
-  return [...seen];
-}
 type Editor = { entry?: Entry; readOnly: boolean };
 type FileIssue = ReturnType<typeof describeFileIssue>;
 
@@ -233,6 +211,9 @@ export const PromptsView: React.FC<{
   const pending = useRef(false);
   const mounted = useRef(false);
   const generation = useRef(0);
+  useLightweightCloseBlocker(
+    busy || editor !== null || removing !== null || adopting !== null,
+  );
   const load = useCallback(async () => {
     const request = ++generation.current;
     const fileName = PROMPT_TOOLS.find((tool) => tool.id === targetApp)!.file;
@@ -250,7 +231,11 @@ export const PromptsView: React.FC<{
               state: "in_sync",
               enabledCount: SAMPLE_PROMPTS.filter((prompt) => prompt.enabled)
                 .length,
-              managedBytes: 4_300,
+              managedBytes: new TextEncoder().encode(
+                SAMPLE_PROMPTS.filter((prompt) => prompt.enabled)
+                  .map((prompt) => prompt.content)
+                  .join("\n\n"),
+              ).length,
             }
           : null,
       );
@@ -449,6 +434,8 @@ ${entry.prompt.description ?? ""}`
             : (b.prompt.updatedAt ?? b.prompt.createdAt ?? 0) -
               (a.prompt.updatedAt ?? a.prompt.createdAt ?? 0),
         );
+  const selected =
+    visible.find(({ prompt }) => prompt.id === highlightedId) ?? visible[0];
   const disabled =
     designPreview || loading || busy || error || writeConfirmation !== null;
   const foreign = isCodex && live?.includes(FOREIGN_BEGIN);
@@ -692,6 +679,23 @@ ${entry.prompt.description ?? ""}`
         <div className="prompts-actions">
           <Button
             variant="outline"
+            disabled={designPreview}
+            onClick={openFolder}
+          >
+            <FolderOpen size={14} />
+            打开目录
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={disabled}
+            onClick={() => setShowCategories(true)}
+          >
+            <FolderCog size={14} aria-hidden="true" />
+            管理分类
+          </Button>
+          <Button
+            variant="outline"
             aria-label="导入 .md"
             title={designPreview ? PREVIEW_REFUSAL : "导入 Markdown 文件"}
             onClick={importMarkdown}
@@ -705,6 +709,7 @@ ${entry.prompt.description ?? ""}`
             disabled={disabled}
             title={designPreview ? PREVIEW_REFUSAL : undefined}
           >
+            <Plus size={14} />
             新建提示词
           </Button>
         </div>
@@ -754,315 +759,370 @@ ${entry.prompt.description ?? ""}`
         </div>
       )}
 
-      <div className="prompts-toolbar">
-        <div className="prompts-filters" role="group" aria-label="提示词筛选">
-          {(
-            [
-              ["all", "全部", entries.length],
-              ["enabled", "已启用", active.length],
-              ["builtin", "内置", builtinCount],
-            ] as const
-          ).map(([id, label, count]) => (
-            <button
-              key={id}
-              type="button"
-              aria-pressed={filter === id}
-              onClick={() => setFilter(id)}
+      <div className="prompt-workspace">
+        <aside className="prompt-master" aria-label="提示词选择">
+          <div className="prompts-toolbar">
+            <div
+              className="prompts-filters"
+              role="group"
+              aria-label="提示词筛选"
             >
-              {label}
-              {!loading && !error && <span>{count}</span>}
-            </button>
-          ))}
-        </div>
-        <div className="prompts-search">
-          <Search size={14} aria-hidden="true" />
-          <Input
-            aria-label="搜索提示词"
-            placeholder="搜索提示词"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-          />
-          {search && (
-            <button
-              type="button"
-              aria-label="清空搜索"
-              onClick={() => setSearch("")}
-            >
-              <X size={13} />
-            </button>
-          )}
-        </div>
-        <label className="prompts-sort">
-          <ArrowDownWideNarrow size={14} aria-hidden="true" />
-          <select
-            aria-label="排序"
-            value={sort}
-            onChange={(event) => setSort(event.target.value as Sort)}
-          >
-            <option value="default">默认顺序</option>
-            <option value="recent">最近编辑</option>
-            <option value="name">按名称</option>
-          </select>
-        </label>
-        <span className="prompts-result-count">{visible.length} 条提示词</span>
-      </div>
-      <div className="prompts-category-bar">
-        <div
-          className="prompts-category-filters"
-          role="group"
-          aria-label="分类筛选"
-        >
-          {[
-            { id: "all", name: "全部分类" },
-            ...categories,
-            { id: "uncategorized", name: "未分类" },
-          ].map((category) => (
-            <button
-              key={category.id}
-              type="button"
-              aria-pressed={categoryFilter === category.id}
-              onClick={() => setCategoryFilter(category.id)}
-            >
-              {category.name}
-              <span>
-                {category.id === "all"
-                  ? entries.length
-                  : (categoryCounts[category.id] ?? 0)}
-              </span>
-            </button>
-          ))}
-        </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={disabled}
-          onClick={() => setShowCategories(true)}
-        >
-          <FolderCog size={14} aria-hidden="true" />
-          管理分类
-        </Button>
-      </div>
-      <section
-        className="prompts-catalog"
-        aria-label="提示词库"
-        aria-busy={loading}
-      >
-        <div className="prompts-card-grid">
-          {visible.map((entry) => {
-            const { prompt, template, saved } = entry;
-            const modified =
-              template &&
-              (prompt.content.trim() !== template.content.trim() ||
-                prompt.name !== template.name ||
-                (prompt.description ?? "") !== template.description);
-            const categoryName =
-              categories.find((category) => category.id === prompt.categoryId)
-                ?.name ?? "未分类";
-            const Icon =
-              CATEGORY_ICONS[prompt.categoryId ?? ""] ??
-              CATEGORY_ICONS[template?.categoryId ?? ""] ??
-              FileText;
-            const variables = promptVariables(prompt.content);
-            return (
-              <article
-                id={`prompt-card-${prompt.id}`}
-                key={prompt.id}
-                aria-label={prompt.name}
-                className={`prompt-card${prompt.enabled ? " is-enabled" : ""}${highlightedId === prompt.id ? " is-highlighted" : ""}`}
+              {(
+                [
+                  ["all", "全部", entries.length],
+                  ["enabled", "已启用", active.length],
+                  ["builtin", "内置", builtinCount],
+                ] as const
+              ).map(([id, label, count]) => (
+                <button
+                  key={id}
+                  type="button"
+                  aria-pressed={filter === id}
+                  onClick={() => setFilter(id)}
+                >
+                  {label}
+                  {!loading && !error && <span>{count}</span>}
+                </button>
+              ))}
+            </div>
+            <div className="prompts-search">
+              <Search size={14} aria-hidden="true" />
+              <Input
+                aria-label="搜索提示词"
+                placeholder="搜索提示词"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+              {search && (
+                <button
+                  type="button"
+                  aria-label="清空搜索"
+                  onClick={() => setSearch("")}
+                >
+                  <X size={13} />
+                </button>
+              )}
+            </div>
+          </div>
+          <details className="prompt-more-filters">
+            <summary>分类筛选</summary>
+            <div className="prompts-category-bar">
+              <div
+                className="prompts-category-filters"
+                role="group"
+                aria-label="分类筛选"
               >
-                <div className="prompt-card-heading">
-                  <span className="prompt-card-icon" aria-hidden="true">
-                    <Icon size={15} />
-                  </span>
-                  <div className="prompt-card-name">
+                {[
+                  { id: "all", name: "全部分类" },
+                  ...categories,
+                  { id: "uncategorized", name: "未分类" },
+                ].map((category) => (
+                  <button
+                    key={category.id}
+                    type="button"
+                    aria-pressed={categoryFilter === category.id}
+                    onClick={() => setCategoryFilter(category.id)}
+                  >
+                    {category.name}
+                    <span>
+                      {category.id === "all"
+                        ? entries.length
+                        : (categoryCounts[category.id] ?? 0)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </details>
+          <section
+            className="prompts-catalog"
+            aria-label="提示词库"
+            aria-busy={loading}
+          >
+            <div className="prompts-card-grid">
+              {visible.map((entry) => {
+                const { prompt, template, saved } = entry;
+                const modified =
+                  template &&
+                  (prompt.content.trim() !== template.content.trim() ||
+                    prompt.name !== template.name ||
+                    (prompt.description ?? "") !== template.description);
+                const categoryName =
+                  categories.find(
+                    (category) => category.id === prompt.categoryId,
+                  )?.name ?? "未分类";
+                return (
+                  <article
+                    id={`prompt-card-${prompt.id}`}
+                    key={prompt.id}
+                    aria-label={prompt.name}
+                    className={`prompt-record${selected?.prompt.id === prompt.id ? " is-selected" : ""}`}
+                  >
                     <button
                       type="button"
-                      className="prompt-card-title"
-                      onClick={() => setEditor({ entry, readOnly: true })}
+                      className="prompt-record-select"
+                      aria-label={prompt.name}
+                      aria-pressed={selected?.prompt.id === prompt.id}
+                      onClick={() => setHighlightedId(prompt.id)}
                     >
-                      {prompt.name}
+                      <strong>{prompt.name}</strong>
+                      <span className="prompt-record-meta">
+                        <span
+                          className={
+                            prompt.enabled ? "prompt-enabled-label" : ""
+                          }
+                        >
+                          {prompt.enabled && isCodex
+                            ? notInEffect
+                              ? "已启用 · 未生效"
+                              : "已启用"
+                            : isBuiltin(entry)
+                              ? "内置"
+                              : "自定义"}
+                        </span>
+                        {modified && <span>本地已修改</span>}
+                        <span>
+                          {Array.from(prompt.content).length.toLocaleString()}{" "}
+                          字符
+                        </span>
+                        <span>{categoryName}</span>
+                      </span>
                     </button>
-                    <span className="prompt-card-category">{categoryName}</span>
-                  </div>
-                  {isCodex ? (
-                    <Switch
-                      aria-label={`启用 ${prompt.name}`}
-                      checked={prompt.enabled}
-                      disabled={disabled || linkedFile}
-                      title={designPreview ? PREVIEW_REFUSAL : blockedReason}
-                      aria-describedby={
-                        blockedReason ? "prompts-summary-detail" : undefined
+                    <div className="prompt-record-controls">
+                      {isCodex ? (
+                        <Switch
+                          aria-label={`启用 ${prompt.name}`}
+                          checked={prompt.enabled}
+                          disabled={disabled || linkedFile}
+                          title={
+                            designPreview ? PREVIEW_REFUSAL : blockedReason
+                          }
+                          aria-describedby={
+                            blockedReason ? "prompts-summary-detail" : undefined
+                          }
+                          onCheckedChange={() => void activate(entry)}
+                        />
+                      ) : prompt.enabled ? (
+                        <span className="prompt-current">
+                          <Check size={12} />
+                          当前使用
+                        </span>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          aria-label={`设为当前 ${prompt.name}`}
+                          disabled={disabled || linkedFile}
+                          title={blockedReason}
+                          aria-describedby={
+                            blockedReason ? "prompts-summary-detail" : undefined
+                          }
+                          onClick={() => void activate(entry)}
+                        >
+                          设为当前
+                        </Button>
+                      )}
+                    </div>
+                    <div className="prompt-record-tools">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`编辑 ${prompt.name}`}
+                        disabled={disabled}
+                        onClick={() => setEditor({ entry, readOnly: false })}
+                      >
+                        <PenLine size={13} />
+                      </Button>
+                      {saved && !designPreview && (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              aria-label={`操作 ${prompt.name}`}
+                              disabled={disabled}
+                            >
+                              <MoreHorizontal size={15} />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                              onSelect={() =>
+                                setEditor({
+                                  entry: {
+                                    ...entry,
+                                    saved: false,
+                                    prompt: {
+                                      ...prompt,
+                                      id: "",
+                                      name: `${prompt.name}（副本）`,
+                                      enabled: false,
+                                      createdAt: undefined,
+                                      updatedAt: undefined,
+                                    },
+                                  },
+                                  readOnly: false,
+                                })
+                              }
+                            >
+                              复制
+                            </DropdownMenuItem>
+                            {!isCodex && prompt.enabled && (
+                              <DropdownMenuItem
+                                onSelect={() => void activate(entry)}
+                              >
+                                停用并清空指令文件
+                              </DropdownMenuItem>
+                            )}
+                            <DropdownMenuItem
+                              disabled={prompt.enabled}
+                              onSelect={() => setRemoving(entry)}
+                            >
+                              {prompt.enabled ? "请先禁用后删除" : "删除"}
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+            {visible.length === 0 && (
+              <EmptyState
+                className="prompts-empty"
+                icon={<Search size={20} />}
+                title={
+                  query
+                    ? "没有匹配的提示词"
+                    : filter === "enabled"
+                      ? "还没有启用的提示词"
+                      : filter === "builtin"
+                        ? "没有内置提示词"
+                        : "这个分类还没有提示词"
+                }
+                description={
+                  query
+                    ? "试试其他名称或描述，或清除筛选查看全部。"
+                    : filter === "enabled"
+                      ? "从全部提示词中选择需要的指令，启用后会显示在这里。"
+                      : "新建提示词，或在编辑时将已有提示词移入此分类。"
+                }
+                action={
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setSearch("");
+                      setEnabledOnly(false);
+                      setCategoryFilter("all");
+                    }}
+                  >
+                    查看全部
+                  </Button>
+                }
+              />
+            )}
+          </section>
+          <footer className="prompt-master-footer">
+            {" "}
+            <label className="prompts-sort">
+              <ArrowDownWideNarrow size={14} aria-hidden="true" />
+              <select
+                aria-label="排序"
+                value={sort}
+                onChange={(event) => setSort(event.target.value as Sort)}
+              >
+                <option value="default">默认顺序</option>
+                <option value="recent">最近编辑</option>
+                <option value="name">按名称</option>
+              </select>
+            </label>
+            <span className="prompts-result-count">
+              {visible.length} 条提示词
+            </span>
+          </footer>
+        </aside>
+        <section className="prompt-inspector" aria-label="所选提示词详情">
+          {selected && (
+            <>
+              <header className="prompt-inspector-head">
+                <div>
+                  <h2>{selected.prompt.name}</h2>
+                  <p>
+                    {target.name} · {target.file} ·{" "}
+                    {Array.from(
+                      selected.prompt.content,
+                    ).length.toLocaleString()}{" "}
+                    字符
+                    {selected.prompt.enabled && (
+                      <span className="prompt-enabled-label">
+                        {notInEffect ? "未生效" : "已启用"}
+                      </span>
+                    )}
+                  </p>
+                </div>
+                <div className="prompt-inspector-actions">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(
+                          selected.prompt.content,
+                        );
+                        setNotice("已复制提示词正文。");
+                      } catch {
+                        setNotice("复制失败，可以在全文中选择并复制正文。");
                       }
-                      onCheckedChange={() => void activate(entry)}
-                    />
-                  ) : prompt.enabled ? (
-                    <span className="prompt-current">
-                      <Check size={12} />
-                      当前使用
-                    </span>
-                  ) : (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      aria-label={`设为当前 ${prompt.name}`}
+                    }}
+                  >
+                    <Copy size={14} />
+                    复制正文
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      setEditor({ entry: selected, readOnly: false })
+                    }
+                    disabled={disabled}
+                  >
+                    <PenLine size={14} />
+                    编辑
+                  </Button>
+                  {isCodex && (
+                    <Switch
+                      aria-label="所选提示词注入开关"
+                      checked={selected.prompt.enabled}
                       disabled={disabled || linkedFile}
                       title={blockedReason}
-                      aria-describedby={
-                        blockedReason ? "prompts-summary-detail" : undefined
-                      }
-                      onClick={() => void activate(entry)}
-                    >
-                      设为当前
-                    </Button>
+                      onCheckedChange={() => void activate(selected)}
+                    />
                   )}
                 </div>
-                <p className="prompt-card-description">
-                  {prompt.description ||
-                    prompt.content.split("\n").find((line) => line.trim()) ||
-                    "暂无描述，点击标题查看正文。"}
-                </p>
-                <div className="prompt-card-vars">
-                  <span className="prompt-card-vars-label">变量</span>
-                  {variables.length ? (
-                    variables
-                      .slice(0, 3)
-                      .map((name) => <code key={name}>{`{{${name}}}`}</code>)
-                  ) : (
-                    <span className="prompt-card-vars-none">无</span>
-                  )}
-                  {variables.length > 3 && (
-                    <span className="prompt-card-vars-none">
-                      +{variables.length - 3}
-                    </span>
-                  )}
-                </div>
-                <div className="prompt-card-footer">
-                  <span className="prompt-card-scope">
-                    <span title={`写入全局 ${target.file}，对所有项目生效`}>
-                      所有项目
-                    </span>
-                    {prompt.enabled && isCodex && (
-                      <span
-                        className={`prompt-enabled-label${notInEffect ? " is-pending" : ""}`}
-                      >
-                        {notInEffect ? "已启用 · 未生效" : "已启用"}
-                      </span>
-                    )}
-                  </span>
-                  <span className="prompt-card-origin">
-                    {modified && (
-                      <span
-                        className="prompt-card-badge"
-                        title="内容与内置模板不同，可在编辑时恢复内置内容"
-                      >
-                        本地已修改
-                      </span>
-                    )}
-                    {isBuiltin(entry) ? "内置" : "自定义"}
-                  </span>
-                  <div className="prompt-card-actions">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      aria-label={`编辑 ${prompt.name}`}
-                      disabled={disabled}
-                      onClick={() => setEditor({ entry, readOnly: false })}
-                    >
-                      编辑
-                    </Button>
-                    {saved && !designPreview && (
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            aria-label={`操作 ${prompt.name}`}
-                            disabled={disabled}
-                          >
-                            <MoreHorizontal size={15} />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            onSelect={() =>
-                              setEditor({
-                                entry: {
-                                  ...entry,
-                                  saved: false,
-                                  prompt: {
-                                    ...prompt,
-                                    id: "",
-                                    name: `${prompt.name}（副本）`,
-                                    enabled: false,
-                                    createdAt: undefined,
-                                    updatedAt: undefined,
-                                  },
-                                },
-                                readOnly: false,
-                              })
-                            }
-                          >
-                            复制
-                          </DropdownMenuItem>
-                          {!isCodex && prompt.enabled && (
-                            <DropdownMenuItem
-                              onSelect={() => void activate(entry)}
-                            >
-                              停用并清空指令文件
-                            </DropdownMenuItem>
-                          )}
-                          <DropdownMenuItem
-                            disabled={prompt.enabled}
-                            onSelect={() => setRemoving(entry)}
-                          >
-                            {prompt.enabled ? "请先禁用后删除" : "删除"}
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    )}
-                  </div>
-                </div>
-              </article>
-            );
-          })}
-        </div>
-        {visible.length === 0 && (
-          <EmptyState
-            className="prompts-empty"
-            icon={<Search size={20} />}
-            title={
-              query
-                ? "没有匹配的提示词"
-                : filter === "enabled"
-                  ? "还没有启用的提示词"
-                  : filter === "builtin"
-                    ? "没有内置提示词"
-                    : "这个分类还没有提示词"
-            }
-            description={
-              query
-                ? "试试其他名称或描述，或清除筛选查看全部。"
-                : filter === "enabled"
-                  ? "从全部提示词中选择需要的指令，启用后会显示在这里。"
-                  : "新建提示词，或在编辑时将已有提示词移入此分类。"
-            }
-            action={
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setSearch("");
-                  setEnabledOnly(false);
-                  setCategoryFilter("all");
-                }}
-              >
-                查看全部
-              </Button>
-            }
-          />
-        )}
-      </section>
-      {!statusWarning && summary}
+              </header>
+              <div className="prompt-reading" key={selected.prompt.id}>
+                <PromptReadingBody
+                  content={selected.prompt.content}
+                  filename={target.file}
+                />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setEditor({ entry: selected, readOnly: true })}
+                >
+                  查看全文
+                </Button>
+              </div>
+            </>
+          )}
+          {!selected && (
+            <p className="prompt-reading">请选择左侧提示词以查看正文。</p>
+          )}
+          {!statusWarning && summary}
+        </section>
+      </div>
 
       <Dialog
         open={showFile}

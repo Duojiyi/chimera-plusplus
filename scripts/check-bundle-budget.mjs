@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const root = process.cwd();
+const root = process.env.CHIMERA_RENDERER_BUILD_ROOT || process.cwd();
 const dist = path.join(root, "dist");
 const indexPath = path.join(dist, "index.html");
 

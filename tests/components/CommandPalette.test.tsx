@@ -65,7 +65,9 @@ describe("command palette uses persisted data", () => {
   it("switches and edits using the actual saved provider ID", () => {
     const callbacks = mount();
     expect(screen.getByText("当前线路")).toBeVisible();
-    fireEvent.click(screen.getByText("切换到 My saved route"));
+    fireEvent.click(
+      screen.getByRole("option", { name: /切换到 My saved route/ }),
+    );
     expect(callbacks.onSwitchProvider).toHaveBeenCalledWith("persisted-id");
     // Edit entries stay out of the default list and appear once the user searches.
     expect(screen.queryByText("编辑 My saved route")).not.toBeInTheDocument();

@@ -52,4 +52,22 @@ describe("offline design fonts", () => {
     );
     expect(css).toContain("font-weight: 100 900");
   });
+  it("documents the exact SHA-256 of all three bundled fonts in THIRD_PARTY_NOTICES.md", () => {
+    const notices = readFileSync(
+      path.join(root, "THIRD_PARTY_NOTICES.md"),
+      "utf8",
+    );
+    for (const filename of [
+      "Overpass-Variable.ttf",
+      "OverpassMono-Variable.ttf",
+      "NotoSansSC-Variable.woff2",
+    ]) {
+      const digest = createHash("sha256")
+        .update(readFileSync(path.join(root, "src/assets/fonts", filename)))
+        .digest("hex");
+      expect(notices).toContain(digest);
+    }
+    expect(notices).toContain("NotoSansSC-OFL.txt");
+    expect(notices).toContain("@lobehub/icons-static-svg");
+  });
 });

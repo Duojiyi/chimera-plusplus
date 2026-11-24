@@ -40,7 +40,9 @@
     "deleting": "刪除中...",
     "auto": "自動",
     "enabled": "已啟用",
-    "notSet": "未設定"
+    "notSet": "未設定",
+    "hidePassword": "隱藏密碼",
+    "showPassword": "顯示密碼"
   },
   "firstRunNotice": {
     "title": "歡迎使用 CC Switch",
@@ -220,7 +222,8 @@
       "tooltip": {
         "active": "Claude Desktop 本地路由已開啟 - {{address}}:{{port}}",
         "inactive": "開啟 Claude Desktop 本地路由，用於需要模型對應或格式轉換的供應商。目前設定位址：{{address}}:{{port}}"
-      }
+      },
+      "stopBlockedByTakeover": "其他應用程式正在使用代理接管。請先在設定中關閉對應應用程式接管，再停止本機路由。"
     }
   },
   "notifications": {
@@ -992,7 +995,9 @@
     "messageCopied": "已複製訊息內容",
     "conversationHistory": "對話紀錄",
     "expandContent": "展開完整內容",
-    "collapseContent": "收起"
+    "collapseContent": "收起",
+    "reclaimDeferred": "已復原 {{files}} 個工作階段檔案，仍有 {{deferred}} 個活躍工作階段檔案延期處理。",
+    "reclaimDeferredDetail": "已更新 {{rows}} 條索引記錄。請停止這些工作階段的寫入後，再次點擊復原；活動檔案不會被覆蓋。"
   },
   "console": {
     "providerSwitchReceived": "收到供應商切換事件：",
@@ -1146,7 +1151,8 @@
     "fetchModelsAuthFailed": "API Key 無效或無權限",
     "fetchModelsNotSupported": "該供應商不支援取得模型清單",
     "fetchModelsEndpointNotFound": "未找到可用的模型清單端點，請檢查 Base URL 或確認供應商是否開放該 API",
-    "fetchModelsTimeout": "請求逾時，請檢查網路連線"
+    "fetchModelsTimeout": "請求逾時，請檢查網路連線",
+    "requiredFields": "請填寫供應商名稱、API 位址、API Key 和模型"
   },
   "copilot": {
     "authSection": "GitHub Copilot 驗證",
@@ -1203,7 +1209,8 @@
     "retry": "重試",
     "copyCode": "複製程式碼",
     "fastMode": "FAST 模式",
-    "fastModeDescription": "發送 service_tier=\"priority\" 換取更低延遲。預設關閉——開啟後會以更高速率消耗 ChatGPT 配額。"
+    "fastModeDescription": "發送 service_tier=\"priority\" 換取更低延遲。預設關閉——開啟後會以更高速率消耗 ChatGPT 配額。",
+    "requiresReauth": "需重新認證"
   },
   "xaiOauth": {
     "authStatus": "xAI OAuth 驗證",
@@ -1254,7 +1261,8 @@
     "testUnavailable": "測速功能不可用",
     "noResult": "未回傳結果",
     "testFailed": "測速失敗：{{error}}",
-    "empty": "暫無端點"
+    "empty": "暫無端點",
+    "addEndpoint": "新增自訂端點"
   },
   "providerAdvanced": {
     "pricingConfig": "計費設定",
@@ -1349,7 +1357,20 @@
     "reasoningEffortHint": "上游支援 low/high/max 等思考深度控制時啟用。啟用後會自動啟用思考模式，並把 Codex 的 reasoning.effort 轉成上游 Chat 參數。",
     "reasoningGroupTitle": "思考能力",
     "reasoningSectionHint": "預設供應商已自動設定；自訂供應商會按名稱/位址自動推斷。僅當自動識別不準時才需手動覆寫。",
-    "advancedSectionHint": "包含上游格式、模型映射、思考能力與自訂 User-Agent。使用 Chat Completions 協定的供應商需開啟路由接管才能使用。"
+    "advancedSectionHint": "包含上游格式、模型映射、思考能力與自訂 User-Agent。使用 Chat Completions 協定的供應商需開啟路由接管才能使用。",
+    "catalogColumnImage": "圖片輸入",
+    "modelRouteToggle": "獨立上游線路",
+    "modelRouteTitle": "獨立上游線路：{{model}}",
+    "modelRouteEnabled": "啟用線路",
+    "modelRouteRemove": "移除線路",
+    "modelRouteHint": "該模型的請求將發往下面的獨立上游；留空的欄位沿用本預設設定。",
+    "modelRouteBaseUrlPlaceholder": "上游位址，例如 https://api.example.com/v1",
+    "modelRouteBaseUrl": "線路上游位址",
+    "modelRouteApiKeyPlaceholder": "線路 API Key（可選）",
+    "modelRouteApiKey": "線路 API Key",
+    "modelRouteFormatInherit": "協定：按模型族預設",
+    "modelRouteFullUrl": "位址為完整 API 端點",
+    "noCommonConfigToApply": "通用設定片段為空或沒有可寫入的內容"
   },
   "geminiConfig": {
     "envFile": "環境變數 (.env)",
@@ -1618,7 +1639,10 @@
     "modelsDevTruncated": "僅顯示前 {{shown}} 條，共 {{total}} 條結果，請縮小搜尋範圍",
     "modelsDevDefaultHint": "預設展示最新發布的 {{shown}} 個模型（共 {{total}} 個），輸入關鍵字可全量搜尋",
     "cacheReadCostPerMillion": "快取讀取成本 (每百萬 tokens, USD)",
-    "cacheCreationCostPerMillion": "快取寫入成本 (每百萬 tokens, USD)"
+    "cacheCreationCostPerMillion": "快取寫入成本 (每百萬 tokens, USD)",
+    "unpriced": "未定價",
+    "previousMonth": "上個月",
+    "nextMonth": "下個月"
   },
   "usageScript": {
     "title": "設定用量查詢",
@@ -2285,7 +2309,12 @@
     "envConfirm": "下列變數不在 {{tool}} 的常用變數清單中，勾選的才會匯入。",
     "importSuccessActivated": "已切換到線路「{{name}}」。",
     "mcpImportNone": "MCP 伺服器未匯入",
-    "mcpImportNoneDescription": "{{ids}} 的設定無效。為避免只匯入一部分，這次沒有匯入任何伺服器。"
+    "mcpImportNoneDescription": "{{ids}} 的設定無效。為避免只匯入一部分，這次沒有匯入任何伺服器。",
+    "importFinalizeError": "匯入已完成，但重新整理或確認清理失敗。請點擊「完成」重試，不會重複匯入。",
+    "targetPaths": "將修改的設定檔",
+    "writesLive": "將立即寫入上述即時設定檔",
+    "importOnly": "僅匯入至應用程式資料庫，未啟用前不會寫入即時設定檔",
+    "previewError": "未能讀取連結目標預覽，匯入時將繼續由後端校驗"
   },
   "iconPicker": {
     "search": "搜尋圖示",
@@ -2467,7 +2496,8 @@
       "removeFailed": "移除失敗",
       "reorderSuccess": "佇列順序已更新",
       "reorderFailed": "更新順序失敗",
-      "toggleFailed": "狀態更新失敗"
+      "toggleFailed": "狀態更新失敗",
+      "addProvider": "加入故障轉移佇列"
     },
     "autoFailover": {
       "info": "當故障轉移佇列中設定了多個供應商時，系統會在請求失敗時按優先順序依次嘗試。當某個供應商連續失敗達到閾值時，斷路器會打開並在一段時間內跳過該供應商。",
@@ -2512,7 +2542,9 @@
     },
     "server": {
       "started": "路由服務已啟動 - {{address}}:{{port}}",
-      "startFailed": "啟動路由服務失敗：{{detail}}"
+      "startFailed": "啟動路由服務失敗：{{detail}}",
+      "stopped": "代理服務已停止",
+      "stopFailed": "停止代理服務失敗: {{detail}}"
     },
     "stoppedWithRestore": "路由服務已關閉，已還原所有路由設定",
     "stopWithRestoreFailed": "停止失敗：{{detail}}"

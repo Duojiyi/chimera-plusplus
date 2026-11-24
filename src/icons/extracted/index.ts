@@ -138,20 +138,22 @@ export const iconList = [
 ].sort();
 
 export function getIcon(name: string): string {
-  return icons[name.toLowerCase()] || "";
+  const key = name.toLowerCase();
+  return Object.hasOwn(icons, key) ? icons[key] : "";
 }
 
 export function getIconUrl(name: string): string {
-  return iconUrls[name.toLowerCase()] || "";
+  const key = name.toLowerCase();
+  return Object.hasOwn(iconUrls, key) ? iconUrls[key] : "";
 }
 
 export function hasIcon(name: string): boolean {
   const key = name.toLowerCase();
-  return key in icons || key in iconUrls;
+  return Object.hasOwn(icons, key) || Object.hasOwn(iconUrls, key);
 }
 
 export function isUrlIcon(name: string): boolean {
-  return name.toLowerCase() in iconUrls;
+  return Object.hasOwn(iconUrls, name.toLowerCase());
 }
 
 export { getIconMetadata } from "./metadata";

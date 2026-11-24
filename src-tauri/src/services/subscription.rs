@@ -181,15 +181,19 @@ fn read_claude_credentials() -> (Option<String>, CredentialStatus, Option<String
 #[cfg(target_os = "macos")]
 fn read_claude_credentials_from_keychain(
 ) -> Option<(Option<String>, CredentialStatus, Option<String>)> {
-    let output = std::process::Command::new("security")
-        .args([
-            "find-generic-password",
-            "-s",
-            "Claude Code-credentials",
-            "-w",
-        ])
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new("security");
+    cmd.args([
+        "find-generic-password",
+        "-s",
+        "Claude Code-credentials",
+        "-w",
+    ]);
+    let output = crate::process_utils::output_with_timeout(
+        cmd,
+        std::time::Duration::from_secs(5),
+        crate::security_limits::MAX_PROCESS_OUTPUT_BYTES,
+    )
+    .ok()?;
 
     if !output.status.success() {
         return None; // Keychain 中无此条目，回退到文件
@@ -400,7 +404,7 @@ const KNOWN_TIERS: &[&str] = &[
 /// 成功值）；确定性失败（鉴权/非 2xx/响应体非法 JSON）返回 `Ok(success:false)`。
 /// codex/gemini 两个查询函数遵守同一约定。
 pub(crate) async fn query_claude_quota(access_token: &str) -> Result<SubscriptionQuota, String> {
-    let client = crate::proxy::http_client::get();
+    let client = crate::proxy::http_client::get_for_auth_probe()?;
 
     let resp = client
         .get("https://api.anthropic.com/api/oauth/usage")
@@ -594,10 +598,14 @@ fn read_codex_credentials() -> CodexCredentials {
 /// 从 macOS Keychain 读取 Codex 凭据
 #[cfg(target_os = "macos")]
 fn read_codex_credentials_from_keychain() -> Option<CodexCredentials> {
-    let output = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", "Codex Auth", "-w"])
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new("security");
+    cmd.args(["find-generic-password", "-s", "Codex Auth", "-w"]);
+    let output = crate::process_utils::output_with_timeout(
+        cmd,
+        std::time::Duration::from_secs(5),
+        crate::security_limits::MAX_PROCESS_OUTPUT_BYTES,
+    )
+    .ok()?;
 
     if !output.status.success() {
         return None;
@@ -994,17 +1002,21 @@ fn read_gemini_credentials() -> GeminiCredentials {
 /// 从 macOS Keychain 读取 Gemini 凭据
 #[cfg(target_os = "macos")]
 fn read_gemini_credentials_from_keychain() -> Option<GeminiCredentials> {
-    let output = std::process::Command::new("security")
-        .args([
-            "find-generic-password",
-            "-s",
-            "gemini-cli-oauth",
-            "-a",
-            "main-account",
-            "-w",
-        ])
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new("security");
+    cmd.args([
+        "find-generic-password",
+        "-s",
+        "gemini-cli-oauth",
+        "-a",
+        "main-account",
+        "-w",
+    ]);
+    let output = crate::process_utils::output_with_timeout(
+        cmd,
+        std::time::Duration::from_secs(5),
+        crate::security_limits::MAX_PROCESS_OUTPUT_BYTES,
+    )
+    .ok()?;
 
     if !output.status.success() {
         return None;
@@ -1166,7 +1178,7 @@ const GEMINI_OAUTH_CLIENT_SECRET: &str = "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";
 /// Google OAuth access_token 仅有 ~1h 有效期，需要定期用 refresh_token 刷新。
 /// refresh_token 本身不过期（除非用户撤销授权）。
 async fn refresh_gemini_token(refresh_token: &str) -> Option<String> {
-    let client = crate::proxy::http_client::get();
+    let client = crate::proxy::http_client::get_for_auth_probe().ok()?;
 
     let resp = client
         .post("https://oauth2.googleapis.com/token")
@@ -1248,7 +1260,7 @@ fn classify_gemini_model(model_id: &str) -> &str {
 /// 1. loadCodeAssist → 获取 cloudaicompanionProject
 /// 2. retrieveUserQuota → 获取按模型分桶的配额数据
 async fn query_gemini_quota(access_token: &str) -> Result<SubscriptionQuota, String> {
-    let client = crate::proxy::http_client::get();
+    let client = crate::proxy::http_client::get_for_auth_probe()?;
 
     // ── Step 1: loadCodeAssist 获取项目 ID ──
     let load_resp = client
@@ -1429,7 +1441,10 @@ async fn query_gemini_quota(access_token: &str) -> Result<SubscriptionQuota, Str
 pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, String> {
     match tool {
         "claude" => {
-            let (token, status, message) = read_claude_credentials();
+            let (token, status, message) =
+                tauri::async_runtime::spawn_blocking(read_claude_credentials)
+                    .await
+                    .map_err(|e| format!("读取 Claude 凭据任务失败: {e}"))?;
 
             match status {
                 CredentialStatus::NotFound => Ok(SubscriptionQuota::not_found("claude")),
@@ -1459,7 +1474,10 @@ pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, Str
             }
         }
         "codex" => {
-            let (token, account_id, status, message) = read_codex_credentials();
+            let (token, account_id, status, message) =
+                tauri::async_runtime::spawn_blocking(read_codex_credentials)
+                    .await
+                    .map_err(|e| format!("读取 Codex 凭据任务失败: {e}"))?;
 
             match status {
                 CredentialStatus::NotFound => Ok(SubscriptionQuota::not_found("codex")),
@@ -1501,7 +1519,10 @@ pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, Str
             }
         }
         "gemini" => {
-            let (token, refresh_token, status, message) = read_gemini_credentials();
+            let (token, refresh_token, status, message) =
+                tauri::async_runtime::spawn_blocking(read_gemini_credentials)
+                    .await
+                    .map_err(|e| format!("读取 Gemini 凭据任务失败: {e}"))?;
 
             match status {
                 CredentialStatus::NotFound => Ok(SubscriptionQuota::not_found("gemini")),

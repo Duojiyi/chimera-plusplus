@@ -129,14 +129,14 @@
   /* v3 (L01): line colour swatch, name, model, latency, two row icons.
      Auth and protocol are no longer their own columns — the auth kind and the
      protocol moved into the name's tooltip/second line. */
-  grid-template-columns: 3px 14px minmax(150px, 1fr) 236px 104px 112px;
+  grid-template-columns: 3px 28px minmax(150px, 1fr) 236px 108px 136px;
   align-items: center;
   gap: 14px;
-  padding: 0 14px 0 8px;
-  height: var(--size-row);
-  border-radius: var(--radius-control);
-  font-size: 12.5px;
-  line-height: 18px;
+  padding: 8px 14px 8px 8px;
+  min-height: 54px;
+  border-radius: 10px;
+  font-size: var(--fs-sm);
+  line-height: 19px;
 }
 .provider-table-row > * {
   min-width: 0;
@@ -145,15 +145,17 @@
   white-space: nowrap;
 }
 .provider-table-head {
-  height: 30px;
+  min-height: 36px;
+  height: 36px;
+  padding-block: 0;
   margin-bottom: 2px;
   border-bottom: 1px solid var(--v3-hairline);
   border-radius: 0;
   background: transparent;
   color: var(--text-3);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 500;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
 }
 .provider-table-head [role="columnheader"]:nth-last-child(-n + 1) {
   text-align: right;
@@ -165,15 +167,15 @@
   background: var(--row-bg-hover);
 }
 .provider-table-group {
-  height: 30px;
+  height: 34px;
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 0 4px 0 8px;
   border-top: 1px solid var(--v3-hairline);
-  line-height: 18px;
+  line-height: 20px;
   color: var(--text-2);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
 }
 .provider-table-group span {
@@ -185,7 +187,7 @@
   background: var(--bg-selected);
 }
 .provider-row-indicator {
-  height: 20px;
+  height: 22px;
   border-radius: var(--radius-inner);
 }
 .is-current .provider-row-indicator {
@@ -213,14 +215,14 @@
   color: inherit;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
   cursor: pointer;
 }
 .provider-row-name b {
-  font-size: 12.5px;
-  line-height: 17px;
+  font-size: var(--fs-base);
+  line-height: 20px;
   font-family: var(--font-latin), var(--font-cjk), sans-serif;
-  font-weight: 500;
+  font-weight: 550;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -229,8 +231,8 @@
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 10px;
-  line-height: 14px;
+  font-size: var(--fs-xs);
+  line-height: 17px;
   font-family: var(--font-mono), monospace;
   color: var(--text-3);
 }
@@ -244,12 +246,12 @@
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 1px;
+  gap: 2px;
   min-width: 0;
 }
 .provider-row-model code {
   font:
-    11.5px var(--font-mono),
+    var(--fs-sm) var(--font-mono),
     monospace;
   color: var(--text-2);
   overflow: hidden;
@@ -257,8 +259,8 @@
   white-space: nowrap;
 }
 .provider-row-model small {
-  font-size: 10px;
-  line-height: 13px;
+  font-size: var(--fs-xs);
+  line-height: 17px;
   color: var(--text-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -266,14 +268,14 @@
 }
 .provider-table code {
   font:
-    11.5px var(--font-mono),
+    var(--fs-sm) var(--font-mono),
     monospace;
   color: var(--text-2);
 }
 .provider-row-latency {
   text-align: right;
-  font-family: var(--font-latin), var(--font-cjk), sans-serif;
-  font-size: 11.5px;
+  font-family: var(--font-mono), var(--font-cjk), monospace;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   color: var(--text-2);
 }
@@ -284,31 +286,41 @@
   display: flex;
   justify-content: flex-end;
   align-items: center;
-  gap: 2px;
+  gap: 6px;
 }
-/* v3 (L01): the row ends with the switch action plus two 14px icons — nothing
-   else. The text action is a 22px ghost button, the icons are icon buttons. */
+/* v5.2: crisp hairline glass pill for switch action + clean icon buttons. */
 .provider-row-actions button {
-  display: flex;
+  display: inline-flex;
   justify-content: center;
   align-items: center;
-  height: 22px;
-  min-width: 22px;
-  padding: 0 8px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-2);
-  font-size: 11px;
-  font-weight: 500;
+  height: 28px;
+  min-width: 28px;
+  padding: 0 11px;
+  border: 1px solid var(--btn-secondary-border);
+  border-radius: 8px;
+  background: var(--btn-secondary-bg);
+  box-shadow: var(--v5-btn-shadow);
+  color: var(--text-1);
+  font-size: var(--fs-xs);
+  font-weight: 550;
   white-space: nowrap;
 }
 .provider-row-actions button:has(svg) {
-  width: 22px;
+  width: 28px;
   padding: 0;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-2);
 }
 .provider-row-actions button:hover:not(:disabled) {
+  border-color: var(--btn-secondary-border-hover);
+  background: var(--btn-secondary-bg-hover);
+}
+.provider-row-actions button:has(svg):hover:not(:disabled) {
+  border-color: transparent;
   background: var(--bg-hover);
+  color: var(--text-1);
 }
 .provider-row-actions .provider-row-delete:disabled {
   color: var(--text-3);
@@ -317,12 +329,13 @@
   color: var(--text-3);
 }
 .provider-current-tag {
-  background: var(--v3-current-chip-bg, #ffffffd8);
-  color: var(--brand);
-  border-radius: 6px;
-  padding: 0 8px;
-  font-size: 10px;
-  font-weight: 600;
+  background: var(--tag-current-bg);
+  color: var(--tag-current-fg);
+  border: 1px solid var(--info-border);
+  border-radius: 7px;
+  padding: 2px 9px;
+  font-size: var(--fs-xs);
+  font-weight: 650;
   line-height: 20px;
 }
 .provider-table-empty {
@@ -430,7 +443,7 @@
 
 @media (max-width: 1100px) {
   .provider-table-row {
-    grid-template-columns: 3px 14px minmax(130px, 1.2fr) 180px 96px 104px;
+    grid-template-columns: 3px 28px minmax(130px, 1.2fr) 180px 96px 104px;
     gap: 10px;
   }
 }

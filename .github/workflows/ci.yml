@@ -14,8 +14,14 @@ concurrency:
 
 jobs:
   frontend:
-    name: Windows Frontend Validation
-    runs-on: windows-2022
+    name: Frontend Validation (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-2022
+          - ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -72,9 +78,9 @@ jobs:
         run: pnpm typecheck
 
       - name: Run frontend unit tests
-        shell: pwsh
+        shell: bash
         run: |
-          New-Item -ItemType Directory -Force -Path test-results | Out-Null
+          mkdir -p test-results
           pnpm test:unit --reporter=default --reporter=junit --outputFile=test-results/vitest.junit.xml
 
       - name: Build renderer and enforce bundle budgets
@@ -90,7 +96,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: frontend-test-results-${{ github.sha }}
+          name: frontend-test-results-${{ matrix.os }}-${{ github.sha }}
           path: test-results/vitest.junit.xml
           if-no-files-found: error
 
@@ -102,6 +108,7 @@ jobs:
       matrix:
         os:
           - windows-2022
+          - windows-11-arm
           - macos-15
           - ubuntu-22.04
     steps:
@@ -112,6 +119,21 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           components: rustfmt, clippy
+
+      - name: Setup LLVM for Windows ARM64
+        if: matrix.os == 'windows-11-arm'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $llvmRoot = 'C:\Program Files\LLVM'
+          if (-not (Test-Path $llvmRoot)) {
+            throw "LLVM not found at $llvmRoot"
+          }
+          $llvmBin = Join-Path $llvmRoot 'bin'
+          "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "CLANG_PATH=$(Join-Path $llvmBin 'clang.exe')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
@@ -137,7 +159,7 @@ jobs:
         run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
 
       - name: Run Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
@@ -152,3 +174,13 @@ jobs:
       - name: Audit Rust dependencies
         if: runner.os == 'Linux'
         run: cargo audit --file src-tauri/Cargo.lock
+
+      - name: Install cargo-deny
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037
+        with:
+          tool: cargo-deny
+
+      - name: Check Rust licenses and sources
+        if: runner.os == 'Linux'
+        run: cargo deny --manifest-path src-tauri/Cargo.toml check licenses sources bans

@@ -897,7 +897,7 @@ describe("first launch without saved lines", () => {
     mount();
     expect(
       await screen.findByRole("heading", {
-        name: "开始配置你的 Codex",
+        name: "欢迎使用 Chimera++",
         level: 1,
       }),
     ).toBeVisible();
@@ -910,13 +910,15 @@ describe("first launch without saved lines", () => {
       screen.getByRole("heading", { name: "开始配置你的 Codex", level: 2 }),
     ).toBeVisible();
     expect(
-      screen.queryByRole("heading", { name: "开始配置你的 Codex", level: 1 }),
+      screen.queryByRole("heading", { name: "欢迎使用 Chimera++", level: 1 }),
     ).not.toBeInTheDocument();
   });
 
   it("opens the first-line editor from the setup screen", async () => {
     mount();
-    fireEvent.click(await screen.findByRole("button", { name: "开始配置" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "开始配置第一条线路" }),
+    );
     expect(
       await screen.findByRole("region", { name: "新建线路" }),
     ).toBeVisible();

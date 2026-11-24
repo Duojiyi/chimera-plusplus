@@ -185,7 +185,10 @@ mod tests {
     #[test]
     fn tag_limits_count_unicode_characters() {
         let widest = "界".repeat(TAG_MAX_CHARS);
-        assert_eq!(normalize_tags(&[widest.clone()]).unwrap(), vec![widest]);
+        assert_eq!(
+            normalize_tags(std::slice::from_ref(&widest)).unwrap(),
+            vec![widest]
+        );
         let too_wide = "界".repeat(TAG_MAX_CHARS + 1);
         assert!(normalize_tags(&[too_wide]).is_err());
         let many: Vec<String> = (0..TAGS_MAX_COUNT).map(|i| i.to_string()).collect();

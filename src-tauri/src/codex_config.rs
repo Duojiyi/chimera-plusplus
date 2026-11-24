@@ -4110,46 +4110,6 @@ pub fn keep_line_owned_codex_config_for_backfill(
     Ok(())
 }
 
-/// Route a Codex live write between full auth+config or config-only.
-///
-/// Official providers with usable login material own `auth.json`. Third-party
-/// providers only touch `config.toml` when the compatibility setting is enabled
-/// so the user's ChatGPT login cache survives provider switches.
-///
-/// 统一会话开关开启时，官方配置在落盘前注入共享的 `custom` 路由
-/// （见 `inject_codex_unified_session_bucket`）。
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn write_codex_live_for_provider(
-    category: Option<&str>,
-    auth: &Value,
-    config_text: Option<&str>,
-) -> Result<(), AppError> {
-    use crate::codex_live_write::{CodexLiveSnapshots, LiveFile};
-
-    let snapshots = CodexLiveSnapshots::read()?;
-    // Only the legacy non-common helper treats an empty official config as a
-    // login placeholder. A projected empty config is authoritative: falling
-    // back after common cleanup would resurrect values removed by its ledger.
-    let official_baseline =
-        if category == Some("official") && config_text.is_none_or(|text| text.trim().is_empty()) {
-            Some(prepare_codex_official_live_config_baseline(
-                snapshots.config_text()?,
-            )?)
-        } else {
-            None
-        };
-    plan_codex_live_for_provider(
-        category,
-        auth,
-        official_baseline.as_deref().or(config_text),
-        None,
-        LiveFile::Keep,
-        snapshots,
-    )?
-    .commit()?;
-    Ok(())
-}
-
 fn plan_codex_live_for_provider(
     category: Option<&str>,
     auth: &Value,

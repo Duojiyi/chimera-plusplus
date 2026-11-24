@@ -111,6 +111,9 @@ beforeEach(() => {
   vi.mocked(officialAccountsApi.cancelDeviceLogin).mockResolvedValue();
   vi.mocked(officialAccountsApi.removeAccount).mockReset().mockResolvedValue();
 });
+const openAccountManagement = async () => {
+  fireEvent.click(await screen.findByRole("button", { name: /^管理全部账号/ }));
+};
 const headerImport = () =>
   within(
     screen.getByRole("heading", { name: "官方账号" }).closest("header")!,
@@ -355,6 +358,7 @@ describe("official account onboarding", () => {
       },
     ]);
     render(<OfficialAccountsView />);
+    await openAccountManagement();
     await screen.findByText("使用中");
     expect(
       screen.queryByRole("button", { name: "重新应用" }),
@@ -415,9 +419,9 @@ describe("official account local import", () => {
             : within(empty).getByRole("button", { name: "导入本机账号" }),
         );
       }
-      const card = await screen.findByRole("article");
+      const card = await screen.findByRole("region", { name: "Codex 当前登录" });
       expect(within(card).getByText("local-account")).toBeVisible();
-      expect(within(card).getByText("使用中")).toBeVisible();
+      expect(within(card).getByText("当前使用中")).toBeVisible();
       await waitFor(() =>
         expect(officialAccountsApi.getQuota).toHaveBeenCalledExactlyOnceWith(
           "local-account",
@@ -457,7 +461,7 @@ describe("official account local import", () => {
       within(empty).getByRole("button", { name: "浏览器登录" }),
     ).toBeEnabled();
     fireEvent.click(within(alert).getByRole("button", { name: "重试导入" }));
-    expect(await screen.findByRole("article")).toHaveTextContent("recovered");
+    expect(await screen.findByRole("region", { name: "Codex 当前登录" })).toHaveTextContent("recovered");
     expect(officialAccountsApi.saveCurrentLogin).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
@@ -499,6 +503,10 @@ describe("official account local import", () => {
         account("current", true),
       ]);
       render(<OfficialAccountsView />);
+      if (entry === "tile") {
+        await openAccountManagement();
+        fireEvent.click(screen.getByRole("button", { name: "网格视图" }));
+      }
       const trigger = await screen.findByRole("button", {
         name: entry === "header" ? "添加官方账号" : "添加另一个账号",
       });
@@ -542,6 +550,7 @@ describe("official account live identity", () => {
       account("vault-b", bIsCurrent),
     ]);
     render(<OfficialAccountsView />);
+    await openAccountManagement();
     await waitFor(() => expect(screen.getAllByRole("article")).toHaveLength(2));
     const [a, b] = screen.getAllByRole("article");
     expect(a).toHaveAttribute("data-current", "false");
@@ -572,6 +581,7 @@ describe("official account live identity", () => {
       { ...account("saved"), liveState: "matched" },
     ]);
     render(<OfficialAccountsView />);
+    await openAccountManagement();
     const cards = await screen.findAllByRole("article");
     expect(within(cards[0]).getByText("使用中")).toBeVisible();
     expect(
@@ -582,7 +592,7 @@ describe("official account live identity", () => {
       name: "切换到此账号",
     });
     expect(switchButton).toBeEnabled();
-    expect(screen.getByText(/在下方账号卡片中选择/)).toBeVisible();
+    expect(screen.getByText(/在下方账号中选择/)).toBeVisible();
     switchButton.focus();
     fireEvent.click(switchButton);
     const dialog = await screen.findByRole("dialog", {
@@ -666,6 +676,7 @@ describe("official account Vault quotas", () => {
       quota(key === "vault-a" ? 25 : 60),
     );
     render(<OfficialAccountsView />);
+    await openAccountManagement();
     await waitFor(() => expect(screen.getAllByRole("article")).toHaveLength(2));
     const [first, second] = screen.getAllByRole("article");
     await waitFor(() => expect(within(first).getByText("25%")).toBeVisible());
@@ -673,7 +684,7 @@ describe("official account Vault quotas", () => {
     expect(within(second).getByText("60%")).toBeVisible();
     expect(within(second).getByText("65%")).toBeVisible();
     const current = screen.getByRole("region", { name: "Codex 当前登录" });
-    expect(within(current).getByText("25%")).toBeVisible();
+    expect(within(current).getByText("75%")).toBeVisible();
     expect(within(current).queryByText("60%")).not.toBeInTheDocument();
     expect(officialAccountsApi.getQuota).toHaveBeenCalledWith("vault-a");
     expect(officialAccountsApi.getQuota).toHaveBeenCalledWith("vault-b");
@@ -693,6 +704,7 @@ describe("official account Vault quotas", () => {
       error: "官方账号登录已失效，请重新登录 (HTTP 401)",
     });
     render(<OfficialAccountsView />);
+    await openAccountManagement();
     await waitFor(() =>
       expect(screen.getAllByRole("button", { name: "重新登录" })).toHaveLength(
         2,
@@ -717,6 +729,7 @@ describe("official account Vault quotas", () => {
       error: "无法访问官方额度服务（HTTP 403），可能是网络或地区限制",
     });
     render(<OfficialAccountsView />);
+    await openAccountManagement();
     const row = await screen.findByRole("article");
     expect(
       await within(row).findByText(
@@ -738,6 +751,7 @@ describe("official account Vault quotas", () => {
       account("fresh"),
     ]);
     render(<OfficialAccountsView />);
+    await openAccountManagement();
     await waitFor(() => expect(screen.getAllByRole("article")).toHaveLength(2));
     const [expired] = screen.getAllByRole("article");
     expect(
@@ -765,6 +779,7 @@ describe("official account Vault quotas", () => {
       accessExpired: true,
     });
     render(<OfficialAccountsView />);
+    await openAccountManagement();
     expect(
       await screen.findByText("登录待续期 · 切换后由 Codex 自动续期"),
     ).toBeVisible();
@@ -782,6 +797,7 @@ describe("official account Vault quotas", () => {
       return quota();
     });
     render(<OfficialAccountsView />);
+    await openAccountManagement();
     await waitFor(() => expect(screen.getAllByRole("article")).toHaveLength(2));
     const [first, second] = screen.getAllByRole("article");
     await waitFor(() =>
@@ -951,6 +967,7 @@ describe("official account automatic quota refresh", () => {
     await act(async () => {
       view = render(<OfficialAccountsView />);
     });
+    fireEvent.click(screen.getByRole("button", { name: /^管理全部账号/ }));
     return view;
   };
 
@@ -1046,8 +1063,10 @@ describe("official account automatic quota refresh", () => {
         error: `API error (HTTP ${status})`,
       });
       await advance(10);
-      expect(screen.getAllByText("25%")).toHaveLength(2);
-      expect(screen.getAllByText("30%")).toHaveLength(2);
+      expect(screen.getByRole("progressbar", { name: "5 小时额度剩余" })).toHaveAttribute("aria-valuenow", "75");
+      expect(screen.getByRole("progressbar", { name: "5 小时额度已用" })).toHaveAttribute("aria-valuenow", "25");
+      expect(screen.getByRole("progressbar", { name: "7 天额度剩余" })).toHaveAttribute("aria-valuenow", "70");
+      expect(screen.getByRole("progressbar", { name: "7 天额度已用" })).toHaveAttribute("aria-valuenow", "30");
       expect(screen.getAllByText(/部分额度未更新/)).toHaveLength(1);
       expect(
         screen.queryByRole("button", { name: "重新应用" }),
@@ -1057,7 +1076,8 @@ describe("official account automatic quota refresh", () => {
       await advance(5);
       expect(screen.queryByText(/部分额度未更新/)).not.toBeInTheDocument();
       expect(screen.queryByText("25%")).not.toBeInTheDocument();
-      expect(screen.getAllByText("40%")).toHaveLength(2);
+      expect(screen.getByRole("progressbar", { name: "5 小时额度剩余" })).toHaveAttribute("aria-valuenow", "60");
+      expect(screen.getByRole("progressbar", { name: "5 小时额度已用" })).toHaveAttribute("aria-valuenow", "40");
     },
   );
 
@@ -1118,6 +1138,7 @@ describe("official account automatic quota refresh", () => {
     await act(async () => {
       render(<OfficialAccountsView />);
     });
+    fireEvent.click(screen.getByRole("button", { name: /^管理全部账号/ }));
     expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(2);
     await advance(5);
     expect(officialAccountsApi.getQuota).toHaveBeenCalledTimes(3);
@@ -1138,6 +1159,7 @@ describe("official account automatic quota refresh", () => {
     await act(async () => {
       render(<OfficialAccountsView />);
     });
+    fireEvent.click(screen.getByRole("button", { name: /^管理全部账号/ }));
     const listCalls = vi.mocked(officialAccountsApi.list).mock.calls.length;
     vi.mocked(officialAccountsApi.list).mockResolvedValue([
       account("live", true),
@@ -1207,6 +1229,7 @@ describe("official account quota windows", () => {
     await act(async () => {
       render(<OfficialAccountsView />);
     });
+    fireEvent.click(screen.getByRole("button", { name: /^管理全部账号/ }));
   };
 
   it("renders every returned window shortest first with countdown, exact time and query time", async () => {
@@ -1221,14 +1244,14 @@ describe("official account quota windows", () => {
     const current = screen.getByRole("region", { name: "Codex 当前登录" });
     const bars = within(current).getAllByRole("progressbar");
     expect(bars.map((bar) => bar.getAttribute("aria-label"))).toEqual([
-      "5 小时额度已用",
-      "7 天额度已用",
-      "30 天额度已用",
+      "5 小时额度剩余",
+      "7 天额度剩余",
+      "30 天额度剩余",
     ]);
-    expect(bars[0]).toHaveAttribute("aria-valuenow", "38");
+    expect(bars[0]).toHaveAttribute("aria-valuenow", "62");
     expect(bars[0]).toHaveAttribute("aria-valuemin", "0");
     expect(bars[0]).toHaveAttribute("aria-valuemax", "100");
-    expect(bars[0]).toHaveAttribute("aria-valuetext", "已用 38%");
+    expect(bars[0]).toHaveAttribute("aria-valuetext", "剩余 62%");
     const reset = within(current).getByText(/^3 小时 31 分钟后重置 ·/);
     expect(reset).toBeVisible();
     expect(reset).toHaveTextContent("3 小时 31 分钟后重置 · 10月13日 13:55");
@@ -1240,6 +1263,8 @@ describe("official account quota windows", () => {
     expect(within(current).getByText("查询于 10:22")).toBeVisible();
     const row = screen.getByRole("article");
     expect(within(row).getAllByRole("progressbar")).toHaveLength(3);
+    expect(within(row).getByRole("progressbar", { name: "5 小时额度已用" })).toHaveAttribute("aria-valuenow", "38");
+    expect(bars[0].firstElementChild).toHaveStyle({width: "62%"});
     expect(within(row).getByText("3 小时后重置")).toHaveAttribute(
       "title",
       "10月13日 13:55 重置",
@@ -1255,11 +1280,11 @@ describe("official account quota windows", () => {
     await openAt([account("free", true)]);
     const current = screen.getByRole("region", { name: "Codex 当前登录" });
     const bar = within(current).getByRole("progressbar", {
-      name: "30 天额度已用",
+      name: "30 天额度剩余",
     });
-    expect(bar).toHaveAttribute("aria-valuenow", "95");
+    expect(bar).toHaveAttribute("aria-valuenow", "5");
     expect(bar.closest(".quota-meter")).toHaveAttribute("data-low", "true");
-    expect(within(current).getByText("95%")).toBeVisible();
+    expect(within(current).getByText("5%")).toBeVisible();
     expect(within(current).queryByText(/5 小时/)).not.toBeInTheDocument();
   });
 
@@ -1290,6 +1315,7 @@ describe("official account identity", () => {
       },
     ]);
     render(<OfficialAccountsView />);
+    await openAccountManagement();
     await waitFor(() => expect(screen.getAllByRole("article")).toHaveLength(2));
     const [main, work] = screen.getAllByRole("article");
     expect(within(main).getByText("OpenAI 官方 · 主力")).toBeVisible();
@@ -1303,7 +1329,7 @@ describe("official account identity", () => {
     ).not.toBeInTheDocument();
     expect(within(work).getByText("Team")).toBeVisible();
     const current = screen.getByRole("region", { name: "Codex 当前登录" });
-    expect(within(current).getByText("Codex 当前登录")).toBeVisible();
+    expect(within(current).getByText("当前使用中")).toBeVisible();
     expect(within(current).getByText("Plus")).toBeVisible();
   });
 });
@@ -1327,6 +1353,7 @@ describe("unreadable official accounts", () => {
       account("healthy"),
     ]);
     render(<OfficialAccountsView />);
+    await openAccountManagement();
     await waitFor(() => expect(screen.getAllByRole("article")).toHaveLength(2));
     const [row] = screen.getAllByRole("article");
     expect(within(row).getByText("无法读取的账号")).toBeVisible();
@@ -1377,6 +1404,8 @@ describe("official account read-only preview", () => {
   it("allows browsing and selection while refusing all account writes", async () => {
     previewMode.enabled = true;
     render(<OfficialAccountsView />);
+    await openAccountManagement();
+    fireEvent.click(screen.getByRole("button", { name: "网格视图" }));
     const cards = await screen.findAllByRole("article");
     expect(cards).toHaveLength(5);
     const writeButtons = [
@@ -1514,6 +1543,7 @@ describe("Codex live login", () => {
       { ...account("in-use", true), liveState: "mismatch" },
     ]);
     render(<OfficialAccountsView />);
+    await openAccountManagement();
     const banner = (
       await screen.findByText("Codex 当前没有使用所选账号")
     ).closest(".accounts-banner") as HTMLElement;

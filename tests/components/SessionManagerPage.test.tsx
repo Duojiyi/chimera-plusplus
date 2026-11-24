@@ -201,7 +201,10 @@ describe("SessionManagerPage", () => {
     toastWarningMock.mockReset();
     toastInfoMock.mockReset();
     Element.prototype.scrollIntoView = vi.fn();
-    window.localStorage.removeItem("cc-switch.sessionManager.listViewMode");
+    window.localStorage.setItem(
+      "cc-switch.sessionManager.listViewMode",
+      "flat",
+    );
     window.localStorage.removeItem(GROUP_EXPANSION_STORAGE_KEY);
 
     const sessions: SessionListEntry[] = [
@@ -1426,25 +1429,50 @@ describe("SessionManagerPage", () => {
     expect(heading.parentElement).toHaveTextContent("已归档");
   });
 
-  it("renders only the visible part of a long flat list", async () => {
-    const many: SessionListEntry[] = Array.from(
-      { length: 300 },
-      (_, index) => ({
-        providerId: "codex",
-        sessionId: `long-${index}`,
-        title: `Long list ${index}`,
-        lastActiveAt: 1000 - index,
-        sourcePath: `/mock/codex/long-${index}.jsonl`,
-      }),
-    );
-    setSessionFixtures(many, {});
+  it("opens the current directory on first use and remembers an explicitly collapsed tree", async () => {
+    window.localStorage.removeItem("cc-switch.sessionManager.listViewMode");
+    const view = renderPage();
+    await screen.findByRole("button", { name: /Alpha Session/ });
+    expect(
+      screen.getByRole("button", { name: /展开或折叠 codex 目录分组/ }),
+    ).toHaveAttribute("aria-expanded", "true");
+    collapseAllGroups();
+    view.unmount();
     renderPage();
-    await screen.findByRole("heading", { name: "Long list 0" });
-    const rows = screen.getAllByRole("button", { name: /Long list \d+/ });
-    expect(rows.length).toBeGreaterThan(0);
-    expect(rows.length).toBeLessThan(60);
-    expect(screen.getByText("300")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: /展开或折叠 codex 目录分组/ }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.queryByRole("button", { name: /Alpha Session/ }),
+    ).not.toBeInTheDocument();
   });
+
+  it.each(["flat", "grouped"])(
+    "renders only the visible part of a long %s list",
+    async (mode) => {
+      if (mode === "grouped")
+        window.localStorage.removeItem("cc-switch.sessionManager.listViewMode");
+      const many: SessionListEntry[] = Array.from(
+        { length: 300 },
+        (_, index) => ({
+          providerId: "codex",
+          sessionId: `long-${index}`,
+          title: `Long list ${index}`,
+          lastActiveAt: 1000 - index,
+          sourcePath: `/mock/codex/long-${index}.jsonl`,
+        }),
+      );
+      setSessionFixtures(many, {});
+      renderPage();
+      await screen.findByRole("heading", { name: "Long list 0" });
+      const rows = await screen.findAllByRole("button", {
+        name: /Long list \d+/,
+      });
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.length).toBeLessThan(60);
+      expect(screen.getAllByText("300").length).toBeGreaterThan(0);
+    },
+  );
 
   it("switches to grouped view collapsed by default and shows collapse control", async () => {
     renderPage("all");

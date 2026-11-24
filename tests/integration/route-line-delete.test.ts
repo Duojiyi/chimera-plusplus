@@ -6,6 +6,10 @@ const app = fs.readFileSync(
   path.resolve(__dirname, "../../src/ChimeraApp.tsx"),
   "utf8",
 );
+const alertDialog = fs.readFileSync(
+  path.resolve(__dirname, "../../src/components/AlertConfirmDialog.tsx"),
+  "utf8",
+);
 const css = fs.readFileSync(
   path.resolve(__dirname, "../../src/chimera.css"),
   "utf8",
@@ -53,14 +57,14 @@ describe("route manager confirmed deletion", () => {
       dialogStart,
       app.indexOf("function ConfirmModelReload(", dialogStart),
     );
-    expect(dialog).toContain('role="alertdialog"');
-    expect(dialog).toContain('aria-labelledby="provider-delete-title"');
-    expect(dialog).toContain("useDialogFocus<HTMLElement>(onCancel)");
-    expect(dialog).toContain("<button onClick={onCancel}>取消</button>");
-    expect(dialog).toMatch(
-      /<button className="danger" onClick=\{onConfirm\}>\s*删除线路/,
-    );
+    expect(dialog).toContain("<AlertConfirmDialog");
+    expect(dialog).toContain('titleId="provider-delete-title"');
+    expect(dialog).toContain('confirmLabel="删除线路"');
+    expect(dialog).toContain('confirmTone="danger"');
     expect(dialog).not.toContain("providersApi.delete");
+    expect(alertDialog).toContain('role="alertdialog"');
+    expect(alertDialog).toContain("useDialogFocus<HTMLElement>(");
+    expect(alertDialog).toContain("if (!busy) onCancel();");
   });
 
   it("protects the active line and prevents deletion while another operation is running", () => {

@@ -65,14 +65,18 @@ describe("official account switch contract", () => {
     async (key) => {
       vi.mocked(invoke)
         .mockResolvedValueOnce([account])
-        .mockResolvedValueOnce({});
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce(undefined);
       await officialAccountsApi.switchAccount(key);
       expect(invoke).toHaveBeenNthCalledWith(1, "list_official_accounts");
       expect(invoke).toHaveBeenNthCalledWith(2, "switch_provider", {
         id: "provider-id",
         app: "codex",
       });
-      expect(invoke).toHaveBeenCalledTimes(2);
+      expect(invoke).toHaveBeenNthCalledWith(3, "mark_official_account_used", {
+        key: "vault-key",
+      });
+      expect(invoke).toHaveBeenCalledTimes(3);
     },
   );
   it.each([

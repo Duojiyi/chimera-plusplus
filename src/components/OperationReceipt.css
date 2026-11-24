@@ -3,20 +3,26 @@
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr) auto;
   gap: 12px;
-  padding: 14px 12px 14px 16px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  background: var(--bg-surface);
+  padding: 15px 16px 15px 18px;
+  border: 1px solid var(--v3-glass-border);
+  border-left: 3px solid var(--receipt-accent);
+  border-radius: 14px;
+  background: var(--v3-glass-fill);
+  box-shadow: var(--v3-shadow-inner-top), var(--v3-shadow-outer);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+  backdrop-filter: blur(28px) saturate(150%);
   color: var(--text-1);
   text-align: left;
 }
 .operation-receipt.is-warning {
   --receipt-accent: var(--warning-fg);
   border-color: var(--warning-border);
+  border-left-color: var(--warning-fg);
 }
 .operation-receipt.is-error {
   --receipt-accent: var(--danger-fg);
   border-color: var(--danger-border);
+  border-left-color: var(--danger-fg);
 }
 .operation-receipt-icon {
   padding-top: 1px;
@@ -45,7 +51,7 @@
 .operation-receipt .operation-receipt-meta {
   margin: 0 0 2px;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 16px;
 }
 .operation-receipt ul {
@@ -69,7 +75,7 @@
   border-radius: 4px;
   background: transparent;
   color: var(--text-2);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   cursor: pointer;
 }
 .operation-receipt-copy {

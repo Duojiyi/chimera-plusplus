@@ -216,7 +216,7 @@ describe("UsageView", () => {
     expect(metrics.getByText("缓存命中率")).toBeVisible();
     expect(metrics.getByText("50.0%")).toBeVisible();
     expect(liveStatus()).toHaveTextContent(
-      "统计加载完成，近 30 天共 2,000 词元",
+      "统计加载完成，近 7 天共 2,000 词元",
     );
     expect(screen.getByText("峰值 09/18 · 2,000")).toBeVisible();
     const ranking = within(
@@ -346,7 +346,7 @@ describe("UsageView", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("starts on the daily calendar with local weekday alignment and a tabular alternative", async () => {
+  it("starts on the seven-day chart and offers a weekday-aligned calendar and a table", async () => {
     api.getUsageTrends.mockResolvedValue([
       day,
       {
@@ -362,6 +362,9 @@ describe("UsageView", () => {
     const user = userEvent.setup();
     render(<UsageView />);
     await loaded();
+    expect(screen.getByRole("button", { name: "柱状图" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "近 7 天" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getByRole("button", { name: "日历" }));
     expect(screen.getByRole("button", { name: "日历" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -463,7 +466,7 @@ describe("UsageView", () => {
       { ...provider, providerId: "new", providerName: "新范围线路" },
     ]);
     api.getUsageTrends.mockRejectedValueOnce(new Error("trend unavailable"));
-    await user.click(screen.getByRole("button", { name: "近 7 天" }));
+    await user.click(screen.getByRole("button", { name: "近 30 天" }));
     await loaded(STALE_STATUS);
     expect(api.getProviderStats.mock.lastCall!.slice(0, 2)).not.toEqual(
       oldWindow,
@@ -511,11 +514,7 @@ describe("UsageView", () => {
       expect(screen.getByText(heading)).toBeVisible();
       expect(screen.getByText(`峰值 ${label} · 2,000`)).toBeVisible();
       if (!hourly) {
-        expect(screen.getByRole("button", { name: "日历" })).toHaveAttribute(
-          "aria-pressed",
-          "true",
-        );
-        await user.click(screen.getByRole("button", { name: "柱状图" }));
+        expect(screen.getByRole("button", { name: "日历" })).toHaveAttribute("aria-pressed", "false");
       }
       expect(screen.getByText(label, { selector: AXIS })).toBeVisible();
       expect(liveStatus()).toHaveTextContent(/^统计加载完成，今日共/);
@@ -571,7 +570,7 @@ describe("UsageView", () => {
       await loaded();
       const stale = deferred<UsageSummary>();
       api.getUsageSummary.mockReturnValueOnce(stale.promise);
-      await user.click(screen.getByRole("button", { name: "近 7 天" }));
+      await user.click(screen.getByRole("button", { name: "近 30 天" }));
       api.getUsageSummary.mockResolvedValueOnce({
         ...summary,
         realTotalTokens: 9000,
@@ -697,7 +696,7 @@ it("does not paint token bars for zero usage", async () => {
   render(<UsageView />);
   await loaded();
   await userEvent.click(screen.getByRole("button", { name: "柱状图" }));
-  expect(screen.getByText("近 30 天没有词元用量")).toBeVisible();
+  expect(screen.getByText("近 7 天没有词元用量")).toBeVisible();
   const bars = document.querySelectorAll<HTMLElement>(".usage-bar");
   expect(bars.length).toBeGreaterThan(0);
   bars.forEach((bar) => expect(bar.style.height).toBe("0%"));
@@ -708,5 +707,5 @@ it("shows the inline Codex details using the overview range and leaves polling o
   const details = screen.getByRole("region", { name: "成本与请求明细" });
   expect(
     await within(details).findByTestId("advanced-usage-dashboard"),
-  ).toHaveTextContent("refresh:0 range:30d app:codex");
+  ).toHaveTextContent("refresh:0 range:7d app:codex");
 });

@@ -347,12 +347,12 @@ export function ModelsDevPickerDialog({
                 ) : (
                   <div className="divide-y divide-border/30">
                     {visible.map((entry) => (
-                      <div
+                      <button
+                        type="button"
                         key={entry.key}
-                        role="button"
                         aria-pressed={selected?.key === entry.key}
                         onClick={() => toggleEntry(entry)}
-                        className={`flex cursor-pointer items-center gap-3 px-3 py-2 ${
+                        className={`flex w-full cursor-pointer items-center gap-3 px-3 py-2 text-left ${
                           selected?.key === entry.key
                             ? "bg-accent/50"
                             : "hover:bg-muted/40"
@@ -374,7 +374,7 @@ export function ModelsDevPickerDialog({
                               {entry.providerName}
                             </span>
                             {entry.releaseDate && (
-                              <span className="shrink-0 text-[10px] text-muted-foreground/70">
+                              <span className="shrink-0 text-xs text-muted-foreground/70">
                                 {entry.releaseDate}
                               </span>
                             )}
@@ -389,7 +389,7 @@ export function ModelsDevPickerDialog({
                         <div className="flex shrink-0 gap-3 text-right">
                           {priceColumns(entry).map((column) => (
                             <div key={column.label} className="w-16">
-                              <div className="text-[10px] text-muted-foreground">
+                              <div className="text-xs text-muted-foreground">
                                 {column.label}
                               </div>
                               <div className="font-mono text-xs">
@@ -398,7 +398,7 @@ export function ModelsDevPickerDialog({
                             </div>
                           ))}
                         </div>
-                      </div>
+                      </button>
                     ))}
                     {filtered.length > visible.length && (
                       <div className="px-3 py-2 text-center text-xs text-muted-foreground">

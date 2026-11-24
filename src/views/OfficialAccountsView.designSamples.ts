@@ -47,6 +47,7 @@ const base = (
 export function sampleAccounts(now: number): OfficialAccountDto[] {
   return [
     base("alpha", "alpha@studio.dev", "plus", {
+      lineName: "主工作账号",
       isCurrent: true,
       isSelected: true,
       tags: ["主力", "工作"],
@@ -54,11 +55,13 @@ export function sampleAccounts(now: number): OfficialAccountDto[] {
       lastUsedAt: now - 12 * MINUTE,
     }),
     base("beta", "beta@studio.dev", "pro", {
+      lineName: "团队协作账号",
       tags: ["备用"],
       groupName: "工作",
       lastUsedAt: now - 3 * HOUR,
     }),
     base("third", "third@gmail.com", "plus", {
+      lineName: "个人备用账号",
       needsRelogin: true,
       tags: ["个人"],
       groupName: "个人",
@@ -107,7 +110,7 @@ const reading = (
 
 export function sampleQuotas(now: number): Record<string, OfficialQuota> {
   return {
-    alpha: reading(now, 62, 2 * HOUR + 14 * MINUTE, 41, 4 * DAY),
+    alpha: reading(now, 24, 2 * HOUR + 14 * MINUTE, 41, 4 * DAY),
     beta: reading(now, 18, HOUR + 2 * MINUTE, 73, 3 * DAY),
     team: reading(now, 88, 4 * HOUR + 40 * MINUTE, 12, 6 * DAY),
     old: reading(now, 0, 5 * HOUR, 5, 2 * DAY),

@@ -909,6 +909,46 @@ impl AppSettings {
         Some(crate::config::get_app_config_dir().join("settings.json"))
     }
 
+    fn is_allowed_preferred_terminal(value: &str) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            matches!(value, "cmd" | "powershell" | "wt")
+        }
+        #[cfg(target_os = "macos")]
+        {
+            matches!(
+                value,
+                "terminal"
+                    | "iterm2"
+                    | "warp"
+                    | "alacritty"
+                    | "kitty"
+                    | "ghostty"
+                    | "wezterm"
+                    | "kaku"
+            )
+        }
+        #[cfg(target_os = "linux")]
+        {
+            matches!(
+                value,
+                "gnome-terminal"
+                    | "konsole"
+                    | "xfce4-terminal"
+                    | "mate-terminal"
+                    | "lxterminal"
+                    | "alacritty"
+                    | "kitty"
+                    | "ghostty"
+            )
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        {
+            let _ = value;
+            false
+        }
+    }
+
     fn normalize_paths(&mut self) {
         self.claude_config_dir = self
             .claude_config_dir
@@ -964,6 +1004,13 @@ impl AppSettings {
             .as_ref()
             .map(|s| s.trim())
             .filter(|s| matches!(*s, "en" | "zh" | "zh-TW" | "ja"))
+            .map(|s| s.to_string());
+
+        self.preferred_terminal = self
+            .preferred_terminal
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| Self::is_allowed_preferred_terminal(s))
             .map(|s| s.to_string());
 
         if let Some(sync) = &mut self.webdav_sync {

@@ -84,19 +84,89 @@ fn has_turns(data: &Value) -> bool {
         > 0
 }
 
-/// Reject existing links/junctions before both reading and creating paths.
-fn safe_path(path: &Path) -> Result<(), AppError> {
-    for ancestor in path.ancestors() {
-        match fs::symlink_metadata(ancestor) {
-            Ok(meta) if crate::security_limits::is_link_or_reparse_point(&meta) => {
-                return Err(message("本地会话路径含链接，已取消切换，原始记录仍保留。"));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(AppError::io(ancestor, error)),
-        }
+std::thread_local! {
+    static TRUSTED_HISTORY_ROOTS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+struct TrustedRootsGuard(Vec<PathBuf>);
+
+impl TrustedRootsGuard {
+    fn enter(roots: Vec<PathBuf>) -> Self {
+        let previous =
+            TRUSTED_HISTORY_ROOTS.with(|cell| std::mem::replace(&mut *cell.borrow_mut(), roots));
+        Self(previous)
     }
-    Ok(())
+}
+
+impl Drop for TrustedRootsGuard {
+    fn drop(&mut self) {
+        let previous = std::mem::take(&mut self.0);
+        TRUSTED_HISTORY_ROOTS.with(|cell| *cell.borrow_mut() = previous);
+    }
+}
+
+fn check_not_link(path: &Path) -> Result<(), AppError> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if crate::security_limits::is_link_or_reparse_point(&meta) => {
+            Err(message("本地会话路径含链接，已取消切换，原始记录仍保留。"))
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(AppError::io(path, error)),
+    }
+}
+
+/// Reject existing links/junctions at or beneath the active Claude history roots,
+/// without walking OS-level ancestors above those roots (such as macOS `/var`
+/// or Windows NTFS-junctioned `%APPDATA%` / OneDrive profiles).
+fn safe_path(path: &Path) -> Result<(), AppError> {
+    let matched_root = TRUSTED_HISTORY_ROOTS.with(|cell| {
+        let roots = cell.borrow();
+        // Match the most specific root (raw or canonicalized) so OS ancestors above it are skipped.
+        let mut best: Option<PathBuf> = None;
+        for root in roots.iter() {
+            if path.starts_with(root)
+                && best
+                    .as_ref()
+                    .is_none_or(|b| root.as_os_str().len() > b.as_os_str().len())
+            {
+                best = Some(root.clone());
+            }
+            if let Ok(canon) = fs::canonicalize(root) {
+                if path.starts_with(&canon)
+                    && best
+                        .as_ref()
+                        .is_none_or(|b| canon.as_os_str().len() > b.as_os_str().len())
+                {
+                    best = Some(canon);
+                }
+            }
+        }
+        best
+    });
+
+    if let Some(root) = matched_root {
+        check_not_link(&root)?;
+        let relative = path
+            .strip_prefix(&root)
+            .map_err(|_| message("本地会话路径越界，已取消切换，原始记录仍保留。"))?;
+        let mut cursor = root;
+        for component in relative.components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    return Err(message("本地会话路径越界，已取消切换，原始记录仍保留。"));
+                }
+                std::path::Component::CurDir => continue,
+                other => {
+                    cursor.push(other.as_os_str());
+                    check_not_link(&cursor)?;
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    check_not_link(path)
 }
 
 fn directories(path: &Path) -> Result<Vec<PathBuf>, AppError> {
@@ -591,14 +661,9 @@ fn stage_payload(
     let parent = target.parent().unwrap();
     safe_path(parent)?;
     fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
-    // Validate every existing ancestor (including Windows junctions).
-    for ancestor in parent.ancestors() {
-        if let Ok(meta) = fs::symlink_metadata(ancestor) {
-            if crate::security_limits::is_link_or_reparse_point(&meta) {
-                return Err(message("本地会话附件路径含链接，已取消切换。"));
-            }
-        }
-    }
+    // Re-validate every component under the trusted root after creation.
+    safe_path(parent)?;
+    safe_path(target)?;
     // tempfile passes paths directly to Win32 when persisting. Canonicalizing
     // the existing parent supplies the extended-length prefix needed by deeply
     // nested Cowork transcripts and attachments on Windows.
@@ -858,6 +923,15 @@ pub(crate) fn prepare_switch(
     let _guard = HISTORY_LOCK
         .lock()
         .map_err(|_| message("本地会话正在整理，请重试。"))?;
+    let mut trusted = vec![
+        normal.to_path_buf(),
+        api.to_path_buf(),
+        projects.to_path_buf(),
+    ];
+    if let Some(login) = incoming_login {
+        trusted.push(login.to_path_buf());
+    }
+    let _trusted_roots = TrustedRootsGuard::enter(trusted);
     for root in [normal, api] {
         safe_path(root)?;
         if crate::claude_desktop_paths::data_locked(root) {

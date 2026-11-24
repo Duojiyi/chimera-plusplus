@@ -116,19 +116,25 @@ pub fn list_profiles(state: State<'_, AppState>) -> Result<ProfilesResponse, Str
 }
 
 #[tauri::command]
-pub fn create_profile(
+pub async fn create_profile(
     state: State<'_, AppState>,
     name: String,
     scope: String,
 ) -> Result<ProfileDto, String> {
     let scope = ProfileScope::parse(&scope).map_err(|e| e.to_string())?;
-    ProfileService::create(&state, &name, scope)
-        .map(ProfileDto::from)
-        .map_err(|e| e.to_string())
+    let _profile_guard = state.profile_apply_lock.lock().await;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        ProfileService::create(&state, &name, scope)
+            .map(ProfileDto::from)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("后台任务失败: {e}"))?
 }
 
 #[tauri::command]
-pub fn update_profile(
+pub async fn update_profile(
     state: State<'_, AppState>,
     id: String,
     name: Option<String>,
@@ -139,14 +145,26 @@ pub fn update_profile(
         .map(|s| ProfileScope::parse(&s))
         .transpose()
         .map_err(|e| e.to_string())?;
-    ProfileService::update(&state, &id, name, resnapshot.unwrap_or(false), scope)
-        .map(ProfileDto::from)
-        .map_err(|e| e.to_string())
+    let _profile_guard = state.profile_apply_lock.lock().await;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        ProfileService::update(&state, &id, name, resnapshot.unwrap_or(false), scope)
+            .map(ProfileDto::from)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("后台任务失败: {e}"))?
 }
 
 #[tauri::command]
-pub fn delete_profile(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    ProfileService::delete(&state, &id).map_err(|e| e.to_string())
+pub async fn delete_profile(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let _profile_guard = state.profile_apply_lock.lock().await;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        ProfileService::delete(&state, &id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("后台任务失败: {e}"))?
 }
 
 #[tauri::command]

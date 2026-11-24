@@ -343,14 +343,18 @@ pub async fn send_request(
         proxy_url.map(super::http_client::mask_url),
     );
 
-    if let Some(original_cases) = original_cases
-        .as_ref()
-        .filter(|cases| !cases.cases.is_empty())
-    {
+    let should_use_raw = proxy_url.is_some()
+        || original_cases
+            .as_ref()
+            .is_some_and(|cases| !cases.cases.is_empty());
+    if should_use_raw {
+        let empty_cases = OriginalHeaderCases::default();
+        let effective_cases = original_cases.as_ref().unwrap_or(&empty_cases);
         // Primary path: use raw write + hyper handshake for exact header casing
+        // and configured proxy tunneling (never bypass proxy via global_hyper_client).
         let result = tokio::time::timeout(
             timeout,
-            send_raw_request(&uri, &method, &headers, original_cases, &body, proxy_url),
+            send_raw_request(&uri, &method, &headers, effective_cases, &body, proxy_url),
         )
         .await
         .map_err(|_| ProxyError::Timeout(format!("请求超时: {}s", timeout.as_secs())))?;

@@ -5,6 +5,7 @@ import { ChevronLeft } from "lucide-react";
 import { DRAG_REGION_ATTR, DRAG_REGION_STYLE } from "@/lib/platform";
 import "./FullScreenPanel.css";
 import { isTextEditableTarget } from "@/utils/domUtils";
+import { useRegisterOpenDialog } from "@/hooks/useDialogFocus";
 import { cn } from "@/lib/utils";
 
 interface FullScreenPanelProps {
@@ -115,6 +116,8 @@ export const FullScreenPanel: React.FC<FullScreenPanelProps> = ({
     };
   }, [isOpen]);
 
+  useRegisterOpenDialog(isOpen);
+
   // Panels switch instantly, like the Codex line editor: a fade let the list
   // underneath show through, read as flicker and ignored reduced motion.
   return createPortal(
@@ -123,11 +126,12 @@ export const FullScreenPanel: React.FC<FullScreenPanelProps> = ({
         ref={panelRef}
         data-fullscreen-panel
         role="dialog"
+        aria-modal="true"
         aria-labelledby={editorHeader ? undefined : titleId}
         aria-label={editorHeader ? title : undefined}
         tabIndex={-1}
         className={cn(
-          "fixed inset-x-0 bottom-0 top-10 z-[60] flex min-h-0 flex-col",
+          "fixed inset-x-0 bottom-0 top-[var(--size-titlebar,52px)] z-[60] flex min-h-0 flex-col",
           editorHeader && "provider-editor-page",
         )}
         style={{ backgroundColor: "hsl(var(--background))" }}

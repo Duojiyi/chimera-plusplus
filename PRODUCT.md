@@ -1,6 +1,6 @@
 # Product
 
-This document describes the **v2.8 development target**, not the feature set of the latest published release. The version fields in the package and release metadata remain authoritative for release numbering. The current visual baseline is `designs/v2.8.0/designer-notes.md` and its exported frames; later explicit user feedback takes precedence over the historical wireframes.
+This document describes the **v2.9 product baseline**, not an unshipped prototype. The version fields in the package and release metadata remain authoritative for release numbering. The current visual baseline is the v3 Light Liquid Glass shell (`src/theme/liquid-glass-v3.css` and `src/theme/v3/*`); later explicit user feedback takes precedence over historical wireframes.
 
 ## Register
 
@@ -31,17 +31,17 @@ Quietly capable, exact, and reassuring. Chimera++ should feel like a refined des
 - Marketplace-style provider promotion, affiliate links, sponsored templates, or promotional upstream branding. License notices and accurate template provenance are permitted and must be retained.
 - A crowded admin dashboard made from equally weighted cards, small gray text, and decorative metrics.
 - Decorative window controls that do not operate the real window. Use platform-appropriate controls: macOS at the top left, Windows at the top right, with working minimize, maximize/restore, and close actions.
-- Security-product cliches such as flat world maps with threat markers, animated scanning rings, neon gradients, or fear-based warning language. The historical v2.3 globe is not part of the v2.8 route design.
+- Security-product cliches such as flat world maps with threat markers, animated scanning rings, neon gradients, or fear-based warning language. The historical v2.3 globe is not part of the v2.9 route design.
 - Motion that delays use, repeats on every page load, or makes state unclear.
 
 ## Navigation and Product Scope
 
-The v2.8 development app is Codex-first, with a capability-based sidebar. It must distinguish a tool that uses one current provider from tools that enable multiple entries. Other tools do not inherit Codex-only account, maintenance, or skin controls. Backend capability policy and the explicit tool-enablement flow remain authoritative; making a page visible must not silently import credentials or modify live configuration.
+The v2.9 app is Codex-first, with a capability-based `232px` v3 Light Liquid Glass sidebar and a tool switcher popover. It distinguishes tools that switch a single current provider from additive tools that enable multiple entries. Other tools do not inherit Codex-only runtime maintenance or skin controls. Backend capability policy and the explicit tool-enablement flow remain authoritative; making a page visible must not silently import credentials or modify live configuration.
 
 The current navigation is:
 
 1. **Codex**: 线路, 官方账号, 提示词, Skills 与 MCP, 用量, Codex 管理, 外观, 配置体检.
-2. **Other tools**: enabled tools get their supported provider/entry management page. The tool manager exposes real support and installation state; unimplemented tools must not receive empty working-looking screens. Customer-facing names are complete, including MiniMax Code.
+2. **Other tools**: enabled tools (Claude Code, Claude Desktop, Gemini CLI, Grok Build, OpenCode, Pi, oh-my-pi) get their supported provider/entry management and tool-specific account/resource tabs. The tool manager exposes real support and installation state; unimplemented tools must not receive empty working-looking screens.
 3. **会话**: local session history across supported installed CLIs, with search, filtering, export where supported, and confirmation before deletion.
 4. **设置**: tool management, explicit imports, local backup/recovery, general preferences, Codex preferences, and application updates.
 
@@ -49,7 +49,7 @@ The current delivery scope is Simplified Chinese and local data management. Mult
 
 The middle tool navigation scrolls independently; 会话 and 设置 remain reachable at the bottom. The settings content also has a bounded scroll region so every section is reachable at the minimum supported window size. “Codex 管理” is the customer-facing label; internal identifiers may continue to use “runtime”.
 
-The previous six-item bottom navigation and Codex-only provider scope describe older releases and are not implementation requirements for v2.8. Deep-link imports still require explicit confirmation. Browser previews and design fixtures must be labelled and must not claim live local state or successful native operations.
+The previous six-item bottom navigation and Codex-only provider scope describe older releases and are not implementation requirements for v2.9. Deep-link imports still require explicit confirmation. Browser previews and design fixtures must be labelled and must not claim live local state or successful native operations.
 
 The ChimeraHub template is the only customer-facing default template. Its URL remains editable. Users can create additional providers, but the product never promotes a provider catalog.
 
@@ -67,6 +67,6 @@ Meet WCAG 2.2 AA contrast for text and controls. All critical actions require ke
 
 ## Visual Research Reference
 
-The v2.8 direction is the transit-inspired route signboard with a restrained desktop shell and clear operation receipts, as documented in `designs/v2.8.0/designer-notes.md`. Color identifies routes and status; typography, spacing, dialogs, forms, and tables share the same semantic theme tokens. A successful compile does not constitute visual acceptance: the real populated, empty, loading, failure, disabled, and small-window states must be reviewed.
+The v2.9 direction is the transit-inspired route signboard inside the v3 Light Liquid Glass desktop shell with a `232px` translucent sidebar, `52px` titlebar, and clear operation receipts. Color identifies routes and status; typography, spacing, dialogs, forms, and tables share the same semantic theme tokens. A successful compile does not constitute visual acceptance: the real populated, empty, loading, failure, disabled, and small-window states must be reviewed.
 
 The former VPN/globe reference is historical only. The secondary material reference remains [Imgo](https://dribbble.com/shots/27225909-Imgo-a-file-tool-I-built-because-Windows-deserved-better): borrow restrained native-window material and result-list clarity, not its palette or file-tool-specific visuals.

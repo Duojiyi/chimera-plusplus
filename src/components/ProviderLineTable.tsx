@@ -26,6 +26,7 @@ import {
 } from "@/utils/codexRouting";
 import { vscodeApi, type EndpointLatencyResult } from "@/lib/api/vscode";
 import { lineIdentityColor } from "@/components/LineBadge";
+import { Skeleton } from "@/components/ui/skeleton";
 import "./ProviderLineTable.css";
 import "@/theme/v3/lines.css";
 
@@ -70,6 +71,36 @@ type Reading =
   | { kind: "ok"; latencyMs: number }
   | { kind: "error"; message: string };
 
+export function ProviderLineLoading() {
+  return (
+    <section className="provider-page">
+      <header className="provider-page-heading">
+        <h2>线路</h2>
+      </header>
+      <div className="provider-table-card">
+        <div className="provider-table-cardhead" role="status">
+          正在读取线路…
+        </div>
+        <div className="provider-table" aria-hidden="true">
+          {Array.from({ length: 4 }, (_, index) => (
+            <div
+              className="provider-table-row provider-loading-row"
+              key={index}
+            >
+              <span />
+              <Skeleton width={14} height={14} />
+              <Skeleton width="72%" />
+              <Skeleton width="58%" />
+              <Skeleton width="55%" />
+              <Skeleton width="68%" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function ProviderLineTable({
   readOnly = false,
   designSamples,
@@ -86,6 +117,7 @@ export function ProviderLineTable({
   onTestAllHandled,
   onSwitch,
   onEdit,
+  onPreviewDraft,
   onDelete,
 }: {
   readOnly?: boolean;
@@ -105,6 +137,8 @@ export function ProviderLineTable({
   onTestAllHandled?: () => void;
   onSwitch: (provider: Provider) => Promise<void>;
   onEdit: (provider: Provider) => void;
+  /** Opens a sample draft in the browser preview; never used for a real row. */
+  onPreviewDraft?: (provider: Provider) => void;
   onDelete: (provider: Provider) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -277,7 +311,9 @@ export function ProviderLineTable({
             <span role="columnheader" className="provider-col-latency">
               延迟
             </span>
-            <span role="columnheader" aria-label="操作" />
+            <span role="columnheader" className="provider-actions-heading">
+              操作
+            </span>
           </div>
           {[true, false].map((official) => {
             const group = filtered.filter(
@@ -301,6 +337,13 @@ export function ProviderLineTable({
                   const sample = readOnly
                     ? designSamples?.find((line) => line.id === p.id)
                     : undefined;
+                  const editLine = readOnly
+                    ? sample &&
+                      import.meta.env.DEV &&
+                      !("__TAURI_INTERNALS__" in window)
+                      ? onPreviewDraft
+                      : undefined
+                    : onEdit;
                   const config = lineConfig(p);
                   const endpoint = extractCodexBaseUrl(config);
                   const reading = readingFor(endpoint);
@@ -313,8 +356,7 @@ export function ProviderLineTable({
                   const model =
                     extractCodexModelName(config) ||
                     (official ? "Codex 默认" : "未设置");
-                  const busy =
-                    readOnly || Boolean(switchingId || deletingProviderId);
+                  const busy = Boolean(switchingId || deletingProviderId);
                   return (
                     <div
                       className={`provider-table-row${active ? " is-current" : ""}${official ? " is-official" : ""}`}
@@ -334,7 +376,11 @@ export function ProviderLineTable({
                           } as React.CSSProperties
                         }
                       >
-                        <span aria-hidden="true" />
+                        <span aria-hidden="true" data-route-monogram="">
+                          <span aria-hidden="true">
+                            {Array.from(p.name.trim() || "线")[0]}
+                          </span>
+                        </span>
                       </span>
                       <span role="cell">
                         <button
@@ -343,8 +389,8 @@ export function ProviderLineTable({
                           aria-label={`${label.name}，${label.source}${active ? "，当前线路" : ""}`}
                           // Reading a name is not a request to switch: it opens
                           // the line for editing. Switching is the row's own button.
-                          onClick={() => onEdit(p)}
-                          disabled={busy || official}
+                          onClick={() => editLine?.(p)}
+                          disabled={!editLine || busy || official}
                         >
                           <b title={label.name}>{label.name}</b>
                           <small
@@ -371,7 +417,11 @@ export function ProviderLineTable({
                           </small>
                         </button>
                       </span>
-                      <span role="cell" className="provider-row-model">
+                      <span
+                        data-route-model=""
+                        role="cell"
+                        className="provider-row-model"
+                      >
                         <code title={model}>{model}</code>
                         <small title={protocol}>{protocol}</small>
                       </span>
@@ -383,7 +433,9 @@ export function ProviderLineTable({
                         }
                       >
                         {sample ? (
-                          sample.expired ? null : (
+                          sample.expired || sample.latencyMs === null ? (
+                            <span className="provider-latency-muted">—</span>
+                          ) : (
                             <span
                               className={`provider-sample-latency ${sample.timeout ? "is-timeout" : ""}`}
                             >
@@ -431,7 +483,7 @@ export function ProviderLineTable({
                           <button
                             type="button"
                             onClick={() => void onSwitch(p)}
-                            disabled={busy}
+                            disabled={readOnly || busy}
                             aria-label={
                               sample?.expired
                                 ? `重新登录${label.name}`
@@ -447,13 +499,13 @@ export function ProviderLineTable({
                             )}
                           </button>
                         )}
-                        {(!official || (readOnly && sample)) && (
+                        {!official && (
                           <>
                             <button
                               type="button"
                               className="provider-row-edit"
-                              onClick={() => onEdit(p)}
-                              disabled={busy}
+                              onClick={() => editLine?.(p)}
+                              disabled={!editLine || busy}
                               aria-label={`编辑${label.name}`}
                               title="编辑线路"
                             >
@@ -463,7 +515,7 @@ export function ProviderLineTable({
                               type="button"
                               className="provider-row-delete"
                               onClick={() => onDelete(p)}
-                              disabled={busy || active}
+                              disabled={readOnly || busy || active}
                               aria-label={`删除${label.name}`}
                               title={
                                 active

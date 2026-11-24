@@ -556,8 +556,8 @@ pub fn handle_provider_tray_event(app: &tauri::AppHandle, event_id: &str) -> boo
                 log::info!("切换到{} Auto模式", section.log_name);
                 let app_handle = app.clone();
                 let app_type = section.app_type.clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    if let Err(e) = handle_auto_click(&app_handle, &app_type) {
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = handle_auto_click(&app_handle, &app_type).await {
                         log::error!("切换{}Auto模式失败: {e}", section.log_name);
                     }
                 });
@@ -581,7 +581,7 @@ pub fn handle_provider_tray_event(app: &tauri::AppHandle, event_id: &str) -> boo
 }
 
 /// 处理 Auto 点击：启用 proxy 和 auto_failover
-fn handle_auto_click(app: &tauri::AppHandle, app_type: &AppType) -> Result<(), AppError> {
+async fn handle_auto_click(app: &tauri::AppHandle, app_type: &AppType) -> Result<(), AppError> {
     if let Some(app_state) = app.try_state::<AppState>() {
         let app_type_str = app_type.as_str();
 
@@ -611,10 +611,10 @@ fn handle_auto_click(app: &tauri::AppHandle, app_type: &AppType) -> Result<(), A
         let proxy_service = &app_state.proxy_service;
 
         // 1) 确保代理服务运行（会自动设置 proxy_enabled = true）
-        let is_running = futures::executor::block_on(proxy_service.is_running());
+        let is_running = proxy_service.is_running().await;
         if !is_running {
             log::info!("[Tray] Auto 模式：启动代理服务");
-            if let Err(e) = futures::executor::block_on(proxy_service.start()) {
+            if let Err(e) = proxy_service.start().await {
                 log::error!("[Tray] 启动代理服务失败: {e}");
                 return Err(AppError::Message(format!("启动代理服务失败: {e}")));
             }
@@ -622,9 +622,7 @@ fn handle_auto_click(app: &tauri::AppHandle, app_type: &AppType) -> Result<(), A
 
         // 2) 执行 Live 配置接管（确保该 app 被代理接管）
         log::info!("[Tray] Auto 模式：对 {app_type_str} 执行接管");
-        if let Err(e) =
-            futures::executor::block_on(proxy_service.set_takeover_for_app(app_type_str, true))
-        {
+        if let Err(e) = proxy_service.set_takeover_for_app(app_type_str, true).await {
             log::error!("[Tray] 执行接管失败: {e}");
             return Err(AppError::Message(format!("执行接管失败: {e}")));
         }
@@ -635,9 +633,10 @@ fn handle_auto_click(app: &tauri::AppHandle, app_type: &AppType) -> Result<(), A
             .set_proxy_flags_sync(app_type_str, true, true)?;
 
         // 3.1) 立即切到队列 P1（热切换：不写 Live，仅更新 DB/settings/备份）
-        if let Err(e) = futures::executor::block_on(
-            proxy_service.switch_proxy_target(app_type_str, &p1_provider_id),
-        ) {
+        if let Err(e) = proxy_service
+            .switch_proxy_target(app_type_str, &p1_provider_id)
+            .await
+        {
             log::error!("[Tray] Auto 模式切换到队列 P1 失败: {e}");
             return Err(AppError::Message(format!(
                 "Auto 模式切换到队列 P1 失败: {e}"
@@ -795,10 +794,18 @@ pub(crate) async fn manual_switch_takeover_active(
             .detect_takeover_in_live_config_for_app(app_type))
 }
 
-/// 创建动态托盘菜单
+/// 创建动态托盘菜单（仅在启动 setup 阶段同步调用；异步刷新请走 `update_tray_menu_async`）
 pub fn create_tray_menu(
     app: &tauri::AppHandle,
     app_state: &AppState,
+) -> Result<Menu<tauri::Wry>, AppError> {
+    create_tray_menu_with_takeover(app, app_state, None)
+}
+
+fn create_tray_menu_with_takeover(
+    app: &tauri::AppHandle,
+    app_state: &AppState,
+    precomputed_takeover: Option<&std::collections::HashMap<AppType, bool>>,
 ) -> Result<Menu<tauri::Wry>, AppError> {
     let app_settings = crate::settings::get_settings();
     let tray_texts = TrayTexts::for_settings(&app_settings);
@@ -849,10 +856,14 @@ pub fn create_tray_menu(
             };
             let submenu_id = format!("submenu_{}", app_type_str);
 
-            let is_app_taken_over = futures::executor::block_on(manual_switch_takeover_active(
-                app_state,
-                &section.app_type,
-            ))?;
+            let is_app_taken_over =
+                match precomputed_takeover.and_then(|map| map.get(&section.app_type).copied()) {
+                    Some(active) => active,
+                    None => futures::executor::block_on(manual_switch_takeover_active(
+                        app_state,
+                        &section.app_type,
+                    ))?,
+                };
 
             let mut submenu_builder = SubmenuBuilder::with_id(app, &submenu_id, &submenu_label);
 
@@ -984,12 +995,28 @@ fn update_tray_usage_labels(app: &tauri::AppHandle) {
     }
 }
 
-pub fn update_tray_menu(app: &tauri::AppHandle, state: &AppState) -> Result<bool, String> {
+pub async fn update_tray_menu_async(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<bool, String> {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return Ok(false);
     };
     if USE_NATIVE_TRAY_MENU {
-        let menu = match create_tray_menu(app, state) {
+        let mut takeover_by_app = std::collections::HashMap::new();
+        for section in TRAY_SECTIONS.iter() {
+            if let Ok(active) = manual_switch_takeover_active(state, &section.app_type).await {
+                takeover_by_app.insert(section.app_type.clone(), active);
+            }
+        }
+        let app_clone = app.clone();
+        let state_clone = state.clone();
+        let menu = tauri::async_runtime::spawn_blocking(move || {
+            create_tray_menu_with_takeover(&app_clone, &state_clone, Some(&takeover_by_app))
+        })
+        .await
+        .map_err(|error| format!("创建托盘菜单任务失败: {error}"))?;
+        let menu = match menu {
             Ok(menu) => menu,
             Err(error) => {
                 log::error!("创建托盘菜单失败: {error}");
@@ -1004,11 +1031,17 @@ pub fn update_tray_menu(app: &tauri::AppHandle, state: &AppState) -> Result<bool
 }
 
 pub fn refresh_tray_menu(app: &tauri::AppHandle) {
-    if let Some(state) = app.try_state::<AppState>() {
-        if let Err(error) = update_tray_menu(app, state.inner()) {
-            log::error!("刷新托盘菜单失败: {error}");
-        }
+    if !USE_NATIVE_TRAY_MENU {
+        return;
     }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(state) = app.try_state::<AppState>() {
+            if let Err(error) = update_tray_menu_async(&app, state.inner()).await {
+                log::error!("刷新托盘菜单失败: {error}");
+            }
+        }
+    });
 }
 
 #[cfg(target_os = "macos")]

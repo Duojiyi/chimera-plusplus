@@ -22,14 +22,26 @@ const LEGACY_GRACE_SECS: i64 = 72 * 60 * 60;
 static ACTIVE_TOKEN: RwLock<Option<String>> = RwLock::new(None);
 
 /// The token written into live configs. Unit tests keep the bare placeholder
-/// so fixtures stay stable.
+/// so fixtures stay stable. In production, if `ensure_proxy_token` has not
+/// populated `ACTIVE_TOKEN` (e.g., transient DB failure), fail closed by
+/// generating an ephemeral CSPRNG token rather than falling back to the
+/// public static `PROXY_TOKEN_PREFIX`.
 #[cfg(not(test))]
 pub(crate) fn proxy_token() -> String {
-    ACTIVE_TOKEN
-        .read()
-        .ok()
-        .and_then(|token| token.clone())
-        .unwrap_or_else(|| PROXY_TOKEN_PREFIX.to_string())
+    if let Ok(guard) = ACTIVE_TOKEN.read() {
+        if let Some(token) = guard.as_ref() {
+            return token.clone();
+        }
+    }
+    let ephemeral = format!(
+        "{PROXY_TOKEN_PREFIX}.{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    if let Ok(mut guard) = ACTIVE_TOKEN.write() {
+        return guard.get_or_insert(ephemeral).clone();
+    }
+    ephemeral
 }
 
 #[cfg(test)]

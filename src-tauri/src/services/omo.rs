@@ -844,7 +844,11 @@ impl OmoService {
     fn read_jsonc_object(path: &Path) -> Result<Map<String, Value>, AppError> {
         // json5 解析：完整覆盖 JSONC（注释、尾逗号）之外还支持单引号与
         // 标识符键，与上游 v3.19.2 的读取行为一致。
-        let content = std::fs::read_to_string(path).map_err(|e| AppError::io(path, e))?;
+        let content = crate::security_limits::read_to_string_limited(
+            path,
+            crate::security_limits::MAX_CONFIG_FILE_BYTES,
+        )
+        .map_err(|e| AppError::io(path, e))?;
         let parsed: Value = json5::from_str(&content)
             .map_err(|e| AppError::Config(format!("Failed to parse OMO config: {e}")))?;
         parsed
@@ -900,7 +904,7 @@ impl OmoService {
             return Ok(None);
         }
 
-        std::fs::read(path)
+        crate::security_limits::read_limited(path, crate::security_limits::MAX_CONFIG_FILE_BYTES)
             .map(Some)
             .map_err(|e| AppError::io(path, e))
     }
@@ -950,10 +954,18 @@ impl OmoService {
         v: &OmoVariant,
         profile_data: Option<&OmoProfileData>,
     ) -> Result<(), AppError> {
+        let operation_guard = lock_omo_operation()?;
+        Self::write_profile_config_locked(&operation_guard, v, profile_data)
+    }
+
+    fn write_profile_config_locked(
+        _operation_guard: &MutexGuard<'static, ()>,
+        v: &OmoVariant,
+        profile_data: Option<&OmoProfileData>,
+    ) -> Result<(), AppError> {
         // v2.5.1：统一配置（~/.omo/omo.jsonc|omo.json）存在时写入其
         // `[opencode]` 分区（round-trip 保注释/格式），否则沿用插件式文件。
         // 与上游 v3.19.2 的写入路由一致。
-        let _operation_guard = lock_omo_operation()?;
         let legacy_dir = get_opencode_dir();
         let home_dir = crate::config::get_home_dir();
         let merged = Self::build_config(v, profile_data);
@@ -1220,6 +1232,7 @@ impl OmoService {
         state: &AppState,
         v: &OmoVariant,
     ) -> Result<crate::provider::Provider, AppError> {
+        let operation_guard = lock_omo_operation()?;
         let location = Self::resolve_local_config_location(v)?;
         let obj = Self::read_config_object(&location)?;
 
@@ -1262,11 +1275,51 @@ impl OmoService {
             in_failover_queue: false,
         };
 
-        state.db.save_provider("opencode", &provider)?;
-        state
+        let previous_current = state
             .db
-            .set_omo_provider_current("opencode", &provider.id, v.category)?;
-        Self::write_config_to_file(state, v)?;
+            .get_current_omo_provider("opencode", v.category)?
+            .map(|p| p.id);
+        let other_category = if v.category == "omo" {
+            "omo-slim"
+        } else {
+            "omo"
+        };
+        let previous_other_current = state
+            .db
+            .get_current_omo_provider("opencode", other_category)?
+            .map(|p| p.id);
+        let profile_data = Self::profile_data_from_provider(&provider, v);
+
+        state.db.save_provider("opencode", &provider)?;
+        if let Err(err) = state
+            .db
+            .set_omo_provider_current("opencode", &provider.id, v.category)
+        {
+            let _ = state.db.delete_provider("opencode", &provider.id);
+            return Err(err);
+        }
+
+        if let Err(write_err) =
+            Self::write_profile_config_locked(&operation_guard, v, Some(&profile_data))
+        {
+            if let Some(prev_id) = previous_current.as_deref() {
+                let _ = state
+                    .db
+                    .set_omo_provider_current("opencode", prev_id, v.category);
+            } else {
+                let _ = state
+                    .db
+                    .clear_omo_provider_current("opencode", &provider.id, v.category);
+            }
+            if let Some(prev_other_id) = previous_other_current.as_deref() {
+                let _ =
+                    state
+                        .db
+                        .set_omo_provider_current("opencode", prev_other_id, other_category);
+            }
+            let _ = state.db.delete_provider("opencode", &provider.id);
+            return Err(write_err);
+        }
         Ok(provider)
     }
 

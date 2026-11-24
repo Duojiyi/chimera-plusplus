@@ -19,6 +19,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
 import { Input } from "@/components/ui/input";
 import {
   Dialog,
@@ -27,6 +29,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import {
   claudeAccountsApi,
   DEFAULT_DESKTOP_ID,
@@ -166,6 +169,9 @@ export function ClaudeAccountsCard({
   const pending = useRef(false);
   /** The newest list read wins; a move invalidates the ones still on the way. */
   const loadGeneration = useRef(0);
+  const quotaSeq = useRef<Map<string, number>>(new Map());
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
   const orderQueue = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
@@ -180,11 +186,18 @@ export function ClaudeAccountsCard({
   /** `vault`: a saved Claude login shown on the Claude Desktop page. */
   const readQuota = useCallback(
     async (id: string, force: boolean, vault = false) => {
-      const key = vault && mode === "desktop" ? `vault:${id}` : id;
+      const requestMode = mode;
+      const key = vault && requestMode === "desktop" ? `vault:${id}` : id;
+      const seq = (quotaSeq.current.get(key) ?? 0) + 1;
+      quotaSeq.current.set(key, seq);
       setQuota((all) => ({ ...all, [key]: { ...all[key], loading: true } }));
+      const isCurrent = () =>
+        mounted.current &&
+        modeRef.current === requestMode &&
+        quotaSeq.current.get(key) === seq;
       try {
         const next: QuotaState =
-          mode === "code"
+          requestMode === "code"
             ? {
                 view: await claudeAccountsApi.codeQuota(id, force),
                 loading: false,
@@ -200,9 +213,9 @@ export function ClaudeAccountsCard({
                   loading: false,
                 }),
               );
-        if (mounted.current) setQuota((all) => ({ ...all, [key]: next }));
+        if (isCurrent()) setQuota((all) => ({ ...all, [key]: next }));
       } catch {
-        if (mounted.current)
+        if (isCurrent())
           setQuota((all) => ({
             ...all,
             [key]: {
@@ -605,16 +618,21 @@ export function ClaudeAccountsCard({
       `已把「${nameOf(id)}」移到第 ${next.indexOf(id) + 1} 位，共 ${next.length} 个`,
     );
     // The row re-renders in its new place; keep the keyboard on its grip.
-    window.requestAnimationFrame(() =>
+    window.requestAnimationFrame(() => {
+      const escapedId =
+        typeof CSS !== "undefined" && typeof CSS.escape === "function"
+          ? CSS.escape(id)
+          : id.replace(/["\\]/g, "\\$&");
       document
         .querySelector<HTMLButtonElement>(
-          `[data-id="${id}"] .claude-account-grip`,
+          `[data-id="${escapedId}"] .claude-account-grip`,
         )
-        ?.focus(),
-    );
+        ?.focus();
+    });
   };
 
   const disabled = busy !== null;
+  useLightweightCloseBlocker(busy !== null || refreshingAll);
   const title = mode === "code" ? "Claude Code 账号" : "Claude Desktop 账号";
   const description =
     mode === "code"
@@ -789,6 +807,9 @@ export function ClaudeAccountsCard({
       claudeAccountsApi.launchDesktop(DEFAULT_DESKTOP_ID),
     );
 
+  const desktopPlatformSupported =
+    swap?.platformSupported ?? swap?.supported !== false;
+
   const headerAction =
     mode === "code" ? (
       code?.supported ? (
@@ -816,8 +837,14 @@ export function ClaudeAccountsCard({
         mode="desktop"
         detected={detectedLogins}
         onDetect={load}
-        onOpenDesktop={openDefaultDesktop}
-        onCreateProfile={() => openNameDialog({ kind: "add-desktop" })}
+        onOpenDesktop={
+          desktopPlatformSupported ? openDefaultDesktop : undefined
+        }
+        onCreateProfile={
+          desktopPlatformSupported
+            ? () => openNameDialog({ kind: "add-desktop" })
+            : undefined
+        }
       />
     );
 
@@ -905,12 +932,15 @@ export function ClaudeAccountsCard({
       {!live ? (
         <p className="claude-accounts-note">账号管理需要在桌面端使用。</p>
       ) : loadError ? (
-        <div className="claude-accounts-error" role="alert">
-          <span>读取账号失败：{loadError}</span>
-          <Button size="sm" variant="ghost" onClick={() => void load()}>
-            重试
-          </Button>
-        </div>
+        <ErrorState
+          className="claude-accounts-error"
+          title={`读取账号失败：${loadError}`}
+          action={
+            <Button size="sm" variant="ghost" onClick={() => void load()}>
+              重试
+            </Button>
+          }
+        />
       ) : mode === "code" ? (
         code === null ? (
           <p className="claude-accounts-note" role="status">
@@ -992,6 +1022,12 @@ export function ClaudeAccountsCard({
         </p>
       ) : (
         <>
+          {swap?.supported === false ? (
+            <p className="claude-accounts-note is-warning" role="status">
+              {swap.unsupportedReason ||
+                "Claude Desktop 账号切换目前仅支持 Windows。"}
+            </p>
+          ) : null}
           <div className="claude-desktop-summary" aria-label="账号概况">
             <span>
               <strong>{codeRows.length}</strong> 个已保存账号
@@ -1066,18 +1102,23 @@ export function ClaudeAccountsCard({
             {shownRows.map((account) => rowFor(account, true))}
           </ul>
           {codeRows.length === 0 && !swap?.signedIn ? (
-            <div className="claude-desktop-empty">
-              <UserRound size={32} aria-hidden="true" />
-              <h3>添加你的第一个账号</h3>
-              <p>已在这台电脑登录 Claude？点击「添加账号」即可识别导入。</p>
-              <Button
-                variant="outline"
-                disabled={disabled}
-                onClick={openDefaultDesktop}
-              >
-                打开 Claude Desktop
-              </Button>
-            </div>
+            <EmptyState
+              className="claude-desktop-empty"
+              icon={<UserRound size={32} aria-hidden="true" />}
+              title="添加你的第一个账号"
+              description="已在这台电脑登录 Claude？点击「添加账号」即可识别导入。"
+              action={
+                desktopPlatformSupported ? (
+                  <Button
+                    variant="outline"
+                    disabled={disabled}
+                    onClick={openDefaultDesktop}
+                  >
+                    打开 Claude Desktop
+                  </Button>
+                ) : undefined
+              }
+            />
           ) : null}
           {desktopRows.length > 0 ? (
             <details className="claude-desktop-profiles">
@@ -1141,7 +1182,7 @@ export function ClaudeAccountsCard({
                       <Button
                         size="sm"
                         variant="outline"
-                        disabled={disabled}
+                        disabled={disabled || !desktopPlatformSupported}
                         onClick={() =>
                           void run(`launch:${profile.id}`, () =>
                             claudeAccountsApi.launchDesktop(profile.id),
@@ -1194,7 +1235,7 @@ export function ClaudeAccountsCard({
               <Button
                 size="sm"
                 variant="ghost"
-                disabled={disabled}
+                disabled={disabled || !desktopPlatformSupported}
                 onClick={() => openNameDialog({ kind: "add-desktop" })}
               >
                 <Plus size={14} />

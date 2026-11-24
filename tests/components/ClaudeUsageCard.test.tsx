@@ -290,13 +290,13 @@ describe("ClaudeUsageCard", () => {
   it("regroups by model and by account, and asks again for another range", async () => {
     render(<ClaudeUsageCard defaultOpen />);
     await screen.findByText("$18.46");
-    fireEvent.click(screen.getByRole("tab", { name: "模型" }));
+    fireEvent.click(screen.getByRole("button", { name: "模型" }));
     expect(
       within(screen.getByRole("list", { name: "模型" })).getByText(
         "claude-fable-5",
       ),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "来源" }));
+    fireEvent.click(screen.getByRole("button", { name: "来源" }));
     const sources = screen.getByRole("list", { name: "来源" });
     expect(within(sources).getByText("工作号")).toBeInTheDocument();
     // An account's id is not something to show.
@@ -304,14 +304,14 @@ describe("ClaudeUsageCard", () => {
     // Where the log does not say whose it is, the card says so.
     expect(screen.getByText(/都在「默认登录」里/)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("radio", { name: "全部" }));
+    fireEvent.click(screen.getByRole("button", { name: "全部" }));
     await waitFor(() =>
       expect(api.usageOverview).toHaveBeenLastCalledWith(null),
     );
-    fireEvent.click(screen.getByRole("radio", { name: "7 天" }));
+    fireEvent.click(screen.getByRole("button", { name: "7 天" }));
     await waitFor(() => expect(api.usageOverview).toHaveBeenLastCalledWith(7));
-    expect(screen.getByRole("radio", { name: "7 天" })).toHaveAttribute(
-      "aria-checked",
+    expect(screen.getByRole("button", { name: "7 天" })).toHaveAttribute(
+      "aria-pressed",
       "true",
     );
   });
@@ -350,7 +350,7 @@ describe("ClaudeUsageCard", () => {
     expect(
       await screen.findByText("这段时间里没有 Claude Code 的会话记录。"),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("radio", { name: "全部" }));
+    fireEvent.click(screen.getByRole("button", { name: "全部" }));
     expect(
       await screen.findByText("还没有找到 Claude Code 的会话记录。"),
     ).toBeInTheDocument();
@@ -389,7 +389,7 @@ describe("ClaudeUsageCard", () => {
     );
     render(<ClaudeUsageCard defaultOpen />);
     await waitFor(() => expect(api.usageOverview).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole("radio", { name: "7 天" }));
+    fireEvent.click(screen.getByRole("button", { name: "7 天" }));
     expect(await screen.findByText("$7.00")).toBeInTheDocument();
     finishSlow(overview());
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -404,7 +404,7 @@ describe("ClaudeUsageCard", () => {
     ).toHaveAttribute("aria-expanded", "false");
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(api.usageOverview).not.toHaveBeenCalled();
-    expect(screen.queryByRole("radiogroup")).toBeNull();
+    expect(screen.queryByRole("group", { name: "时间范围" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /展开用量总览/ }));
     expect(await screen.findByText("$18.46")).toBeInTheDocument();
@@ -425,7 +425,7 @@ describe("ClaudeUsageCard", () => {
       await screen.findByRole("list", { name: "最近 30 天每天的用量" }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("list", { name: /每日用量，共/ })).toBeNull();
-    fireEvent.click(screen.getByRole("radio", { name: "90 天" }));
+    fireEvent.click(screen.getByRole("button", { name: "90 天" }));
     expect(
       await screen.findByRole("list", { name: /每日用量，共/ }),
     ).toBeInTheDocument();

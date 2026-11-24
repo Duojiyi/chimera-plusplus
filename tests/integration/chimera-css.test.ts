@@ -36,12 +36,11 @@ describe("provider table scrolling and fixed row geometry", () => {
     expect(block).toContain("width: 6px");
     expect(block).toContain("height: 6px");
   });
-  it("keeps Pencil row and action dimensions", () => {
-    // v3 table: 36px rows from the shared scale, latency + actions as the
-    // last two tracks, and a 14px gutter that matches the card padding.
+  it("keeps two-line ledger rows flexible and reserves space for actions", () => {
+    // Content can grow in comfortable reading mode.
     const block = extractBlock(".provider-table-row", tableCss);
-    expect(block).toContain("height: var(--size-row)");
-    expect(block).toContain("104px 112px");
+    expect(block).toContain("min-height: 54px");
+    expect(block).toContain("108px 136px");
     expect(block).toContain("gap: 14px");
   });
   it("keeps long cell content inside its column", () => {

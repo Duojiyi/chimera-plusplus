@@ -418,3 +418,55 @@ impl Database {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn official_account_meta_groups_and_throttled_last_used_roundtrip() {
+        let db = Database::memory().expect("memory db");
+        let g1 = AccountGroup {
+            id: "group-1".into(),
+            name: "主力".into(),
+            color: Some("#1f6a4a".into()),
+            sort_index: db.next_official_account_group_sort_index().unwrap(),
+        };
+        db.create_official_account_group(&g1, 1_000).unwrap();
+        let g2 = AccountGroup {
+            id: "group-2".into(),
+            name: "备用".into(),
+            color: None,
+            sort_index: db.next_official_account_group_sort_index().unwrap(),
+        };
+        db.create_official_account_group(&g2, 1_000).unwrap();
+
+        db.update_official_account_meta("acct-a", 1_100, |meta| {
+            meta.tags = vec!["prod".into()];
+            meta.group_id = Some("group-1".into());
+            meta.note = Some("note".into());
+        })
+        .unwrap();
+
+        // Throttled touch does not overwrite a fresher timestamp.
+        db.touch_official_account_last_used("acct-a", 2_000, 500)
+            .unwrap();
+        db.touch_official_account_last_used("acct-a", 2_200, 500)
+            .unwrap();
+        let index = db.official_account_meta_index().unwrap();
+        assert_eq!(index.meta("acct-a").unwrap().last_used_at, Some(2_000));
+
+        // Reorder and rename group
+        db.reorder_official_account_groups(&["group-2".to_string(), "group-1".to_string()], 3_000)
+            .unwrap();
+        assert!(db
+            .update_official_account_group("group-1", "主力更新", None, None, 3_100)
+            .unwrap());
+
+        // Deleting group ungroups member accounts atomically
+        let affected = db.delete_official_account_group("group-1", 4_000).unwrap();
+        assert_eq!(affected, 1);
+        let index_after = db.official_account_meta_index().unwrap();
+        assert!(index_after.meta("acct-a").unwrap().group_id.is_none());
+    }
+}

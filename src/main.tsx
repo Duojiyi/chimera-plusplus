@@ -18,7 +18,6 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "@/components/theme-provider";
 import { queryClient } from "@/lib/query";
 import { Toaster } from "@/components/ui/sonner";
-import { listen } from "@tauri-apps/api/event";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { message } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -29,9 +28,14 @@ import {
   installGlobalErrorHandlers,
   reportFrontendError,
 } from "./lib/frontendLogger";
+import { initTextScale } from "./lib/textScale";
 
-const isTrayPanel = isTauri() && getCurrentWindow().label === "tray-panel";
-// v3 has one designed appearance, including auxiliary windows.
+const isTrayPanel =
+  (isTauri() && getCurrentWindow().label === "tray-panel") ||
+  (import.meta.env.DEV &&
+    !isTauri() &&
+    new URLSearchParams(window.location.search).get("preview") === "tray");
+// v5.2 has one designed Light Liquid Glass appearance, including auxiliary windows.
 const appTheme = {
   defaultTheme: "light",
   forceTheme: "light",
@@ -39,6 +43,7 @@ const appTheme = {
 } as const;
 
 installGlobalErrorHandlers();
+initTextScale();
 
 const updateWindowFocusState = () => {
   document.documentElement.classList.toggle(
@@ -97,15 +102,6 @@ async function handleConfigLoadError(
   );
 
   await exit(1);
-}
-
-// 监听后端的配置加载错误事件：仅提醒用户并强制退出，不修改任何配置文件
-if (isTauri() && !isTrayPanel) {
-  void listen("configLoadError", async (evt) => {
-    await handleConfigLoadError(evt.payload as ConfigLoadErrorPayload | null);
-  }).catch((error) => {
-    reportFrontendError("config_load_error_listener", error);
-  });
 }
 
 async function bootstrap() {

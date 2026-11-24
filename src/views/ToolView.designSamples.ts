@@ -46,15 +46,15 @@ export const TOOL_SAMPLE_LINES: Partial<
   Record<AppId, { lines: Provider[]; current: string }>
 > = {
   claude: {
-    current: "cc-official",
+    current: "cc-relay",
     lines: [
       line("cc-official", "Claude 官方", { env: {} }, { category: "official" }),
       line(
         "cc-relay",
-        "自建中转",
+        "Anthropic Pro 官方中继",
         {
           env: {
-            ANTHROPIC_BASE_URL: "https://relay.studio.dev",
+            ANTHROPIC_BASE_URL: "https://api-claude.kimera.cc/v1",
             ANTHROPIC_MODEL: "claude-sonnet-4-6",
           },
         },

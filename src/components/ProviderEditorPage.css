@@ -14,19 +14,24 @@
   overflow: hidden;
 }
 .provider-editor-page .provider-editor {
-  --editor-inset: 24px;
+  --editor-inset: 28px;
   height: 100%;
   min-height: 0;
   min-width: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg-surface);
+  background: linear-gradient(
+    180deg,
+    var(--v3-page-top) 0%,
+    var(--v3-page-mid) 55%,
+    var(--v3-page-bottom) 100%
+  );
   border: 0;
   border-radius: 0;
   box-shadow: none;
   color: var(--text-1);
-  font-size: 14px;
+  font-size: var(--fs-base);
 }
 .provider-editor-page .editor-page-header {
   flex: 0 0 auto;
@@ -34,10 +39,12 @@
   gap: 12px;
   align-items: center;
   margin: 0;
-  min-height: 64px;
-  padding: 8px 24px;
-  background: var(--bg-surface);
-  border-bottom: 1px solid var(--border-subtle);
+  min-height: 60px;
+  padding: 8px 28px;
+  background: rgba(255, 255, 255, 0.86);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+  backdrop-filter: blur(28px) saturate(150%);
+  border-bottom: 1px solid var(--v3-hairline);
 }
 .provider-editor-page .editor-heading {
   min-width: 0;
@@ -48,16 +55,29 @@
 .provider-editor-page .editor-heading h2 {
   font-size: 18px;
   line-height: 1.35;
+  font-weight: 700;
+  color: var(--text-1);
 }
 .provider-editor-page .editor-heading > span {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text-3);
 }
 .provider-editor-page .editor-draft-status {
-  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  font-size: var(--fs-xs);
+  font-weight: 600;
   color: var(--warning-fg);
   margin-right: auto;
   flex: 0 0 auto;
+}
+.provider-editor-page .editor-draft-status:empty {
+  display: none;
 }
 .provider-editor-page .editor-scroll {
   flex: 1 1 0;
@@ -67,29 +87,52 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-items: start;
-  gap: 24px;
-  padding: 24px max(var(--editor-inset), calc((100% - 976px) / 2));
+  gap: 20px;
+  padding: 26px max(var(--editor-inset), calc((100% - 920px) / 2)) 40px;
 }
+/* v5.2：线路编辑表单承载于居中悬浮 20px 水晶舞台中（对齐 v5.1-13-provider-editor） */
 .provider-editor-page .editor-form {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 26px;
   min-inline-size: 0;
   margin: 0;
-  border: 0;
-  padding: 0;
+  padding: 28px 34px 32px;
+  border: 1px solid rgba(255, 255, 255, 0.98);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 18px 44px -14px rgba(17, 19, 24, 0.1),
+    0 1px 3px rgba(17, 19, 24, 0.04);
+  -webkit-backdrop-filter: blur(32px) saturate(150%);
+  backdrop-filter: blur(32px) saturate(150%);
 }
 .provider-editor-page .editor-basic h3,
 .provider-editor-page .editor-protocol h3 {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
   margin: 0;
-  font-size: 15px;
-  line-height: 21px;
+  font-size: var(--fs-md);
+  line-height: 22px;
   font-weight: 700;
+  color: var(--text-1);
+}
+.provider-editor-page .editor-basic h3::before,
+.provider-editor-page .editor-protocol h3::before {
+  content: "";
+  width: 3px;
+  height: 15px;
+  border-radius: 2px;
+  background: var(--accent-petrol);
+  flex: none;
 }
 .provider-editor-page .editor-basic-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
+  gap: 16px;
 }
 .provider-editor-page
   .editor-form
@@ -97,14 +140,24 @@
 .provider-editor-page .editor-form textarea {
   min-width: 0;
   width: 100%;
-  min-height: 36px;
-  padding: 7px 10px;
-  border: 1px solid var(--border-control);
-  border-radius: 4px;
-  background: var(--bg-surface);
+  min-height: 42px;
+  padding: 9px 13px;
+  border: 1px solid rgba(17, 19, 24, 0.13);
+  border-radius: 10px;
+  background: #ffffff;
   color: var(--text-1);
-  font-size: 14px;
+  font-size: var(--fs-base);
   line-height: 1.45;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+.provider-editor-page
+  .editor-form
+  input:not([type="checkbox"]):not([type="radio"]):focus,
+.provider-editor-page .editor-form textarea:focus {
+  border-color: var(--accent-petrol);
+  box-shadow: 0 0 0 3px rgba(14, 100, 112, 0.12);
 }
 .provider-editor-page textarea {
   resize: vertical;
@@ -113,25 +166,53 @@
 .provider-editor-page .password-field > input,
 .provider-editor-page .model-input > input {
   width: 0;
+  min-height: 40px;
+  border: 0;
+  box-shadow: none;
+}
+.provider-editor-page .password-field > input:focus,
+.provider-editor-page .model-input > input:focus {
+  box-shadow: none;
 }
 .provider-editor-page .password-field > button,
 .provider-editor-page .model-input > button {
-  height: 34px;
-  font-size: 14px;
+  height: 40px;
+  padding: 0 13px;
+  font-size: var(--fs-sm);
 }
 .provider-editor-page button.primary,
 .provider-editor-page button.secondary,
 .provider-editor-page button.danger {
-  min-height: 32px;
+  min-height: 36px;
   height: auto;
-  padding: 5px 12px;
-  font-size: 14px;
+  padding: 6px 15px;
+  border-radius: 10px;
+  font-size: var(--fs-sm);
+  font-weight: 550;
 }
 .provider-editor-page button.primary {
-  background: var(--brand);
+  border: 1px solid #16181d;
+  background: var(--cta-obsidian);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 3px 10px rgba(17, 19, 24, 0.16);
+  color: #ffffff;
+  font-weight: 600;
 }
 .provider-editor-page button.primary:hover:not(:disabled) {
-  background: var(--brand-hover);
+  background: var(--cta-obsidian-hover);
+}
+.provider-editor-page button.secondary {
+  border: 1px solid rgba(17, 19, 24, 0.12);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 1px 2px rgba(17, 19, 24, 0.04);
+  color: var(--text-1);
+}
+.provider-editor-page button.secondary:hover:not(:disabled) {
+  background: #ffffff;
+  border-color: rgba(17, 19, 24, 0.2);
 }
 .provider-editor-page button:disabled {
   cursor: not-allowed;
@@ -168,7 +249,7 @@
 .provider-editor-page .advanced-section-heading small,
 .provider-editor-page label > small,
 .provider-editor-page .toggle-field small {
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 1.6;
   color: var(--text-3);
 }
@@ -185,7 +266,7 @@
   gap: 8px;
 }
 .provider-editor-page .mapping-head {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 0;
   color: var(--text-3);
 }
@@ -203,7 +284,7 @@
 }
 .provider-editor-page .mapping-field > span {
   display: none;
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--text-3);
 }
 .provider-editor-page .mapping-row .reasoning-trigger {
@@ -231,7 +312,7 @@
   display: flex;
   gap: 4px;
   align-items: center;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .provider-editor-page .mapping-actions .icon-button {
   color: var(--danger-fg);
@@ -248,7 +329,7 @@
   grid-column: 1 / -1;
   margin: 0;
   color: var(--danger-fg);
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 /* Fixed tier rows (Claude Code, Claude Desktop): role, menu name, upstream
    model, 1M. Same specificity as the rules above, so these win by coming
@@ -260,10 +341,10 @@
 }
 .provider-editor-page .mapping-row .model-input > button {
   padding: 0 10px;
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .mapping-note {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-3);
 }
 /* A GPT row's window above the 272K subscription window. */
@@ -271,7 +352,7 @@
   grid-column: 1 / -1;
   margin: 0;
   color: var(--warning-fg);
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 /* The model field with its 1M box (Claude Code). */
 .provider-editor-page .editor-model-line {
@@ -302,7 +383,7 @@
 .provider-editor-page .instructions-panel-head,
 .provider-editor-page .reasoning-level-option,
 .provider-editor-page .reasoning-panel-default {
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .provider-editor-page .reasoning-checkboxes {
   grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
@@ -344,7 +425,7 @@
 }
 .advanced-summary-copy small {
   color: var(--text-3);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 400;
 }
 .advanced-summary-action {
@@ -353,7 +434,7 @@
   gap: 6px;
   flex-shrink: 0;
   color: var(--brand-text);
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .advanced-options:not([open]) .when-expanded,
 .advanced-options[open] .when-collapsed {
@@ -377,7 +458,7 @@
 }
 .provider-editor-page .common-config-actions {
   flex-wrap: wrap;
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .provider-editor-page .editor-feedback {
   margin: 0;
@@ -391,23 +472,27 @@
 }
 .provider-editor-page .editor-test-scope {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text-3);
+  white-space: nowrap;
 }
 .provider-editor-page .editor-bottom {
   flex: 0 0 auto;
-  background: var(--bg-surface);
-  border-top: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.92);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+  backdrop-filter: blur(28px) saturate(150%);
+  border-top: 1px solid var(--v3-hairline);
 }
 .provider-editor-page .provider-editor > .editor-bottom > footer {
   position: static;
   margin: 0;
-  min-height: 52px;
-  padding: 8px var(--editor-inset);
+  min-height: 60px;
+  padding: 12px var(--editor-inset);
   border: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
+  align-items: center;
   justify-content: space-between;
 }
 .provider-editor-page .editor-test-actions,
@@ -421,8 +506,8 @@
   flex-wrap: wrap;
 }
 .provider-editor-page .editor-connection {
-  font-size: 13px;
-  max-width: 230px;
+  font-size: var(--fs-sm);
+  max-width: 380px;
   overflow-wrap: anywhere;
 }
 .provider-editor-page .editor-save-actions {
@@ -525,7 +610,11 @@
 .provider-editor-page .editor-basic,
 .provider-editor-page .editor-protocol {
   display: grid;
-  gap: 12px;
+  gap: 14px;
+}
+.provider-editor-page .editor-protocol {
+  padding-top: 22px;
+  border-top: 1px solid var(--v3-hairline);
 }
 .provider-editor-page .editor-preview {
   overflow-wrap: anywhere;
@@ -534,7 +623,7 @@
 .provider-editor-page .editor-preview dl {
   margin: 0;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
 }
 .provider-editor-page .editor-preview dd {
@@ -543,30 +632,35 @@
 }
 .provider-editor-page .password-field,
 .provider-editor-page .model-input {
-  height: 36px;
-  border-color: var(--border-control);
-  border-radius: 4px;
+  height: 42px;
+  border-color: rgba(17, 19, 24, 0.13);
+  border-radius: 10px;
+  background: #ffffff;
+  overflow: hidden;
 }
 .provider-editor-page .password-field > input,
 .provider-editor-page .model-input > input {
-  height: 34px;
-  min-height: 34px;
+  height: 40px;
+  min-height: 40px;
 }
 
 .provider-editor-page .editor-format {
   display: grid;
-  gap: 6px;
+  gap: 8px;
 }
+/* v5.2：下沉式全宽协议分段轨道（对齐 v5.1-13-provider-editor） */
 .provider-editor-page .editor-format-options {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 2px;
-  width: fit-content;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 4px;
+  width: 100%;
   max-width: 100%;
-  padding: 2px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-panel);
-  background: var(--bg-subtle);
+  padding: 4px;
+  border: 1px solid rgba(17, 19, 24, 0.06);
+  border-radius: 12px;
+  background: rgba(17, 19, 24, 0.048);
+  box-shadow: inset 0 1px 2px rgba(17, 19, 24, 0.04);
 }
 .provider-editor-page .editor-format-options label {
   position: relative;
@@ -579,7 +673,7 @@
   height: 1px;
 }
 .provider-editor-page .editor-format-options input:focus-visible + span {
-  outline: 2px solid var(--brand);
+  outline: 2px solid var(--accent-petrol);
   outline-offset: 2px;
 }
 .provider-editor-page .editor-template-actions {
@@ -587,13 +681,13 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 8px 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  background: var(--bg-sunken);
-  font-size: 12px;
-  color: var(--text-3);
+  gap: 10px 14px;
+  padding: 13px 16px;
+  border: 1px solid rgba(17, 19, 24, 0.07);
+  border-radius: 12px;
+  background: rgba(238, 242, 247, 0.72);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
 }
 .provider-editor-page .editor-template-text {
   min-width: 0;
@@ -601,14 +695,14 @@
 }
 .provider-editor-page .editor-template-text b {
   display: block;
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--text-1);
 }
 .provider-editor-page .editor-template-actions small {
   display: block;
   margin-top: 2px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
 }
 .provider-editor-page .editor-template-actions small .link-button {
@@ -641,13 +735,13 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 36px;
-  padding: 0 8px 0 12px;
-  border: 0;
-  border-radius: 4px;
-  background: var(--bg-subtle);
+  height: 42px;
+  padding: 0 12px 0 14px;
+  border: 1px solid rgba(17, 19, 24, 0.11);
+  border-radius: 10px;
+  background: rgba(244, 246, 249, 0.86);
   color: var(--text-1);
-  font-size: 13px;
+  font-size: var(--fs-base);
   list-style: none;
   cursor: pointer;
 }
@@ -682,8 +776,8 @@
 .provider-editor-page
   .editor-protocol
   input:not([type="radio"]):not([type="checkbox"]) {
-  height: 36px;
-  line-height: 20px;
+  height: 42px;
+  line-height: 22px;
 }
 .provider-editor-page .model-mapping .advanced-section-heading {
   min-height: 28px;
@@ -727,7 +821,7 @@
 }
 .provider-editor-page .omp-discovery-key small {
   color: var(--text-3);
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .provider-editor-page .omp-model-options {
   max-height: 200px;
@@ -780,7 +874,7 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
   height: 20px;
   padding: 0 8px;
   border-radius: var(--radius-pill);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1;
   font-weight: 500;
   white-space: nowrap;
@@ -810,7 +904,7 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
 .provider-editor-page .editor-field > small,
 .provider-editor-page .editor-format > small {
   color: var(--text-3);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
 }
 .provider-editor-page .editor-field-label {
@@ -838,16 +932,20 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
    accessible description and the line below states the result. */
 .provider-editor-page .editor-format-options .editor-format-option-text {
   display: block;
-  padding: 5px 12px;
-  border-radius: 6px;
+  padding: 7px 14px;
+  border-radius: 9px;
   color: var(--text-2);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 20px;
+  text-align: center;
   white-space: nowrap;
-  transition: background var(--dur-fast) var(--ease-out);
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
 }
 .provider-editor-page .editor-format-option-text b {
-  font-weight: 500;
+  font-weight: 550;
 }
 .provider-editor-page .editor-format-option-text small {
   position: absolute;
@@ -859,14 +957,17 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
 }
 .provider-editor-page .editor-format-option:hover input:not(:checked) + span {
   color: var(--text-1);
-  background: var(--bg-hover);
+  background: rgba(255, 255, 255, 0.55);
 }
 .provider-editor-page .editor-format-options input:checked + span {
-  background: var(--bg-surface);
-  color: var(--text-1);
+  background: #ffffff;
+  color: var(--accent-petrol);
   box-shadow:
-    0 0 0 1px var(--border-subtle),
-    0 1px 2px var(--shadow-soft);
+    inset 0 1px 0 #ffffff,
+    0 2px 6px rgba(17, 19, 24, 0.08);
+}
+.provider-editor-page .editor-format-options input:checked + span b {
+  font-weight: 650;
 }
 .provider-editor-page .editor-format-option-text b::before {
   content: "";
@@ -891,7 +992,7 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
   gap: 4px 14px;
   margin: 2px 0 0;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 18px;
 }
 .provider-editor-page .editor-routing:empty {
@@ -959,7 +1060,7 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
   border-radius: var(--radius-control);
   background: var(--info-bg);
   color: var(--text-1);
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 1.5;
 }
 .provider-editor-page .editor-model-notice {
@@ -1008,7 +1109,7 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
 .provider-editor-page .editor-field-error {
   margin: 0;
   color: var(--danger-fg);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 400;
   line-height: 1.5;
 }
@@ -1038,7 +1139,7 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
   gap: 16px;
 }
 .provider-editor-page .editor-field-tools .link-button {
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 500;
 }
 .provider-editor-page .editor-inline-switch {
@@ -1046,7 +1147,7 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
   align-items: center;
   gap: 8px;
   color: var(--text-2);
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 20px;
   cursor: pointer;
 }
@@ -1133,7 +1234,7 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
   min-width: 0;
   overflow: hidden;
   color: var(--text-3);
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1188,7 +1289,7 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
   border-radius: var(--radius-control);
   background: var(--bg-subtle);
   color: var(--text-2);
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 .provider-editor-page .mapping-check {
@@ -1197,7 +1298,7 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
   gap: 6px;
   height: 36px;
   color: var(--text-2);
-  font-size: 13px;
+  font-size: var(--fs-base);
   cursor: pointer;
 }
 .provider-editor-page .mapping-check input {
@@ -1230,11 +1331,137 @@ body:not(.is-mac):has([data-fullscreen-panel]) .chimera-shell > aside {
 .provider-editor-page .editor-save-note {
   margin-right: 4px;
   color: var(--text-3);
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 @media (max-width: 760px) {
   .provider-editor-page .editor-grok-profile,
   .provider-editor-page .editor-override-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.provider-editor-page .editor-quick-template {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.provider-editor-page .editor-quick-template > span {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-2);
+}
+.provider-editor-page .editor-quick-template > button {
+  justify-content: flex-start;
+  height: 42px;
+  gap: 8px;
+}
+.provider-editor-page .editor-section-head > .editor-appearance {
+  margin-inline-start: auto;
+}
+.provider-editor-page .editor-section-head > .editor-appearance summary {
+  height: 30px;
+  padding-inline: 8px;
+  font-size: var(--fs-xs);
+  gap: 5px;
+}
+.provider-editor-page .editor-section-head > .editor-appearance summary > span {
+  display: none;
+}
+
+/* Only the main line editor replaces the application title bar. */
+.chimera-shell.has-editor > .chimera-main.is-editing-provider {
+  grid-area: 1 / 1 / -1 / -1;
+  min-height: 0;
+}
+.has-editor .provider-editor-page .editor-window-header {
+  position: relative;
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 52px;
+  height: 52px;
+  min-height: 52px;
+  padding: 0 12px 0 16px;
+}
+.has-editor .editor-window-header .editor-heading {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  max-width: min(27vw, 350px);
+  padding-inline-start: 12px;
+  border-inline-start: 1px solid var(--v3-hairline);
+}
+.has-editor .editor-window-header .editor-heading > span,
+.has-editor .editor-window-header .editor-heading h2 {
+  margin: 0;
+  font-size: max(13.5px, var(--fs-sm));
+  line-height: 20px;
+  white-space: nowrap;
+}
+.has-editor .editor-window-header .editor-heading h2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.has-editor .editor-window-header .editor-draft-status:not(:empty) {
+  display: inline-flex;
+  margin: 0;
+}
+.editor-window-header .editor-back,
+.editor-window-header .editor-draft-status,
+.editor-window-header .editor-window-end,
+.editor-window-header .editor-window-controls {
+  flex-shrink: 0;
+}
+.editor-window-end,
+.editor-window-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.editor-window-end {
+  margin-inline-start: auto;
+}
+.editor-app-mark {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+.editor-app-mark small {
+  font-weight: 450;
+  letter-spacing: 0;
+}
+@media (min-width: 900px) {
+  .has-editor .provider-editor-page .editor-bottom {
+    box-sizing: border-box;
+    height: 64px;
+    min-height: 64px;
+    flex: 0 0 64px;
+    padding-block: 0;
+    align-items: center;
+  }
+}
+@media (max-width: 1200px) {
+  .editor-app-mark {
+    display: none;
+  }
+}
+@media (max-width: 650px) {
+  .has-editor .provider-editor-page .editor-window-header {
+    gap: 6px;
+    padding-inline: 8px;
+  }
+  .has-editor .editor-window-header .editor-heading > span,
+  .editor-window-end > .v3-preview-chip {
+    display: none;
   }
 }

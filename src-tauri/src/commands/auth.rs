@@ -109,6 +109,13 @@ pub async fn auth_start_login(
     xai_state: State<'_, XaiOAuthState>,
 ) -> Result<ManagedAuthDeviceCodeResponse, String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
+    if matches!(
+        auth_provider,
+        AUTH_PROVIDER_GITHUB_COPILOT | AUTH_PROVIDER_CODEX_OAUTH
+    ) {
+        crate::product_policy::require(crate::product_policy::Capability::ManagedAccounts)
+            .map_err(|e| e.to_string())?;
+    }
     match auth_provider {
         AUTH_PROVIDER_GITHUB_COPILOT => {
             let auth_manager = copilot_state.0.read().await;
@@ -148,6 +155,13 @@ pub async fn auth_poll_for_account(
     xai_state: State<'_, XaiOAuthState>,
 ) -> Result<Option<ManagedAuthAccount>, String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
+    if matches!(
+        auth_provider,
+        AUTH_PROVIDER_GITHUB_COPILOT | AUTH_PROVIDER_CODEX_OAUTH
+    ) {
+        crate::product_policy::require(crate::product_policy::Capability::ManagedAccounts)
+            .map_err(|e| e.to_string())?;
+    }
     match auth_provider {
         AUTH_PROVIDER_GITHUB_COPILOT => {
             let auth_manager = copilot_state.0.write().await;
@@ -202,6 +216,13 @@ pub async fn auth_list_accounts(
     xai_state: State<'_, XaiOAuthState>,
 ) -> Result<Vec<ManagedAuthAccount>, String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
+    if matches!(
+        auth_provider,
+        AUTH_PROVIDER_GITHUB_COPILOT | AUTH_PROVIDER_CODEX_OAUTH
+    ) {
+        crate::product_policy::require(crate::product_policy::Capability::ManagedAccounts)
+            .map_err(|e| e.to_string())?;
+    }
     match auth_provider {
         AUTH_PROVIDER_GITHUB_COPILOT => {
             let auth_manager = copilot_state.0.read().await;
@@ -245,6 +266,13 @@ pub async fn auth_get_status(
     xai_state: State<'_, XaiOAuthState>,
 ) -> Result<ManagedAuthStatus, String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
+    if matches!(
+        auth_provider,
+        AUTH_PROVIDER_GITHUB_COPILOT | AUTH_PROVIDER_CODEX_OAUTH
+    ) {
+        crate::product_policy::require(crate::product_policy::Capability::ManagedAccounts)
+            .map_err(|e| e.to_string())?;
+    }
     match auth_provider {
         AUTH_PROVIDER_GITHUB_COPILOT => {
             let auth_manager = copilot_state.0.read().await;
@@ -311,6 +339,13 @@ pub async fn auth_remove_account(
     xai_state: State<'_, XaiOAuthState>,
 ) -> Result<(), String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
+    if matches!(
+        auth_provider,
+        AUTH_PROVIDER_GITHUB_COPILOT | AUTH_PROVIDER_CODEX_OAUTH
+    ) {
+        crate::product_policy::require(crate::product_policy::Capability::ManagedAccounts)
+            .map_err(|e| e.to_string())?;
+    }
     match auth_provider {
         AUTH_PROVIDER_GITHUB_COPILOT => {
             let auth_manager = copilot_state.0.write().await;
@@ -346,6 +381,13 @@ pub async fn auth_set_default_account(
     xai_state: State<'_, XaiOAuthState>,
 ) -> Result<(), String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
+    if matches!(
+        auth_provider,
+        AUTH_PROVIDER_GITHUB_COPILOT | AUTH_PROVIDER_CODEX_OAUTH
+    ) {
+        crate::product_policy::require(crate::product_policy::Capability::ManagedAccounts)
+            .map_err(|e| e.to_string())?;
+    }
     match auth_provider {
         AUTH_PROVIDER_GITHUB_COPILOT => {
             let auth_manager = copilot_state.0.write().await;
@@ -380,6 +422,13 @@ pub async fn auth_logout(
     xai_state: State<'_, XaiOAuthState>,
 ) -> Result<(), String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
+    if matches!(
+        auth_provider,
+        AUTH_PROVIDER_GITHUB_COPILOT | AUTH_PROVIDER_CODEX_OAUTH
+    ) {
+        crate::product_policy::require(crate::product_policy::Capability::ManagedAccounts)
+            .map_err(|e| e.to_string())?;
+    }
     match auth_provider {
         AUTH_PROVIDER_GITHUB_COPILOT => {
             let auth_manager = copilot_state.0.write().await;

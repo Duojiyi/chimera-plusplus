@@ -16,6 +16,7 @@ import {
   AlertTriangle as Warning,
   RotateCw as ArrowsClockwise,
   Info,
+  Eye,
   Search,
   LayoutGrid,
   List as ListIcon,
@@ -28,6 +29,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
 import {
   Dialog,
   DialogContent,
@@ -90,7 +93,7 @@ const exactTime = (ms: number) => {
 type QuotaWindow = {
   label: string;
   seconds: number;
-  /** Share already used, 0-100. Bars and labels show this (spec §1.2). */
+  /** Shares of the same window, normalized to 0–100. */
   used: number;
   remaining: number;
   resetsAt: number | null;
@@ -247,15 +250,19 @@ function QuotaMeter({
   window: quota,
   now,
   compact = false,
+  measure = "used",
 }: {
   window: QuotaWindow;
   now: number;
   compact?: boolean;
+  measure?: "used" | "remaining";
 }) {
-  const value = percentText(quota.used);
+  const percent = quota[measure];
+  const label = measure === "remaining" ? "剩余" : "已用";
+  const value = percentText(percent);
   const reset = resetText(quota.resetsAt, now, compact);
   const exact = quota.resetsAt === null ? null : exactTime(quota.resetsAt);
-  // Bar length is the used share: accent < 90, warn >= 90, bad when spent.
+  // Severity always reflects exhaustion, regardless of the displayed measure.
   const level =
     quota.used >= 100 ? "bad" : quota.used >= 90 ? "warn" : undefined;
   return (
@@ -264,9 +271,12 @@ function QuotaMeter({
       data-low={level ? "true" : undefined}
       data-level={level}
     >
-      <span className="quota-meter-label">{quota.label}</span>
+      <span className="quota-meter-label">
+        {quota.label}
+        {measure === "remaining" && "配额"}
+      </span>
       <span className="quota-meter-used">
-        已用 <strong className="quota-meter-value">{value}</strong>
+        {label} <strong className="quota-meter-value">{value}</strong>
       </span>
       <small
         className="quota-meter-reset"
@@ -284,13 +294,13 @@ function QuotaMeter({
       <div
         className="quota-meter-bar"
         role="progressbar"
-        aria-label={`${quota.label}额度已用`}
+        aria-label={`${quota.label}额度${label}`}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-valuenow={Math.round(quota.used)}
-        aria-valuetext={`已用 ${value}`}
+        aria-valuenow={percent}
+        aria-valuetext={`${label} ${value}`}
       >
-        <span style={{ width: `${quota.used}%` }} />
+        <span style={{ width: `${percent}%` }} />
       </div>
     </div>
   );
@@ -304,9 +314,9 @@ const VIEW_STORAGE_KEY = "chimera.officialAccounts.view";
 
 function readView(): "grid" | "list" {
   try {
-    return localStorage.getItem(VIEW_STORAGE_KEY) === "list" ? "list" : "grid";
+    return localStorage.getItem(VIEW_STORAGE_KEY) === "grid" ? "grid" : "list";
   } catch {
-    return "grid";
+    return "list";
   }
 }
 
@@ -465,8 +475,10 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<AccountFilter>("all");
   const [groupFilter, setGroupFilter] = useState("all");
+  const [credentialKey, setCredentialKey] = useState<string | null>(null);
   const [editTarget, setEditTarget] = useState<AccountRow | null>(null);
   const [sort, setSort] = useState<AccountSort>("default");
+  const [managing, setManaging] = useState(false);
   const [view, setView] = useState<"grid" | "list">(readView);
   const changeView = (next: "grid" | "list") => {
     setView(next);
@@ -492,6 +504,8 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
       switching ||
       removing ||
       batchRemoving ||
+      batchConfirm ||
+      Boolean(editTarget) ||
       Boolean(confirmTarget) ||
       Boolean(removeTarget),
   );
@@ -518,6 +532,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
   });
 
   const current = rows.find((row) => row.account.isCurrent) ?? null;
+  const credentialRow = rows.find((row) => row.account.key === credentialKey);
   const selectedLine = rows.find((row) => row.account.isSelected) ?? null;
   const liveState = accounts[0]?.liveState;
   const quotaFailed = rows.some((row) => row.error !== undefined);
@@ -670,10 +685,13 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
   };
 
   /** On demand for one account, outside the list request queue. */
-  const queryQuota = async (key: string) => {
+  const queryQuota = async (key: string, force = false) => {
+    if (designPreview || pendingQuotas.has(key)) return;
     setPendingQuotas((previous) => new Set(previous).add(key));
     const results = await Promise.allSettled([
-      officialAccountsApi.getQuota(key),
+      force
+        ? officialAccountsApi.getQuota(key, true)
+        : officialAccountsApi.getQuota(key),
     ]);
     if (!alive.current) return;
     applyQuotaResults([key], results);
@@ -1016,7 +1034,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
       );
     if (row.quota?.success)
       return row.windows.length ? (
-        <div className="account-quota-meters" title="剩余额度">
+        <div className="account-quota-meters" title="已用额度">
           {row.windows.map((meter, index) => (
             <QuotaMeter
               key={`${meter.label}-${index}`}
@@ -1087,6 +1105,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
                 key={`${meter.label}-${index}`}
                 window={meter}
                 now={now}
+                measure="remaining"
               />
             ))}
           </div>
@@ -1109,7 +1128,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
       );
     return (
       <p className="account-current-message">
-        {row.error ?? "尚未查询额度，可点击下方“刷新”"}
+        {row.error ?? "尚未查询额度，可点击“刷新额度”"}
       </p>
     );
   };
@@ -1167,6 +1186,8 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
           ? a.title.localeCompare(b.title, "zh-CN")
           : (b.account.lastUsedAt ?? 0) - (a.account.lastUsedAt ?? 0),
     );
+  const otherAccounts = rows.filter((row) => !row.account.isCurrent);
+  const displayedRows = managing ? shownRows : otherAccounts.slice(0, 2);
   const selectedRows = rows.filter((row) => selected.has(row.account.key));
   const toggleSelected = (key: string, checked: boolean) =>
     setSelected((previous) => {
@@ -1202,7 +1223,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
         <div>
           <h1>官方账号</h1>
           <p className="accounts-subtitle">
-            {rows.length > 0 ? (
+            {managing && rows.length > 0 ? (
               <>
                 <span>{rows.length} 个账号</span>
                 <span>{counts.usable} 个可用</span>
@@ -1218,7 +1239,7 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
           </p>
         </div>
         <div className="accounts-header-actions">
-          {rows.length > 0 && (
+          {managing && rows.length > 0 && (
             <Button
               variant="outline"
               aria-label="刷新"
@@ -1281,6 +1302,67 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
           </AddAccountMenu>
         </div>
       </header>
+      {rows.length > 0 && (
+        <div className="accounts-hero" data-overview={!managing}>
+          {current ? (
+            <section className="account-current" aria-label="Codex 当前登录">
+              <header className="account-current-identity">
+                <span className="account-hero-avatar" aria-hidden="true">
+                  {avatarText(current.account)}
+                </span>
+                <div className="account-hero-name">
+                  <h2 title={current.title}>{current.title}</h2>
+                  <span className="account-chip is-ok">当前使用中</span>
+                  <p>
+                    {current.subtitle && (
+                      <span title={current.subtitle}>{current.subtitle}</span>
+                    )}
+                    <PlanTag plan={current.plan} />
+                  </p>
+                </div>
+              </header>
+              <div className="account-current-quota">
+                {currentQuota(current)}
+              </div>
+              <div className="account-hero-actions">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={
+                    designPreview ||
+                    current.pending ||
+                    current.needsRelogin ||
+                    current.accessExpired ||
+                    current.account.unreadable
+                  }
+                  onClick={() => void queryQuota(current.account.key, true)}
+                >
+                  <ArrowsClockwise size={14} aria-hidden="true" />
+                  刷新额度
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCredentialKey(current.account.key)}
+                >
+                  <Eye size={14} aria-hidden="true" />
+                  查看凭据
+                </Button>
+              </div>
+            </section>
+          ) : (
+            <section className="account-current is-empty">
+              <header className="account-current-identity">
+                <span className="account-eyebrow">Codex 当前登录</span>
+                <h2>未使用已保存的账号</h2>
+              </header>
+              <p className="account-current-message">
+                切换到下方任一账号后，这里显示它的额度明细与重置时间。
+              </p>
+            </section>
+          )}
+        </div>
+      )}
       {listLoading && rows.length === 0 && !loadError && (
         <div className="accounts-notice" role="status">
           <CircleNotch size={14} className="animate-spin" />
@@ -1288,20 +1370,21 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
         </div>
       )}
       {loadError && !listLoading && (
-        <div className="accounts-notice is-error" role="alert">
-          <Warning size={16} />
-          <div>
-            <strong>无法读取已保存的账号</strong>
-            <p>{loadError}</p>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void loadAccounts()}
-          >
-            重新加载
-          </Button>
-        </div>
+        <ErrorState
+          className="accounts-notice is-error"
+          icon={<Warning size={16} />}
+          title="无法读取已保存的账号"
+          description={loadError}
+          action={
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void loadAccounts()}
+            >
+              重新加载
+            </Button>
+          }
+        />
       )}
       {importError && (
         <div className="accounts-notice is-error" role="alert">
@@ -1381,381 +1464,425 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
         </p>
       )}
       {!listLoading && !loadError && rows.length === 0 && (
-        <section
+        <EmptyState
           className="accounts-empty"
-          aria-labelledby="official-accounts-empty-title"
-        >
-          <div className="accounts-empty-icon">
-            <UserRound size={28} strokeWidth={1.5} aria-hidden="true" />
-          </div>
-          <h2 id="official-accounts-empty-title">连接第一个官方账号</h2>
-          <p>
-            已在这台电脑的 Codex
-            中登录？导入后即成为账号卡片，可查看额度并随时切换。
-            <br />
-            也可以通过浏览器登录，添加另一个 ChatGPT 账号。
-          </p>
-          <div className="accounts-empty-actions">
-            <Button
-              onClick={() => void handleImportLogin()}
-              disabled={designPreview || busyLogin}
-            >
-              {importingLogin ? (
-                <CircleNotch
-                  size={16}
-                  className="animate-spin"
-                  aria-hidden="true"
-                />
-              ) : (
-                <Download size={16} aria-hidden="true" />
-              )}
-              {importingLogin ? "正在导入…" : "导入本机账号"}
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => void handleStartLogin()}
-              disabled={designPreview || busyLogin}
-            >
-              <Globe size={16} aria-hidden="true" />
-              浏览器登录
-            </Button>
-          </div>
-          <small className="accounts-empty-hint">
-            保留本地会话记录，登录凭据仅保存在本机。
-          </small>
-        </section>
+          role="region"
+          aria-label="连接第一个官方账号"
+          icon={<UserRound size={28} strokeWidth={1.5} aria-hidden="true" />}
+          title="连接第一个官方账号"
+          description={
+            <>
+              已在这台电脑的 Codex
+              中登录？导入后即成为账号卡片，可查看额度并随时切换。
+              <br />
+              也可以通过浏览器登录，添加另一个 ChatGPT 账号。
+            </>
+          }
+          action={
+            <>
+              <div className="accounts-empty-actions">
+                <Button
+                  onClick={() => void handleImportLogin()}
+                  disabled={designPreview || busyLogin}
+                >
+                  {importingLogin ? (
+                    <CircleNotch
+                      size={16}
+                      className="animate-spin"
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <Download size={16} aria-hidden="true" />
+                  )}
+                  {importingLogin ? "正在导入…" : "导入本机账号"}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => void handleStartLogin()}
+                  disabled={designPreview || busyLogin}
+                >
+                  <Globe size={16} aria-hidden="true" />
+                  浏览器登录
+                </Button>
+              </div>
+              <small className="accounts-empty-hint">
+                保留本地会话记录，登录凭据仅保存在本机。
+              </small>
+            </>
+          }
+        />
       )}
       {rows.length > 0 && (
         <>
-          <div className="accounts-toolbar">
-            <label className="accounts-search">
-              <Search size={14} aria-hidden="true" />
-              <input
-                type="search"
-                aria-label="搜索账号"
-                placeholder="搜索账号、邮箱或标签"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
-            </label>
-            <div
-              className="accounts-segment"
-              role="group"
-              aria-label="按状态筛选"
-            >
-              {(
-                [
-                  ["all", "全部"],
-                  ["usable", "可用"],
-                  ["relogin", "需重新登录"],
-                  ["disabled", "已停用"],
-                ] as const
-              ).map(([id, label]) => (
-                <button
-                  key={id}
-                  type="button"
-                  aria-pressed={filter === id}
-                  onClick={() => setFilter(id)}
-                >
-                  {label}
-                  <span>{counts[id]}</span>
-                </button>
-              ))}
-            </div>
-            <span className="accounts-toolbar-spacer" />
-            {groups.length > 0 && (
-              <select
-                className="accounts-select"
-                aria-label="按分组筛选"
-                value={groupFilter}
-                onChange={(event) => setGroupFilter(event.target.value)}
+          <div className={managing ? "accounts-management" : "accounts-ledger"}>
+            <div className="accounts-ledger-heading">
+              <h2>
+                {managing ? "全部账号" : "已保存账号"}{" "}
+                <small>{managing ? rows.length : otherAccounts.length}</small>
+              </h2>
+              <button
+                type="button"
+                className="accounts-manage"
+                aria-expanded={managing}
+                aria-controls="official-account-ledger"
+                onClick={() => setManaging(!managing)}
               >
-                <option value="all">全部分组</option>
-                {groups.map((group) => (
-                  <option key={group} value={group}>
-                    {group}
-                  </option>
-                ))}
-              </select>
+                {managing ? "返回概览" : `管理全部账号（${rows.length}）`}
+              </button>
+            </div>
+            {managing && (
+              <div className="accounts-toolbar">
+                <label className="accounts-search">
+                  <Search size={14} aria-hidden="true" />
+                  <input
+                    type="search"
+                    aria-label="搜索账号"
+                    placeholder="搜索账号、邮箱或标签"
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                  />
+                </label>
+                <div
+                  className="accounts-segment"
+                  role="group"
+                  aria-label="按状态筛选"
+                >
+                  {(
+                    [
+                      ["all", "全部"],
+                      ["usable", "可用"],
+                      ["relogin", "需重新登录"],
+                      ["disabled", "已停用"],
+                    ] as const
+                  ).map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      aria-pressed={filter === id}
+                      onClick={() => setFilter(id)}
+                    >
+                      {label}
+                      <span>{counts[id]}</span>
+                    </button>
+                  ))}
+                </div>
+                <span className="accounts-toolbar-spacer" />
+                {groups.length > 0 && (
+                  <select
+                    className="accounts-select"
+                    aria-label="按分组筛选"
+                    value={groupFilter}
+                    onChange={(event) => setGroupFilter(event.target.value)}
+                  >
+                    <option value="all">全部分组</option>
+                    {groups.map((group) => (
+                      <option key={group} value={group}>
+                        {group}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <select
+                  className="accounts-select"
+                  aria-label="排序"
+                  value={sort}
+                  onChange={(event) =>
+                    setSort(event.target.value as AccountSort)
+                  }
+                >
+                  <option value="default">按线路顺序</option>
+                  <option value="week">按周额度</option>
+                  <option value="recent">按最近使用</option>
+                  <option value="name">按名称</option>
+                </select>
+                <div
+                  className="accounts-view-toggle"
+                  role="group"
+                  aria-label="视图"
+                >
+                  <button
+                    type="button"
+                    aria-label="网格视图"
+                    aria-pressed={view === "grid"}
+                    onClick={() => changeView("grid")}
+                  >
+                    <LayoutGrid size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="列表视图"
+                    aria-pressed={view === "list"}
+                    onClick={() => changeView("list")}
+                  >
+                    <ListIcon size={14} />
+                  </button>
+                </div>
+              </div>
             )}
-            <select
-              className="accounts-select"
-              aria-label="排序"
-              value={sort}
-              onChange={(event) => setSort(event.target.value as AccountSort)}
-            >
-              <option value="default">按线路顺序</option>
-              <option value="week">按周额度</option>
-              <option value="recent">按最近使用</option>
-              <option value="name">按名称</option>
-            </select>
-            <div
-              className="accounts-view-toggle"
-              role="group"
-              aria-label="视图"
-            >
-              <button
-                type="button"
-                aria-label="网格视图"
-                aria-pressed={view === "grid"}
-                onClick={() => changeView("grid")}
+            {managing && selectedRows.length > 0 && (
+              <div
+                className="accounts-batch-bar"
+                role="region"
+                aria-label="批量操作"
               >
-                <LayoutGrid size={14} />
-              </button>
-              <button
-                type="button"
-                aria-label="列表视图"
-                aria-pressed={view === "list"}
-                onClick={() => changeView("list")}
-              >
-                <ListIcon size={14} />
-              </button>
-            </div>
-          </div>
-          {selectedRows.length > 0 && (
-            <div
-              className="accounts-batch-bar"
-              role="region"
-              aria-label="批量操作"
-            >
-              <strong>已选 {selectedRows.length} 项</strong>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="is-danger"
-                disabled={designPreview || batchRemoving}
-                title={designPreview ? PREVIEW_REFUSAL : undefined}
-                onClick={() => setBatchConfirm(true)}
-              >
-                <Trash2 size={13} aria-hidden="true" />
-                批量删除
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="accounts-batch-cancel"
-                onClick={() => setSelected(new Set())}
-              >
-                取消选择
-              </Button>
-            </div>
-          )}
-          {(quotaFailed || listStale) && (
-            <p className="accounts-refresh-error" role="status">
-              <Warning size={13} aria-hidden="true" />
-              {quotaFailed
-                ? "部分额度未更新，已显示的额度可能不是最新值。可手动刷新重试。"
-                : "账号状态未更新，显示的可能不是最新信息。可手动刷新重试。"}
-            </p>
-          )}
-          <p className="accounts-switch-hint">
-            {rows.length > 1
-              ? "在下方账号卡片中选择“切换到此账号”，确认后即可使用。切换会保留本地会话记录。"
-              : "导入或登录更多账号后，可在卡片上切换。本地会话记录会保留。"}
-          </p>
-          <section
-            className={`accounts-list is-${view}`}
-            aria-label="已保存的官方账号"
-          >
-            {shownRows.map((row) => {
-              const { account } = row;
-              const checked = selected.has(account.key);
-              const needsReapply =
-                liveState === "mismatch" && account.isSelected;
-              return (
-                <article
-                  className="account-row"
-                  key={account.providerId || account.key}
-                  data-current={account.isCurrent}
-                  data-attention={row.needsRelogin || undefined}
-                  data-disabled={account.disabled || undefined}
-                  data-checked={checked || undefined}
-                >
-                  <div className="account-card-head">
-                    <div
-                      className="account-avatar"
-                      data-unreadable={account.unreadable || undefined}
-                      aria-hidden="true"
-                    >
-                      {account.unreadable ? (
-                        <Warning size={14} />
-                      ) : (
-                        avatarText(account)
-                      )}
-                    </div>
-                    <div className="account-identity">
-                      <div className="account-title">
-                        <strong title={row.title}>{row.title}</strong>
-                      </div>
-                      <div className="account-meta">
-                        <small title={row.subtitle ?? undefined}>
-                          {row.subtitle ?? "OpenAI 官方"}
-                        </small>
-                        <PlanTag plan={row.plan} />
-                      </div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      className="account-select"
-                      aria-label={`选择 ${row.title}`}
-                      checked={checked}
-                      onChange={(event) =>
-                        toggleSelected(account.key, event.target.checked)
-                      }
-                    />
-                  </div>
-                  <div className="account-status-row">
-                    {statusChip(row)}
-                    <div
-                      className="account-row-actions"
-                      data-role="card-actions"
-                    >
-                      {account.disabled ? (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="account-primary-action"
-                          disabled={designPreview}
-                          onClick={() =>
-                            void officialAccountsApi
-                              .setDisabled(account.key, false)
-                              .then(() => loadAccounts({ scope: "none" }))
-                              .catch((cause) =>
-                                toast.error("启用失败", {
-                                  description: errorText(cause),
-                                }),
-                              )
-                          }
-                        >
-                          启用
-                        </Button>
-                      ) : row.needsRelogin ||
-                        !account.isCurrent ||
-                        needsReapply ? (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="account-primary-action"
-                          disabled={designPreview || busyLogin || switching}
-                          onClick={(event) => {
-                            if (row.needsRelogin) void handleStartLogin();
-                            else openSwitch(row, event.currentTarget);
-                          }}
-                        >
-                          {row.needsRelogin ? (
-                            "重新登录"
-                          ) : needsReapply ? (
-                            "重新应用"
-                          ) : (
-                            <>
-                              <ArrowRightLeft size={12} aria-hidden="true" />
-                              切换到此账号
-                            </>
-                          )}
-                        </Button>
-                      ) : null}
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="account-edit"
-                        aria-label={"编辑" + row.title}
-                        title={
-                          designPreview
-                            ? PREVIEW_REFUSAL
-                            : "备注、标签、分组与停用"
-                        }
-                        disabled={designPreview || account.unreadable}
-                        onClick={() => setEditTarget(row)}
-                      >
-                        <Pencil size={13} />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="account-remove"
-                        aria-label={"删除" + row.title}
-                        title={designPreview ? PREVIEW_REFUSAL : "删除账号"}
-                        disabled={designPreview || removing}
-                        onClick={(event) => {
-                          dialogTriggerRef.current = event.currentTarget;
-                          setRemoveTarget(row);
-                        }}
-                      >
-                        <Trash2 size={13} />
-                      </Button>
-                    </div>
-                  </div>
-                  <div className="account-row-quota">{rowQuota(row)}</div>
-                  {account.note ? (
-                    <p className="account-note" title={account.note}>
-                      {account.note}
-                    </p>
-                  ) : null}
-                  <div className="account-card-foot">
-                    <span className="account-tags">
-                      {(account.tags ?? []).slice(0, 3).map((tag) => (
-                        <span key={tag} className="account-tag">
-                          #{tag}
-                        </span>
-                      ))}
-                    </span>
-                    {account.lastUsedAt ? (
-                      <time
-                        className="account-last-used"
-                        title={`最近使用 ${exactTime(account.lastUsedAt)}`}
-                      >
-                        {relativeTime(account.lastUsedAt, now)}
-                      </time>
-                    ) : null}
-                  </div>
-                </article>
-              );
-            })}
-            {shownRows.length === 0 && (
-              <div className="accounts-no-match">
-                <p>没有符合筛选条件的账号。</p>
+                <strong>已选 {selectedRows.length} 项</strong>
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   size="sm"
-                  onClick={() => {
-                    setFilter("all");
-                    setGroupFilter("all");
-                    setSearch("");
-                  }}
+                  className="is-danger"
+                  disabled={designPreview || batchRemoving}
+                  title={designPreview ? PREVIEW_REFUSAL : undefined}
+                  onClick={() => setBatchConfirm(true)}
                 >
-                  查看全部
+                  <Trash2 size={13} aria-hidden="true" />
+                  批量删除
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="accounts-batch-cancel"
+                  onClick={() => setSelected(new Set())}
+                >
+                  取消选择
                 </Button>
               </div>
             )}
-            {view === "grid" && (
-              <AddAccountMenu
-                disabled={designPreview || busyLogin}
-                onImport={() => void handleImportLogin()}
-                onLogin={(method, trigger) =>
-                  void handleStartLogin(method, trigger)
-                }
-              >
-                <button
-                  type="button"
-                  className="account-add-tile"
-                  aria-label="添加另一个账号"
-                  disabled={designPreview || busyLogin}
-                  title={designPreview ? PREVIEW_REFUSAL : "选择添加方式"}
-                >
-                  <span className="account-add-icon" aria-hidden="true">
-                    <Plus size={16} />
-                  </span>
-                  <strong>添加账号</strong>
-                  <small>优先导入本机账号，也可浏览器登录</small>
-                  <span className="account-add-methods">
-                    选择添加方式
-                    <ChevronDown size={12} aria-hidden="true" />
-                  </span>
-                </button>
-              </AddAccountMenu>
+            {(quotaFailed || listStale) && (
+              <p className="accounts-refresh-error" role="status">
+                <Warning size={13} aria-hidden="true" />
+                {quotaFailed
+                  ? "部分额度未更新，已显示的额度可能不是最新值。可手动刷新重试。"
+                  : "账号状态未更新，显示的可能不是最新信息。可手动刷新重试。"}
+              </p>
             )}
-          </section>
-          {batchResult && (
+            {managing && (
+              <p className="accounts-switch-hint">
+                {rows.length > 1
+                  ? "在下方账号中选择“切换到此账号”，确认后即可使用。切换会保留本地会话记录。"
+                  : "导入或登录更多账号后，可在列表中切换。本地会话记录会保留。"}
+              </p>
+            )}
+            <section
+              id="official-account-ledger"
+              className={
+                managing ? `accounts-list is-${view}` : "accounts-overview-list"
+              }
+              aria-label="已保存的官方账号"
+            >
+              {displayedRows.map((row) => {
+                const { account } = row;
+                const checked = selected.has(account.key);
+                const needsReapply =
+                  liveState === "mismatch" && account.isSelected;
+                return (
+                  <article
+                    className="account-row"
+                    key={account.providerId || account.key}
+                    data-current={account.isCurrent}
+                    data-attention={row.needsRelogin || undefined}
+                    data-disabled={account.disabled || undefined}
+                    data-checked={checked || undefined}
+                  >
+                    <div className="account-card-head">
+                      <div
+                        className="account-avatar"
+                        data-unreadable={account.unreadable || undefined}
+                        aria-hidden="true"
+                      >
+                        {account.unreadable ? (
+                          <Warning size={14} />
+                        ) : (
+                          avatarText(account)
+                        )}
+                      </div>
+                      <div className="account-identity">
+                        <div className="account-title">
+                          <strong title={row.title}>{row.title}</strong>
+                          {!managing && statusChip(row)}
+                        </div>
+                        <div className="account-meta">
+                          <small title={row.subtitle ?? undefined}>
+                            {row.subtitle ?? "OpenAI 官方"}
+                          </small>
+                          <PlanTag plan={row.plan} />
+                        </div>
+                      </div>
+                      {managing && (
+                        <input
+                          type="checkbox"
+                          className="account-select"
+                          aria-label={`选择 ${row.title}`}
+                          checked={checked}
+                          onChange={(event) =>
+                            toggleSelected(account.key, event.target.checked)
+                          }
+                        />
+                      )}
+                    </div>
+                    <div className="account-status-row">
+                      {managing && statusChip(row)}
+                      <div
+                        className="account-row-actions"
+                        data-role="card-actions"
+                      >
+                        {account.disabled ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="account-primary-action"
+                            disabled={designPreview}
+                            onClick={() =>
+                              void officialAccountsApi
+                                .setDisabled(account.key, false)
+                                .then(() => loadAccounts({ scope: "none" }))
+                                .catch((cause) =>
+                                  toast.error("启用失败", {
+                                    description: errorText(cause),
+                                  }),
+                                )
+                            }
+                          >
+                            启用
+                          </Button>
+                        ) : row.needsRelogin ||
+                          !account.isCurrent ||
+                          needsReapply ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="account-primary-action"
+                            disabled={designPreview || busyLogin || switching}
+                            onClick={(event) => {
+                              if (row.needsRelogin) void handleStartLogin();
+                              else openSwitch(row, event.currentTarget);
+                            }}
+                          >
+                            {row.needsRelogin ? (
+                              "重新登录"
+                            ) : needsReapply ? (
+                              "重新应用"
+                            ) : (
+                              <>
+                                <ArrowRightLeft size={12} aria-hidden="true" />
+                                切换到此账号
+                              </>
+                            )}
+                          </Button>
+                        ) : null}
+                        {managing && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="account-edit"
+                            aria-label={"编辑" + row.title}
+                            title={
+                              designPreview
+                                ? PREVIEW_REFUSAL
+                                : "备注、标签、分组与停用"
+                            }
+                            disabled={designPreview || account.unreadable}
+                            onClick={() => setEditTarget(row)}
+                          >
+                            <Pencil size={13} />
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="account-remove"
+                          aria-label={"删除" + row.title}
+                          title={designPreview ? PREVIEW_REFUSAL : "删除账号"}
+                          disabled={designPreview || removing}
+                          onClick={(event) => {
+                            dialogTriggerRef.current = event.currentTarget;
+                            setRemoveTarget(row);
+                          }}
+                        >
+                          <Trash2 size={13} />
+                        </Button>
+                      </div>
+                    </div>
+                    {managing && (
+                      <>
+                        <div className="account-row-quota">{rowQuota(row)}</div>
+                        {account.note ? (
+                          <p className="account-note" title={account.note}>
+                            {account.note}
+                          </p>
+                        ) : null}
+                        <div className="account-card-foot">
+                          <span className="account-tags">
+                            {(account.tags ?? []).slice(0, 3).map((tag) => (
+                              <span key={tag} className="account-tag">
+                                #{tag}
+                              </span>
+                            ))}
+                          </span>
+                          {account.lastUsedAt ? (
+                            <time
+                              className="account-last-used"
+                              title={`最近使用 ${exactTime(account.lastUsedAt)}`}
+                            >
+                              {relativeTime(account.lastUsedAt, now)}
+                            </time>
+                          ) : null}
+                        </div>
+                      </>
+                    )}
+                  </article>
+                );
+              })}
+              {!managing && otherAccounts.length === 0 && (
+                <p className="accounts-overview-empty">
+                  导入或登录更多账号后，可在这里切换。
+                </p>
+              )}
+              {managing && shownRows.length === 0 && (
+                <div className="accounts-no-match">
+                  <p>没有符合筛选条件的账号。</p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setFilter("all");
+                      setGroupFilter("all");
+                      setSearch("");
+                    }}
+                  >
+                    查看全部
+                  </Button>
+                </div>
+              )}
+              {managing && view === "grid" && (
+                <AddAccountMenu
+                  disabled={designPreview || busyLogin}
+                  onImport={() => void handleImportLogin()}
+                  onLogin={(method, trigger) =>
+                    void handleStartLogin(method, trigger)
+                  }
+                >
+                  <button
+                    type="button"
+                    className="account-add-tile"
+                    aria-label="添加另一个账号"
+                    disabled={designPreview || busyLogin}
+                    title={designPreview ? PREVIEW_REFUSAL : "选择添加方式"}
+                  >
+                    <span className="account-add-icon" aria-hidden="true">
+                      <Plus size={16} />
+                    </span>
+                    <strong>添加账号</strong>
+                    <small>优先导入本机账号，也可浏览器登录</small>
+                    <span className="account-add-methods">
+                      选择添加方式
+                      <ChevronDown size={12} aria-hidden="true" />
+                    </span>
+                  </button>
+                </AddAccountMenu>
+              )}
+            </section>
+          </div>
+          {managing && batchResult && (
             <section
               className="accounts-batch-result"
               aria-label="批量删除结果"
@@ -1807,97 +1934,70 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
               </footer>
             </section>
           )}
-          <div className="accounts-bottom">
-            {current ? (
-              <section className="account-current" aria-label="Codex 当前登录">
-                <header className="account-current-identity">
-                  <span className="account-eyebrow">Codex 当前登录</span>
-                  <h2 title={current.title}>{current.title}</h2>
-                  {(current.subtitle || current.plan) && (
-                    <p>
-                      {current.subtitle && (
-                        <span title={current.subtitle}>{current.subtitle}</span>
-                      )}
-                      <PlanTag plan={current.plan} />
-                    </p>
+          {managing && (
+            <div className="accounts-bottom">
+              <section className="accounts-refresh-card" aria-label="额度刷新">
+                <header>
+                  <h2>额度刷新</h2>
+                  {oldestQueriedAt !== null && (
+                    <span className="accounts-checked">
+                      查询于 {clockTime(oldestQueriedAt)}
+                    </span>
                   )}
                 </header>
-                <div className="account-current-quota">
-                  {currentQuota(current)}
-                </div>
-              </section>
-            ) : (
-              <section className="account-current is-empty">
-                <header className="account-current-identity">
-                  <span className="account-eyebrow">Codex 当前登录</span>
-                  <h2>未使用已保存的账号</h2>
-                </header>
-                <p className="account-current-message">
-                  切换到上方任一账号后，这里显示它的额度明细与重置时间。
+                <dl>
+                  <div>
+                    <dt>
+                      <label htmlFor="official-accounts-refresh">
+                        自动刷新额度
+                      </label>
+                    </dt>
+                    <dd>
+                      <select
+                        id="official-accounts-refresh"
+                        className="accounts-select"
+                        title="只自动刷新 Codex 当前登录的账号；其他账号在打开页面或点“刷新”时查询"
+                        value={refreshMinutes}
+                        onChange={(event) => {
+                          const minutes = Number(event.target.value);
+                          setRefreshMinutes(minutes);
+                          try {
+                            localStorage.setItem(
+                              REFRESH_STORAGE_KEY,
+                              String(minutes),
+                            );
+                          } catch {
+                            // Storage may be unavailable; the setting still works this visit.
+                          }
+                        }}
+                      >
+                        {REFRESH_MINUTES.map((minutes) => (
+                          <option key={minutes} value={minutes}>
+                            {minutes ? `每 ${minutes} 分钟` : "关闭"}
+                          </option>
+                        ))}
+                      </select>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>自动刷新范围</dt>
+                    <dd>只查询 Codex 当前登录的账号</dd>
+                  </div>
+                  <div>
+                    <dt>其他账号</dt>
+                    <dd>打开页面或点「刷新额度」时查询</dd>
+                  </div>
+                </dl>
+                <p className="accounts-privacy-note">
+                  <ShieldCheck size={13} aria-hidden="true" />
+                  登录凭据仅保存在本机，切换会保留本地会话记录。
                 </p>
               </section>
-            )}
-            <section className="accounts-refresh-card" aria-label="额度刷新">
-              <header>
-                <h2>额度刷新</h2>
-                {oldestQueriedAt !== null && (
-                  <span className="accounts-checked">
-                    查询于 {clockTime(oldestQueriedAt)}
-                  </span>
-                )}
-              </header>
-              <dl>
-                <div>
-                  <dt>
-                    <label htmlFor="official-accounts-refresh">
-                      自动刷新额度
-                    </label>
-                  </dt>
-                  <dd>
-                    <select
-                      id="official-accounts-refresh"
-                      className="accounts-select"
-                      title="只自动刷新 Codex 当前登录的账号；其他账号在打开页面或点“刷新”时查询"
-                      value={refreshMinutes}
-                      onChange={(event) => {
-                        const minutes = Number(event.target.value);
-                        setRefreshMinutes(minutes);
-                        try {
-                          localStorage.setItem(
-                            REFRESH_STORAGE_KEY,
-                            String(minutes),
-                          );
-                        } catch {
-                          // Storage may be unavailable; the setting still works this visit.
-                        }
-                      }}
-                    >
-                      {REFRESH_MINUTES.map((minutes) => (
-                        <option key={minutes} value={minutes}>
-                          {minutes ? `每 ${minutes} 分钟` : "关闭"}
-                        </option>
-                      ))}
-                    </select>
-                  </dd>
-                </div>
-                <div>
-                  <dt>自动刷新范围</dt>
-                  <dd>只查询 Codex 当前登录的账号</dd>
-                </div>
-                <div>
-                  <dt>其他账号</dt>
-                  <dd>打开页面或点「刷新额度」时查询</dd>
-                </div>
-              </dl>
-              <p className="accounts-privacy-note">
-                <ShieldCheck size={13} aria-hidden="true" />
-                登录凭据仅保存在本机，切换会保留本地会话记录。
-              </p>
-            </section>
-          </div>
+            </div>
+          )}
         </>
       )}
-      {rows.length === 0 && (
+      {!managing && (
         <footer className="accounts-privacy">
           <ShieldCheck size={16} />
           <p>登录凭据仅保存在本机，切换会保留本地会话记录。</p>
@@ -2186,6 +2286,50 @@ export const OfficialAccountsView: React.FC<OfficialAccountsViewProps> = ({
                 className={switching ? "animate-spin" : undefined}
               />
               {switching ? "正在切换…" : "确认切换"}
+            </Button>
+          </footer>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={Boolean(credentialRow)}
+        onOpenChange={(open) => {
+          if (!open) setCredentialKey(null);
+        }}
+      >
+        <DialogContent className="account-dialog">
+          <DialogTitle>凭据信息</DialogTitle>
+          <DialogDescription>
+            仅显示此账号的登录信息，密钥与令牌保持隐藏。
+          </DialogDescription>
+          {credentialRow && (
+            <dl className="account-switch-preview">
+              <dt>账号</dt>
+              <dd>{credentialRow.title}</dd>
+              {credentialRow.subtitle && (
+                <>
+                  <dt>邮箱</dt>
+                  <dd>{credentialRow.subtitle}</dd>
+                </>
+              )}
+              <dt>订阅</dt>
+              <dd>{credentialRow.plan ?? "未知"}</dd>
+              <dt>本机登录状态</dt>
+              <dd>
+                {credentialRow.account.unreadable
+                  ? "无法读取"
+                  : credentialRow.needsRelogin
+                    ? "需重新登录"
+                    : credentialRow.accessExpired
+                      ? "登录待续期"
+                      : credentialRow.account.isCurrent
+                        ? "当前使用中"
+                        : "已保存"}
+              </dd>
+            </dl>
+          )}
+          <footer className="account-dialog-actions">
+            <Button variant="outline" onClick={() => setCredentialKey(null)}>
+              关闭
             </Button>
           </footer>
         </DialogContent>

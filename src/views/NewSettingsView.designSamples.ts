@@ -6,7 +6,7 @@ import type { Settings } from "@/types";
  * from the backend.
  */
 export const settingsDesignSamples = {
-  appVersion: "2.9.1",
+  appVersion: "2.9.3",
   /** The folder `get_app_config_path` resolves to on a default install. */
   configDir: "%USERPROFILE%\\.chimera-plus-plus",
   settings: {

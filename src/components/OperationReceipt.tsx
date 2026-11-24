@@ -86,6 +86,12 @@ export function OperationReceipt({
             ))}
           </ul>
         )}
+        {detail && (
+          <details className="operation-receipt-detail">
+            <summary>{detailLabel}</summary>
+            <pre>{detail}</pre>
+          </details>
+        )}
         {(actions.length > 0 || onCopy) && (
           <div className="operation-receipt-actions">
             {actions.map((action) => (
@@ -114,12 +120,6 @@ export function OperationReceipt({
               </button>
             )}
           </div>
-        )}
-        {detail && (
-          <details className="operation-receipt-detail">
-            <summary>{detailLabel}</summary>
-            <pre>{detail}</pre>
-          </details>
         )}
       </div>
       {onDismiss && (

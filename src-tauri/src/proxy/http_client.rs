@@ -17,6 +17,10 @@ static GLOBAL_CLIENT: OnceCell<RwLock<Client>> = OnceCell::new();
 /// [`forward_redirect_policy`]，单独缓存以保留连接池。
 static FORWARD_CLIENT: OnceCell<RwLock<Client>> = OnceCell::new();
 
+/// 认证/额度/发现探测专用客户端：与全局客户端共用代理配置，禁止跟随任何
+/// 重定向，单独缓存以复用 TLS 根证书与连接池。
+static AUTH_PROBE_CLIENT: OnceCell<RwLock<Client>> = OnceCell::new();
+
 /// 当前代理 URL（用于日志和状态查询）
 static CURRENT_PROXY_URL: OnceCell<RwLock<Option<String>>> = OnceCell::new();
 
@@ -71,6 +75,7 @@ pub fn init(proxy_url: Option<&str>) -> Result<(), String> {
     }
 
     refresh_forward_client(effective_url)?;
+    refresh_auth_probe_client(effective_url)?;
 
     // 初始化代理 URL 记录
     let _ = CURRENT_PROXY_URL.set(RwLock::new(effective_url.map(|s| s.to_string())));
@@ -125,6 +130,7 @@ pub fn apply_proxy(proxy_url: Option<&str>) -> Result<(), String> {
         return init(proxy_url);
     }
     refresh_forward_client(effective_url)?;
+    refresh_auth_probe_client(effective_url)?;
 
     // 更新代理 URL 记录
     if let Some(lock) = CURRENT_PROXY_URL.get() {
@@ -170,6 +176,7 @@ pub fn update_proxy(proxy_url: Option<&str>) -> Result<(), String> {
         return init(proxy_url);
     }
     refresh_forward_client(effective_url)?;
+    refresh_auth_probe_client(effective_url)?;
 
     // 更新代理 URL 记录
     if let Some(lock) = CURRENT_PROXY_URL.get() {
@@ -204,15 +211,41 @@ pub fn get() -> Client {
         })
 }
 
-/// 为携带认证信息的模型发现及协议探测构建专用客户端。
+/// 为携带认证信息的模型发现、额度查询及 OAuth 探测提供专用客户端。
 ///
 /// 复用全局代理、连接和超时配置，但不跟随任何重定向：reqwest 的跨源
-/// 认证头保护不包括 x-api-key。构建失败直接返回错误，不能退回宽松客户端。
+/// 认证头保护不包括 x-api-key，且 307/308 会转发含 refresh_token 的 POST 体。
+/// 构建失败直接返回错误，不能退回宽松客户端。
 pub fn get_for_auth_probe() -> Result<Client, String> {
-    build_client_with_redirect_policy(
-        get_current_proxy_url().as_deref(),
-        reqwest::redirect::Policy::none(),
-    )
+    if let Some(lock) = AUTH_PROBE_CLIENT.get() {
+        if let Ok(client) = lock.read() {
+            return Ok(client.clone());
+        }
+    }
+    let client = build_auth_probe_client(get_current_proxy_url().as_deref())?;
+    let _ = AUTH_PROBE_CLIENT.set(RwLock::new(client.clone()));
+    Ok(client)
+}
+
+fn build_auth_probe_client(proxy_url: Option<&str>) -> Result<Client, String> {
+    build_client_with_redirect_policy(proxy_url, reqwest::redirect::Policy::none())
+}
+
+fn refresh_auth_probe_client(proxy_url: Option<&str>) -> Result<(), String> {
+    let client = build_auth_probe_client(proxy_url)?;
+    match AUTH_PROBE_CLIENT.get() {
+        Some(lock) => {
+            let mut current = lock.write().map_err(|e| {
+                log::error!("[GlobalProxy] [GP-007] Failed to acquire auth probe client lock: {e}");
+                "Failed to update proxy: lock poisoned".to_string()
+            })?;
+            *current = client;
+        }
+        None => {
+            let _ = AUTH_PROBE_CLIENT.set(RwLock::new(client));
+        }
+    }
+    Ok(())
 }
 
 /// 获取代理转发（`forwarder`）使用的客户端。

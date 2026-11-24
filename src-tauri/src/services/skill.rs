@@ -3672,7 +3672,40 @@ impl SkillService {
     }
 
     /// 下载仓库
+    pub fn validate_skill_repo(repo: &SkillRepo) -> Result<()> {
+        let valid_ident = |s: &str| {
+            !s.is_empty()
+                && s.len() <= 100
+                && s != "."
+                && s != ".."
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        };
+        if !valid_ident(&repo.owner) {
+            return Err(anyhow!("无效的仓库所有者名称: {}", repo.owner));
+        }
+        if !valid_ident(&repo.name) {
+            return Err(anyhow!("无效的仓库名称: {}", repo.name));
+        }
+        if !repo.branch.is_empty() {
+            let b = repo.branch.as_str();
+            if b.len() > 200
+                || b.starts_with('/')
+                || b.ends_with('/')
+                || b.contains("..")
+                || b.contains('?')
+                || b.contains('#')
+                || b.contains('\\')
+                || b.chars().any(|c| c.is_whitespace() || c.is_control())
+            {
+                return Err(anyhow!("无效的分支名称: {}", repo.branch));
+            }
+        }
+        Ok(())
+    }
+
     async fn download_repo(&self, repo: &SkillRepo) -> Result<(PathBuf, String)> {
+        Self::validate_skill_repo(repo)?;
         // The archive has no checksum and installs scripts that agents run,
         // so every redirect hop must stay on HTTPS, as for package downloads.
         let client =
@@ -3933,8 +3966,18 @@ impl SkillService {
                     Err(error) => return Err(error.into()),
                 }
                 let mut outfile = fs::File::create(&outpath)?;
-                let copied = std::io::copy(&mut file, &mut outfile)?;
-                if copied != uncompressed_size {
+                let remaining_total = MAX_SKILL_TOTAL_BYTES.saturating_sub(output_budget.bytes);
+                let max_read = uncompressed_size
+                    .min(MAX_SKILL_SINGLE_FILE_BYTES)
+                    .min(remaining_total)
+                    .saturating_add(1);
+                let mut limited = (&mut file).take(max_read);
+                let copied = std::io::copy(&mut limited, &mut outfile)?;
+                if copied != uncompressed_size
+                    || copied > MAX_SKILL_SINGLE_FILE_BYTES
+                    || copied > remaining_total
+                {
+                    let _ = fs::remove_file(&outpath);
                     return Err(anyhow!(
                         "Skill ZIP 文件大小校验失败: {}",
                         relative.display()
@@ -4796,8 +4839,9 @@ impl SkillService {
 
     /// 解压本地 ZIP 文件到临时目录。
     fn extract_local_zip(zip_path: &Path) -> Result<PathBuf> {
-        let file = fs::File::open(zip_path)
-            .with_context(|| format!("Failed to open ZIP file: {}", zip_path.display()))?;
+        let file =
+            crate::security_limits::open_limited_regular_file(zip_path, MAX_SKILL_ARCHIVE_BYTES)
+                .with_context(|| format!("Failed to open ZIP file: {}", zip_path.display()))?;
         let temp_dir = tempfile::tempdir()?;
         let temp_path = temp_dir.path().to_path_buf();
 

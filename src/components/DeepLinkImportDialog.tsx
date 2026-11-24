@@ -557,20 +557,20 @@ export function DeepLinkImportDialog({
         }
       };
 
+      const normalizedApp =
+        request.app === "claude_desktop" ? "claude-desktop" : request.app;
+
       // Handle different result types
       if (typeof result === "object" && "type" in result) {
         if (result.type === "provider") {
           await queryClient.invalidateQueries({
-            queryKey: ["providers", request.app],
+            queryKey: ["providers", normalizedApp],
+          });
+          await queryClient.invalidateQueries({
+            queryKey: ["provider-balance"],
           });
           providerToast();
         } else if (result.type === "prompt") {
-          // Prompts don't use React Query, trigger a custom event for refresh
-          window.dispatchEvent(
-            new CustomEvent("prompt-imported", {
-              detail: { app: request.app },
-            }),
-          );
           toast.success(t("deeplink.promptImportSuccess"), {
             description: t("deeplink.promptImportSuccessDescription", {
               name: request.name,
@@ -602,7 +602,10 @@ export function DeepLinkImportDialog({
       } else {
         // Legacy return type (string ID) - assume provider
         await queryClient.invalidateQueries({
-          queryKey: ["providers", request.app],
+          queryKey: ["providers", normalizedApp],
+        });
+        await queryClient.invalidateQueries({
+          queryKey: ["provider-balance"],
         });
         providerToast();
       }

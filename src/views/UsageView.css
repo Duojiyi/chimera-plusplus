@@ -289,7 +289,7 @@
 
 .usage-coverage-errors {
   font-family: var(--font-mono), ui-monospace, monospace;
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .usage-coverage-errors li {
@@ -408,7 +408,7 @@
 .usage-model-item small,
 .usage-model-item code {
   color: var(--text-3);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .usage-model-item > span,
@@ -569,7 +569,7 @@
   height: 38px;
   background: var(--bg-subtle);
   color: var(--text-2);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
 }
 
@@ -816,7 +816,7 @@
   border: 1px solid var(--border-control);
   border-radius: var(--radius-control);
   color: var(--text-2);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 18px;
 }
 
@@ -937,7 +937,7 @@
   flex-shrink: 0;
   border-bottom: 1px solid var(--border-subtle);
   color: var(--text-3);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .usage-all-models-head > :first-child {

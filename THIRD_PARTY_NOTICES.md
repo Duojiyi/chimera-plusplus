@@ -127,22 +127,31 @@ into model instructions. Templates are displayed disabled until explicitly enabl
 Saving a template creates an editable local copy; updates to bundled examples
 never replace saved or active user instructions.
 
-### Overpass and Overpass Mono fonts
+### Bundled fonts (Overpass, Overpass Mono, and Noto Sans SC)
 
-Bundled unmodified variable fonts from Google Fonts (retrieved 2026-10-02):
+Variable fonts from Google Fonts, distributed under the SIL Open Font License 1.1:
 
-- `https://github.com/google/fonts/blob/main/ofl/overpass/Overpass[wght].ttf`
-- `https://github.com/google/fonts/blob/main/ofl/overpassmono/OverpassMono[wght].ttf`
+- Overpass (`src/assets/fonts/Overpass-Variable.ttf`, from `https://github.com/google/fonts/blob/main/ofl/overpass/Overpass[wght].ttf`):
+  upstream TTF SHA-256 `970717df17a7f9911dee45f60695d05bfa9d745fa0a11fc5c348371fa21f0073`.
+  Patched locally so `periodcentered` (`U+00B7 ·`) has GDEF glyph class 1 (base) instead of 3 (mark) and is removed from GPOS lookup 3 MarkCoverage/MarkArray so middle-dot separators retain their advance width (see `src/assets/fonts/README.md` for reproduction steps). The OFL notice names no Reserved Font Name.
+  Vendored patched SHA-256: `bd881e331aa3eb5eb5ddd04d2ae2737d3a0f50836e0b46ac5f2f14ac7e798f1d`
+- Overpass Mono (`src/assets/fonts/OverpassMono-Variable.ttf`, unmodified from `https://github.com/google/fonts/blob/main/ofl/overpassmono/OverpassMono[wght].ttf`):
+  Vendored SHA-256: `49f230e10251608f0ae1a2ce46be768d7b9ddcbe5cdca2e9f6b762fcbce1ae4f`
+- Noto Sans SC (`src/assets/fonts/NotoSansSC-Variable.woff2`, converted without subsetting from `NotoSansSC[wght].ttf` at `https://github.com/google/fonts/tree/a85815a42757630ce188fdad368c2dfc444d4773/ofl/notosanssc`, upstream TTF SHA-256 `a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da`):
+  Vendored WOFF2 SHA-256: `98a076b10699c87dbfe79d5cc0847130d33e3dc1e6b7a319da8fd7463ef4d57b`
 
-Both use the SIL Open Font License 1.1. Full copyright and license notices are
-in `src/public/licenses/Overpass-OFL.txt` and
-`src/public/licenses/OverpassMono-OFL.txt`; Vite copies these to `dist/licenses/`
-so they accompany the bundled font files. No runtime font CDN is used.
+Full copyright and license notices are in `src/public/licenses/Overpass-OFL.txt`,
+`src/public/licenses/OverpassMono-OFL.txt` and `src/public/licenses/NotoSansSC-OFL.txt`;
+Vite copies these to `dist/licenses/` so they accompany the bundled font files. No runtime font CDN is used.
 
-SHA-256 of the vendored files:
+### LobeHub Static SVG Icons (`@lobehub/icons-static-svg`)
 
-- Overpass: `970717df17a7f9911dee45f60695d05bfa9d745fa0a11fc5c348371fa21f0073`
-- Overpass Mono: `49f230e10251608f0ae1a2ce46be768d7b9ddcbe5cdca2e9f6b762fcbce1ae4f`
+Source: https://github.com/lobehub/lobe-icons (`@lobehub/icons-static-svg`)
+
+Copyright (c) 2023 LobeHub
+
+Licensed under the MIT License. Selected provider and model SVG icons in
+`src/icons/extracted/` are extracted at build/author time via `scripts/extract-icons.js`.
 
 ## claude-swap
 

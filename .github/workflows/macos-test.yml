@@ -2,9 +2,6 @@ name: macOS Test Build
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - chimera/v2-backend
 
 permissions:
   contents: read

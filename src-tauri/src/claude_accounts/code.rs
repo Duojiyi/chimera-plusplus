@@ -69,17 +69,20 @@ static CODE_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(windows)]
 const ACL_MARKER: &str = ".acl-set";
 
-static ACCOUNT_LOCKS: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+static ACCOUNT_LOCKS: LazyLock<Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub(crate) fn account_lock(id: &str) -> Arc<tokio::sync::Mutex<()>> {
     let mut locks = ACCOUNT_LOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    locks
-        .entry(id.to_string())
-        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-        .clone()
+    locks.retain(|_, weak| weak.strong_count() > 0);
+    if let Some(existing) = locks.get(id).and_then(std::sync::Weak::upgrade) {
+        return existing;
+    }
+    let created = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(id.to_string(), Arc::downgrade(&created));
+    created
 }
 
 pub(crate) fn switching_supported() -> bool {

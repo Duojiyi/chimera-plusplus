@@ -2320,6 +2320,15 @@ impl RequestForwarder {
         let mut saw_anthropic_beta = false;
         let mut saw_anthropic_version = false;
 
+        let connection_hop_headers: std::collections::HashSet<String> = headers
+            .get_all(http::header::CONNECTION)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(','))
+            .map(|token| token.trim().to_ascii_lowercase())
+            .filter(|token| !token.is_empty())
+            .collect();
+
         for (key, value) in headers {
             let key_str = key.as_str();
 
@@ -2333,37 +2342,47 @@ impl RequestForwarder {
                 continue;
             }
 
-            // --- 连接 / 追踪 / CDN 类 — 无条件跳过 ---
-            if matches!(
-                key_str,
-                "content-length"
-                    | "transfer-encoding"
-                    | "x-forwarded-host"
-                    | "x-forwarded-port"
-                    | "x-forwarded-proto"
-                    | "forwarded"
-                    | "cf-connecting-ip"
-                    | "cf-ipcountry"
-                    | "cf-ray"
-                    | "cf-visitor"
-                    | "true-client-ip"
-                    | "fastly-client-ip"
-                    | "x-azure-clientip"
-                    | "x-azure-fdid"
-                    | "x-azure-ref"
-                    | "akamai-origin-hop"
-                    | "x-akamai-config-log-detail"
-                    | "x-request-id"
-                    | "x-correlation-id"
-                    | "x-trace-id"
-                    | "x-amzn-trace-id"
-                    | "x-b3-traceid"
-                    | "x-b3-spanid"
-                    | "x-b3-parentspanid"
-                    | "x-b3-sampled"
-                    | "traceparent"
-                    | "tracestate"
-            ) {
+            // --- 连接 / 逐跳 / 追踪 / CDN 类 — 无条件跳过（RFC 9110 §7.6.1） ---
+            if connection_hop_headers.contains(key_str)
+                || matches!(
+                    key_str,
+                    "content-length"
+                        | "transfer-encoding"
+                        | "connection"
+                        | "upgrade"
+                        | "keep-alive"
+                        | "proxy-connection"
+                        | "proxy-authenticate"
+                        | "proxy-authorization"
+                        | "te"
+                        | "trailer"
+                        | "x-forwarded-host"
+                        | "x-forwarded-port"
+                        | "x-forwarded-proto"
+                        | "forwarded"
+                        | "cf-connecting-ip"
+                        | "cf-ipcountry"
+                        | "cf-ray"
+                        | "cf-visitor"
+                        | "true-client-ip"
+                        | "fastly-client-ip"
+                        | "x-azure-clientip"
+                        | "x-azure-fdid"
+                        | "x-azure-ref"
+                        | "akamai-origin-hop"
+                        | "x-akamai-config-log-detail"
+                        | "x-request-id"
+                        | "x-correlation-id"
+                        | "x-trace-id"
+                        | "x-amzn-trace-id"
+                        | "x-b3-traceid"
+                        | "x-b3-spanid"
+                        | "x-b3-parentspanid"
+                        | "x-b3-sampled"
+                        | "traceparent"
+                        | "tracestate"
+                )
+            {
                 continue;
             }
 

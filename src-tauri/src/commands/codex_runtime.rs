@@ -811,7 +811,7 @@ fn renderer_unlock_launch_options(
     installed: &codex_win_engine::InstalledWindowsCodex,
 ) -> codex_win_engine::LaunchOptions<'static> {
     let mut options = codex_win_engine::LaunchOptions::default();
-    if renderer_unlock_available(installed) {
+    if renderer_unlock_available(installed) && crate::codex_cdp::has_model_unlock_config() {
         options.remote_debugging_port = Some(crate::codex_cdp::codex_renderer_debug_port());
     }
     options
@@ -901,25 +901,47 @@ fn wait_for_codex_running(
     Ok(false)
 }
 
-fn wait_for_codex_stopped(
+fn wait_for_codex_stopped_for(
     installed: &codex_win_engine::InstalledWindowsCodex,
+    max_polls: usize,
 ) -> Result<bool, String> {
     // Electron can briefly replace the main process while it is shutting down.
     // Require a full second of consecutive path-pinned scans with no matching
-    // process before starting the replacement instance.
+    // process before starting the replacement instance. Transient probe errors
+    // (such as ACCESS_DENIED / exiting handles during shutdown) are retried
+    // until the deadline and fail closed if they persist to the end.
     let mut clear_polls = 0_u8;
-    for _ in 0..120 {
-        if codex_is_running(installed)? {
-            clear_polls = 0;
-        } else {
-            clear_polls += 1;
-            if clear_polls >= 4 {
-                return Ok(true);
+    let mut last_probe_error: Option<String> = None;
+    for _ in 0..max_polls {
+        match codex_is_running(installed) {
+            Ok(true) => {
+                clear_polls = 0;
+                last_probe_error = None;
+            }
+            Ok(false) => {
+                last_probe_error = None;
+                clear_polls += 1;
+                if clear_polls >= 4 {
+                    return Ok(true);
+                }
+            }
+            Err(error) => {
+                clear_polls = 0;
+                last_probe_error = Some(error);
             }
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+    if let Some(error) = last_probe_error {
+        return Err(error);
+    }
     Ok(false)
+}
+
+fn wait_for_codex_stopped(
+    installed: &codex_win_engine::InstalledWindowsCodex,
+) -> Result<bool, String> {
+    wait_for_codex_stopped_for(installed, 120)
 }
 
 /// Upstream-branded and English failures the pinned engine reports, paired
@@ -1262,9 +1284,7 @@ mod portable_process {
             io::{FromRawHandle, OwnedHandle},
         },
     };
-    use windows_sys::Win32::Foundation::{
-        ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, HANDLE, INVALID_HANDLE_VALUE,
-    };
+    use windows_sys::Win32::Foundation::{ERROR_NO_MORE_FILES, HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,
@@ -1274,11 +1294,17 @@ mod portable_process {
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
+    fn is_exited_process_error(error: &std::io::Error) -> bool {
+        // ERROR_INVALID_PARAMETER (87), ERROR_GEN_FAILURE (31), ERROR_PARTIAL_COPY (299):
+        // commonly returned when a process exits between snapshot and image query.
+        matches!(error.raw_os_error(), Some(87 | 31 | 299))
+    }
+
     pub(super) fn image_path(pid: u32) -> std::io::Result<Option<std::path::PathBuf>> {
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if handle.is_null() {
             let error = std::io::Error::last_os_error();
-            return if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+            return if is_exited_process_error(&error) {
                 Ok(None) // The process exited since the snapshot.
             } else {
                 Err(error)
@@ -1291,13 +1317,56 @@ mod portable_process {
             QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buffer.as_mut_ptr(), &mut size)
         } == 0
         {
-            return Err(std::io::Error::last_os_error());
+            let error = std::io::Error::last_os_error();
+            return if is_exited_process_error(&error) {
+                Ok(None)
+            } else {
+                Err(error)
+            };
         }
         Ok(Some(OsString::from_wide(&buffer[..size as usize]).into()))
     }
 
     fn image_matches(pid: u32, exe: &Path) -> std::io::Result<bool> {
         Ok(image_path(pid)?.is_some_and(|image| matches_portable_image(&image, exe)))
+    }
+
+    pub(super) fn matching_pids(exe: &Path) -> Result<Vec<u32>, String> {
+        fn snapshot(snapshot: HANDLE, exe: &Path) -> std::io::Result<Vec<u32>> {
+            let mut entry = PROCESSENTRY32W {
+                dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+                ..Default::default()
+            };
+            let mut found = unsafe { Process32FirstW(snapshot, &mut entry) };
+            let mut pids = Vec::new();
+            while found != 0 {
+                let length = entry
+                    .szExeFile
+                    .iter()
+                    .position(|&unit| unit == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                let name = OsString::from_wide(&entry.szExeFile[..length]);
+                if exe.file_name().is_some_and(|exe_name| {
+                    name.to_string_lossy().to_lowercase()
+                        == exe_name.to_string_lossy().to_lowercase()
+                }) {
+                    if let Ok(true) = image_matches(entry.th32ProcessID, exe) {
+                        pids.push(entry.th32ProcessID);
+                    }
+                }
+                found = unsafe { Process32NextW(snapshot, &mut entry) };
+            }
+            Ok(pids)
+        }
+        let result = (|| {
+            let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+            if raw == INVALID_HANDLE_VALUE {
+                return Err(std::io::Error::last_os_error());
+            }
+            let _snapshot = unsafe { OwnedHandle::from_raw_handle(raw) };
+            snapshot(raw, exe)
+        })();
+        result.map_err(|error| format!("无法读取 Codex 进程列表：{error}"))
     }
 
     pub(super) fn running(exe: &Path) -> Result<bool, String> {
@@ -1379,22 +1448,29 @@ impl StartupImage<'_> {
 #[cfg(windows)]
 fn visit_codex_windows(
     target: StartupImage<'_>,
+    include_hidden: bool,
     visit: impl FnMut(windows_sys::Win32::Foundation::HWND),
 ) -> Result<(), String> {
     use std::collections::HashMap;
     use windows_sys::Win32::Foundation::{HWND, LPARAM};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindowThreadProcessId, IsWindowVisible,
+        EnumWindows, GetWindow, GetWindowThreadProcessId, IsWindowVisible, GW_OWNER,
     };
 
     struct Probe<'a, F> {
         target: StartupImage<'a>,
+        include_hidden: bool,
         matches: HashMap<u32, bool>,
         visit: F,
     }
     unsafe extern "system" fn inspect<F: FnMut(HWND)>(hwnd: HWND, param: LPARAM) -> i32 {
         let probe = unsafe { &mut *(param as *mut Probe<'_, F>) };
-        if unsafe { IsWindowVisible(hwnd) } != 0 {
+        let eligible = if probe.include_hidden {
+            unsafe { GetWindow(hwnd, GW_OWNER).is_null() }
+        } else {
+            unsafe { IsWindowVisible(hwnd) != 0 }
+        };
+        if eligible {
             let mut pid = 0;
             unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
             let target = probe.target;
@@ -1417,6 +1493,7 @@ fn visit_codex_windows(
     }
     enumerate(&mut Probe {
         target,
+        include_hidden,
         matches: HashMap::new(),
         visit,
     })
@@ -1434,7 +1511,7 @@ fn codex_startup_probe(target: StartupImage<'_>) -> Result<StartupProbe, String>
         return Ok(StartupProbe::NotRunning);
     }
     let mut windows = CodexStartupWindows::default();
-    visit_codex_windows(target, |hwnd| {
+    visit_codex_windows(target, false, |hwnd| {
         let mut class = [0_u16; 128];
         let length = unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32) };
         if length > 0 {
@@ -1729,18 +1806,32 @@ pub(crate) fn close_codex_for_restart(
     if installed.source == "msix" {
         codex_win_engine::close_msix_codex_processes(30)
             .map_err(|error| format!("无法关闭 Codex: {error}"))?;
+        if !wait_for_codex_stopped(installed)? {
+            return Err("Codex 未能完全退出，已取消重启".to_string());
+        }
     } else {
         #[cfg(windows)]
         {
             use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
             let exe = portable_app_exe(Path::new(&installed.path))?;
-            visit_codex_windows(StartupImage::PortableExe(&exe), |hwnd| {
+            // Include hidden ownerless windows so tray-minimized portable Codex receives WM_CLOSE.
+            visit_codex_windows(StartupImage::PortableExe(&exe), true, |hwnd| {
                 unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
             })?;
+            // Wait up to 10s for graceful shutdown before falling back to path-pinned termination.
+            if !wait_for_codex_stopped_for(installed, 40)? {
+                for pid in portable_process::matching_pids(&exe)? {
+                    crate::process_utils::terminate_process_tree(pid);
+                }
+                if !wait_for_codex_stopped_for(installed, 80)? {
+                    return Err("Codex 未能完全退出，已取消重启".to_string());
+                }
+            }
         }
-    }
-    if !wait_for_codex_stopped(installed)? {
-        return Err("Codex 未能完全退出，已取消重启".to_string());
+        #[cfg(not(windows))]
+        if !wait_for_codex_stopped(installed)? {
+            return Err("Codex 未能完全退出，已取消重启".to_string());
+        }
     }
     Ok(())
 }
@@ -2864,8 +2955,18 @@ pub async fn repair_codex_runtime(
 ) -> Result<CodexRuntimeOperation, String> {
     require_confirmation(confirm, "修复 Codex")?;
     require_windows()?;
-    let installed = detect_managed_install(&managed_root_for_maintenance()?)
-        .ok_or_else(|| "未检测到 Codex，请先执行安装".to_string())?;
+    // Recover any interrupted portable layout and detect installation off the async
+    // executor under the operation lock, then release the lock before `install_release`
+    // acquires it for the reinstall phase.
+    let installed = tauri::async_runtime::spawn_blocking(|| {
+        let _guard = acquire_operation_lock("codex_runtime_repair")?;
+        let portable_root = managed_root_for_maintenance()?;
+        recover_interrupted_layout(&portable_root)?;
+        detect_managed_install(&portable_root)
+            .ok_or_else(|| "未检测到 Codex，请先执行安装".to_string())
+    })
+    .await
+    .map_err(|error| format!("检测 Codex 安装任务失败：{error}"))??;
     install_release(
         app,
         None,
@@ -3015,10 +3116,13 @@ fn mirror_tag_download_base(tag: &str) -> String {
     format!("https://github.com/{MIRROR_REPO}/releases/download/{tag}")
 }
 
-/// tag 只允许 GitHub release tag 的保守字符集，防止 URL 注入。
+/// tag 只允许 GitHub release tag 的保守字符集，防止 URL 注入与路径穿越。
 fn validate_mirror_tag(tag: &str) -> Result<(), String> {
     let valid = !tag.is_empty()
         && tag.len() <= 100
+        && tag != "."
+        && tag != ".."
+        && !tag.contains("..")
         && tag
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
@@ -3027,6 +3131,39 @@ fn validate_mirror_tag(tag: &str) -> Result<(), String> {
     } else {
         Err("版本 tag 含有非法字符".to_string())
     }
+}
+
+fn validate_mirror_package_url(raw_url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(raw_url.trim())
+        .map_err(|_| "安装包地址不在受信任的镜像发布源内".to_string())?;
+    if parsed.scheme() != "https"
+        || parsed.host_str() != Some("github.com")
+        || parsed.port().is_some_and(|p| p != 443)
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("安装包地址不在受信任的镜像发布源内".to_string());
+    }
+    if raw_url.contains("..") {
+        return Err("安装包地址不在受信任的镜像发布源内".to_string());
+    }
+    let expected_prefix = format!("/{MIRROR_REPO}/releases/download/");
+    let Some(rest) = parsed.path().strip_prefix(&expected_prefix) else {
+        return Err("安装包地址不在受信任的镜像发布源内".to_string());
+    };
+    let mut segments = rest.split('/');
+    let Some(tag) = segments.next() else {
+        return Err("安装包地址不在受信任的镜像发布源内".to_string());
+    };
+    let Some(asset) = segments.next() else {
+        return Err("安装包地址不在受信任的镜像发布源内".to_string());
+    };
+    if segments.next().is_some() || validate_mirror_tag(tag).is_err() || asset.is_empty() {
+        return Err("安装包地址不在受信任的镜像发布源内".to_string());
+    }
+    Ok(())
 }
 
 /// 目录/清单抓取的请求超时（秒）。
@@ -3391,11 +3528,8 @@ pub async fn install_codex_runtime_release(
     require_confirmation(confirm, "安装所选 Codex 版本")?;
     require_windows()?;
     let install_mode = parse_install_mode(install_mode)?;
-    // 目标锁定：确认对象的下载地址必须位于受信任的镜像发布源内。
-    let trusted_prefix = format!("https://github.com/{MIRROR_REPO}/releases/");
-    if !plan.package_url.starts_with(&trusted_prefix) {
-        return Err("安装包地址不在受信任的镜像发布源内".to_string());
-    }
+    // 目标锁定：确认对象的下载地址必须位于受信任的镜像发布源内（规范化解析防 `..` 绕过）。
+    validate_mirror_package_url(&plan.package_url)?;
     let root = runtime_root();
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = acquire_operation_lock("codex_runtime_install")?;
@@ -3578,42 +3712,7 @@ pub async fn install_codex_runtime_offline(
             )
             .map_err(|error| format!("写入安装事务日志失败，已中止安装: {error}"))?;
 
-        let journal_ref = &journal;
-        let journal_entry_id = journal_id.clone();
-        let mut observer = |boundary: codex_win_engine::PortableBoundary| {
-            use codex_win_engine::PortableBoundary as Boundary;
-            let (state, backup) = match &boundary {
-                Boundary::BeforeMoveOld { backup, .. } => {
-                    ("moving:before_move_old", Some(backup.clone()))
-                }
-                Boundary::AfterMoveOld { backup, .. } => {
-                    ("moving:after_move_old", Some(backup.clone()))
-                }
-                Boundary::BeforeMoveNew { backup, .. } => {
-                    ("moving:before_move_new", Some(backup.clone()))
-                }
-                Boundary::AfterMoveNew { backup, .. } => {
-                    ("moving:after_move_new", Some(backup.clone()))
-                }
-                // v0.5.2 新增：安装失败决定回滚时、消耗备份之前先持久化意图。
-                Boundary::BeforeRollback { backup, .. } => {
-                    ("moving:before_rollback", Some(backup.clone()))
-                }
-                Boundary::RollbackCompleted { backup, .. } => {
-                    ("moving:rollback_completed", Some(backup.clone()))
-                }
-            };
-            // 日志写入失败不得中断破坏性窗口内的安装，仅告警。
-            if let Err(error) = journal_ref.update(&journal_entry_id, |entry| {
-                entry.state = state.to_string();
-                if let Some(backup) = &backup {
-                    entry.backup_path = Some(backup.to_string_lossy().to_string());
-                }
-            }) {
-                log::warn!("[InstallJournal] 边界状态写入失败: {error}");
-            }
-            Ok(())
-        };
+        let mut observer = install_journal_observer(&journal, &journal_id);
         let result = codex_win_engine::install_portable_from_msix_with_observer(
             &path,
             &portable_root,

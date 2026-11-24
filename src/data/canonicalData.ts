@@ -169,6 +169,11 @@ export const CANONICAL_LINES: CanonicalLine[] = [
 ];
 
 export function toProvider(line: CanonicalLine): Provider {
+  const baseUrl =
+    line.endpoint &&
+    (/^https?:\/\//i.test(line.endpoint)
+      ? line.endpoint
+      : `https://${line.endpoint}`);
   return {
     id: line.id,
     name: line.name,
@@ -176,7 +181,7 @@ export function toProvider(line: CanonicalLine): Provider {
     iconColor: line.badgeColor,
     settingsConfig: {
       auth: {},
-      config: `model_provider = "custom"\nmodel = ${JSON.stringify(line.model)}\n[model_providers.custom]\nname = ${JSON.stringify(line.name)}\nbase_url = ${JSON.stringify(line.endpoint.startsWith("http") ? line.endpoint : "https://" + line.endpoint)}`,
+      config: `model_provider = "custom"\nmodel = ${JSON.stringify(line.model)}\n[model_providers.custom]\nname = ${JSON.stringify(line.name)}\nbase_url = ${JSON.stringify(baseUrl)}`,
     },
     meta: {
       apiFormat: line.protocol.includes("Responses")
@@ -204,3 +209,59 @@ export const CANONICAL_STATION = {
   receipt:
     "2 分钟前 从 OpenAI 官方 · 主力 切换到 DeepSeek · 需重启 Codex 才生效",
 } as const;
+
+/** Three lines from the approved v5.1 Routes artboard. Older fixtures above also exercise timeout and expired-login states. */
+export const DESIGN_LINES: CanonicalLine[] = [
+  {
+    id: "codex-official",
+    name: "OpenAI Official",
+    category: "official",
+    sub: "ChatGPT 官方登录",
+    auth: "ChatGPT 登录",
+    protocol: "Responses",
+    model: "",
+    endpoint: "chatgpt.com",
+    latencyMs: null,
+    latencyGrade: "快",
+    mark: "O",
+    badgeColor: "#242830",
+    isOfficial: true,
+  },
+  {
+    id: "design-direct",
+    name: "新线路",
+    category: "custom",
+    sub: "api-direct.kimera.cc",
+    auth: "API 密钥",
+    protocol: "自动 Responses",
+    model: "gpt-6.2-sol",
+    endpoint: "api-direct.kimera.cc/v1",
+    latencyMs: 1214,
+    latencyGrade: "慢",
+    mark: "新",
+    badgeColor: "#16181d",
+    isCurrent: true,
+    isSlow: true,
+  },
+  {
+    id: "design-default",
+    name: "默认线路",
+    category: "custom",
+    sub: "自定义线路 · 本地路由",
+    auth: "API 密钥",
+    protocol: "自动",
+    model: "",
+    endpoint: "",
+    latencyMs: null,
+    latencyGrade: "快",
+    mark: "默",
+    badgeColor: "#3b414c",
+  },
+];
+export const DESIGN_PROVIDERS = DESIGN_LINES.map(toProvider);
+export const DESIGN_STATION = {
+  providerId: "design-direct",
+  latencyMs: 1214,
+  status: "响应较慢",
+  runtimeLabel: "Codex CLI 已就绪",
+};

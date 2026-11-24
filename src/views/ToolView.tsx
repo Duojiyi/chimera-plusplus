@@ -26,6 +26,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { LineBadge } from "@/components/LineBadge";
 import { Button } from "@/components/ui/button";
 import { DisabledReason } from "@/components/ui/help-tip";
+import { useLightweightCloseBlocker } from "@/hooks/useLightweightClose";
 import "./ToolView.css";
 import "@/theme/v3/tool-views.css";
 import {
@@ -170,6 +171,17 @@ export function ToolView(props: ToolViewProps) {
   return <KnownToolView {...props} />;
 }
 
+function routeEndpointHost(
+  address: string | undefined | null,
+): string | undefined {
+  if (!address) return undefined;
+  try {
+    return new URL(address).host || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function KnownToolView({
   toolId,
   refreshVersion = 0,
@@ -184,7 +196,7 @@ function KnownToolView({
   const sections = TOOL_SECTIONS[toolId];
   const defaultSection = tool.appId === "pi" ? "routes" : "lines";
   const [ownSection, setOwnSection] = useState(defaultSection);
-  // The shell sidebar shows the sections when it passes `onSectionChange`.
+  // Both navigation surfaces share the shell selection when mounted there.
   const controlled = Boolean(onSectionChange);
   const hasAccounts = TOOLS_WITH_ACCOUNTS.has(toolId);
   const wantedSection = controlled ? section : ownSection;
@@ -227,6 +239,9 @@ function KnownToolView({
   const mutationRequest = useRef<symbol | null>(null);
   const [confirmImport, setConfirmImport] = useState(false);
   const [desktopSwitch, setDesktopSwitch] = useState<Provider | null>(null);
+  useLightweightCloseBlocker(
+    busyId !== null || importing || deleting || editing !== null,
+  );
   const [discovery, setDiscovery] = useState<
     "scanning" | "found" | "empty" | "unavailable"
   >("scanning");
@@ -424,6 +439,9 @@ function KnownToolView({
       ? [officialProvider, ...providers]
       : providers;
   const currentProvider = providers.find((p) => p.id === currentId);
+  const activeSummary =
+    currentProvider && toolProviderSummary(tool.appId, currentProvider);
+  const activeHost = routeEndpointHost(activeSummary?.baseUrl);
   // A single-line tool imports its live config only while it has no saved
   // custom line (the backend skips it otherwise), so the offer would be a no-op.
   const importApplies =
@@ -726,7 +744,11 @@ function KnownToolView({
         <div className="tool-section-content" hidden={!show("accounts")}>
           {tool.appId === "claude" ? (
             <>
-              <ClaudeAccountsCard mode="code" native={native} />
+              <ClaudeAccountsCard
+                mode="code"
+                native={native}
+                refreshVersion={refreshVersion + statusRefresh}
+              />
               <ClaudeBindingsCard native={native} />
               <ClaudeUsageCard native={native} />
             </>
@@ -951,6 +973,31 @@ function KnownToolView({
           </div>
         )}
 
+        {!loading &&
+          !error &&
+          tool.category === "switch" &&
+          currentProvider &&
+          activeSummary && (
+            <section className="tool-active-line" aria-label="当前生效线路">
+              <header>
+                <span className="tool-active-flag">当前运行线路</span>
+                {activeHost && (
+                  <code className="tool-active-host">{activeHost}</code>
+                )}
+              </header>
+              <h2>
+                {currentProvider.name}{" "}
+                <span className="sr-only">（当前生效）</span>
+              </h2>
+              <p>
+                {(activeSummary.model ||
+                  currentProvider.category === "official") && (
+                  <span>{activeSummary.model || "官方默认模型"}</span>
+                )}
+                <span>{tool.categoryLabel}</span>
+              </p>
+            </section>
+          )}
         {!loading && !error && visibleProviders.length > 0 && (
           <section
             className="tool-lines-card"

@@ -118,7 +118,7 @@
   padding: 0 8px;
   border: 1px solid;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   line-height: 1;
   white-space: nowrap;
@@ -230,7 +230,7 @@
   box-shadow: 0 1px 2px #00000006;
 }
 .prompts-filters span {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
 .prompts-result-count {
@@ -337,7 +337,7 @@
   flex-wrap: wrap;
   gap: 8px;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 /* prompts (2.8.6): badges and the "未生效" label kept wrapping the footer onto
    two lines, so footers in one card row sat at different heights. One line;
@@ -392,7 +392,7 @@
   flex-shrink: 0;
   padding-top: 7px;
   color: var(--brand-text);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .prompts-empty {
   display: flex;
@@ -639,7 +639,7 @@
 }
 .prompts-category-filters span,
 .prompt-category-count {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   flex-shrink: 0;
   color: var(--text-3);
 }

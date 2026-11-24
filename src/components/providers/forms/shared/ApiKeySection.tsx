@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import ApiKeyInput from "../ApiKeyInput";
 import type { ProviderCategory } from "@/types";
+import { isSafeHttpUrl, openSafeExternalUrl } from "@/lib/schemas/provider";
 
 interface ApiKeySectionProps {
   id?: string;
@@ -60,17 +61,18 @@ export function ApiKeySection({
       disabled={disabled ?? category === "official"}
       help={help}
       hint={
-        shouldShowLink && websiteUrl ? (
-          <a
-            href={websiteUrl}
-            target="_blank"
-            rel="noopener noreferrer"
+        shouldShowLink && websiteUrl && isSafeHttpUrl(websiteUrl) ? (
+          <button
+            type="button"
+            onClick={() => {
+              void openSafeExternalUrl(websiteUrl);
+            }}
             className="link-button"
           >
             {t("providerForm.getApiKey", {
               defaultValue: "获取 API Key",
             })}
-          </a>
+          </button>
         ) : undefined
       }
     />

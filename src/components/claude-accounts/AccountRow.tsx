@@ -213,7 +213,11 @@ export function AccountRow({
       account.needsRelogin &&
       !account.unreadable &&
       account.kind === "oauth" ? (
-        <span className="claude-account-tag" data-tone="warning">
+        <span
+          id={`claude-relogin-${account.id}`}
+          className="claude-account-tag"
+          data-tone="warning"
+        >
           需要重新登录
         </span>
       ) : null}
@@ -249,6 +253,7 @@ export function AccountRow({
       state={quota}
       now={now}
       label={account.name}
+      plan={account.plan}
       remaining={Boolean(desktop)}
       statusText={desktop ? DESKTOP_STATUS_TEXT : undefined}
       onRefresh={onRefresh}
@@ -267,8 +272,10 @@ export function AccountRow({
         disabled={
           disabled || (account.kind === "oauth" && account.needsRelogin)
         }
-        title={
-          account.needsRelogin ? "这个账号需要重新登录后才能切换" : undefined
+        aria-describedby={
+          !desktop && account.kind === "oauth" && account.needsRelogin
+            ? `claude-relogin-${account.id}`
+            : undefined
         }
         aria-label={`切换到此账号 ${account.name}`}
         onClick={onSwitch}

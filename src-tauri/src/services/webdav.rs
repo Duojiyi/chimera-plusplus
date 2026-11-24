@@ -132,7 +132,7 @@ fn webdav_transport_error(
 /// Test WebDAV connectivity via PROPFIND Depth=0 on the base URL.
 pub async fn test_connection(base_url: &str, auth: &WebDavAuth) -> Result<(), AppError> {
     let url = parse_base_url(base_url)?;
-    let client = http_client::get();
+    let client = http_client::get_for_auth_probe().map_err(AppError::Message)?;
 
     let resp = apply_auth(
         client
@@ -171,7 +171,7 @@ pub async fn ensure_remote_directories(
     if segments.is_empty() {
         return Ok(());
     }
-    let client = http_client::get();
+    let client = http_client::get_for_auth_probe().map_err(AppError::Message)?;
 
     for depth in 1..=segments.len() {
         let prefix = &segments[..depth];
@@ -231,7 +231,7 @@ pub(crate) async fn put_bytes(
     content_type: &str,
     condition: &WriteCondition,
 ) -> Result<Option<String>, AppError> {
-    let client = http_client::get();
+    let client = http_client::get_for_auth_probe().map_err(AppError::Message)?;
     let mut builder = apply_auth(
         client
             .put(url)
@@ -276,7 +276,7 @@ pub async fn get_bytes(
     auth: &WebDavAuth,
     max_bytes: usize,
 ) -> Result<Option<(Vec<u8>, Option<String>)>, AppError> {
-    let client = http_client::get();
+    let client = http_client::get_for_auth_probe().map_err(AppError::Message)?;
     let resp = apply_auth(
         client
             .get(url)

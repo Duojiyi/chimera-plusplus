@@ -436,7 +436,31 @@ async fn update_tray_menu(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, String> {
-    tray::update_tray_menu(&app, state.inner())
+    tray::update_tray_menu_async(&app, state.inner()).await
+}
+
+fn guard_non_main_invoke(
+    handler: impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static,
+) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
+    move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
+        let webview = invoke.message.webview();
+        let label = webview.label();
+        if label != "main" {
+            let allowed = matches!(
+                invoke.message.command(),
+                "get_tray_panel"
+                    | "tray_panel_action"
+                    | "switch_tray_line"
+                    | "get_usage_summary"
+                    | "get_usage_trends"
+            );
+            if !allowed {
+                invoke.resolver.reject("当前窗口无权调用此命令");
+                return true;
+            }
+        }
+        handler(invoke)
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -839,8 +863,6 @@ pub fn run() {
                 match db.migrate_from_json(&config) {
                     Ok(_) => {
                         log::info!("✓ 配置迁移成功");
-                        // 标记迁移成功，供前端显示 Toast
-                        crate::init_status::set_migration_success();
                         // 归档旧配置文件（重命名而非删除，便于用户恢复）
                         let archive_path = json_path.with_extension("json.migrated");
                         if let Err(e) = std::fs::rename(&json_path, &archive_path) {
@@ -903,16 +925,12 @@ pub fn run() {
                             match crate::services::skill::migrate_skills_to_ssot(&app_state.db) {
                                 Ok(count) => {
                                     log::info!("✓ Auto imported {count} skill(s) into SSOT");
-                                    if count > 0 {
-                                        crate::init_status::set_skills_migration_result(count);
-                                    }
                                     let _ = app_state
                                         .db
                                         .set_setting("skills_ssot_migration_pending", "false");
                                 }
                                 Err(e) => {
                                     log::warn!("✗ Failed to auto import legacy skills to SSOT: {e}");
-                                    crate::init_status::set_skills_migration_error(e.to_string());
                                 }
                             }
                         }
@@ -1771,11 +1789,10 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(guard_non_main_invoke(tauri::generate_handler![
             product_policy::get_product_capabilities,
             builtin_templates::get_chimerahub_template,
             tool_registry::get_tool_registry,
-            commands::get_pi_current_state,
             commands::get_pi_document,
             commands::get_omp_models,
             commands::save_omp_models,
@@ -1806,7 +1823,6 @@ pub fn run() {
             commands::poll_official_device_login,
             commands::cancel_official_device_login,
             commands::remove_official_account,
-            commands::query_official_accounts,
             commands::remove_official_accounts,
             commands::set_official_account_tags,
             commands::set_official_account_group,
@@ -1871,8 +1887,6 @@ pub fn run() {
             commands::pick_directory,
             commands::open_external,
             commands::get_init_error,
-            commands::get_migration_result,
-            commands::get_skills_migration_result,
             commands::get_app_config_path,
             commands::open_app_config_folder,
             commands::reveal_app_log_file,
@@ -2197,7 +2211,7 @@ pub fn run() {
             commands::show_main_window,
             commands::enter_lightweight_mode,
             commands::fetch_models_dev_catalog,
-        ]);
+        ]));
 
     let app = builder
         .build(tauri::generate_context!())
@@ -2232,6 +2246,7 @@ pub fn run() {
                 //     与所有 Tauri 应用默认重启路径的行为一致，无需额外等待
                 ExitRequestAction::DeferToTauriRestart => {
                     codex_accounts::login::shutdown();
+                    claude_accounts::code::browser_login::cleanup_on_exit();
                     log::info!("收到重启请求 (code={code:?})，交由 Tauri 默认重启流程 re-exec");
                     return;
                 }
@@ -2239,6 +2254,7 @@ pub fn run() {
                 // 此时执行清理后退出。
                 ExitRequestAction::CleanupAndExit => {
                     codex_accounts::login::shutdown();
+                    claude_accounts::code::browser_login::cleanup_on_exit();
                 }
             }
 
@@ -2329,7 +2345,11 @@ pub fn run() {
 /// 在应用退出前停止本地代理，并恢复产品策略允许管理的 Live 配置。
 /// 保留每个应用的 enabled 状态，以便下次启动时按策略恢复。
 pub async fn cleanup_before_exit(app_handle: &tauri::AppHandle) {
-    codex_accounts::login::suspend();
+    let _ = tauri::async_runtime::spawn_blocking(|| {
+        codex_accounts::login::suspend();
+        claude_accounts::code::browser_login::cleanup_on_exit();
+    })
+    .await;
     if let Some(state) = app_handle.try_state::<store::AppState>() {
         let proxy_service = &state.proxy_service;
         let mut apps_to_restore = Vec::new();

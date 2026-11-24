@@ -134,8 +134,8 @@ export function UsageTrendChart({
           >
             <defs>
               <linearGradient id="colorInput" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.2} />
-                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                <stop offset="5%" stopColor="#0e6470" stopOpacity={0.22} />
+                <stop offset="95%" stopColor="#0e6470" stopOpacity={0} />
               </linearGradient>
               <linearGradient id="colorOutput" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor="#22c55e" stopOpacity={0.2} />
@@ -191,7 +191,7 @@ export function UsageTrendChart({
               type="monotone"
               dataKey="inputTokens"
               name={t("usage.inputTokens", "输入 Tokens")}
-              stroke="#3b82f6"
+              stroke="#0e6470"
               fillOpacity={1}
               fill="url(#colorInput)"
               strokeWidth={2}

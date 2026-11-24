@@ -25,7 +25,7 @@
 }
 .cc-switch-import-plan span {
   color: var(--text-3);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .cc-switch-import-note {
   color: var(--text-3);

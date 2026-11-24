@@ -138,12 +138,19 @@ fn redact_crash_text(text: &str) -> String {
 
     static URL: Lazy<Regex> =
         Lazy::new(|| Regex::new(r#"https?://[^\s"'<>)]+"#).expect("url pattern"));
-    static BEARER: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}").expect("auth pattern")
+    static AUTH_SCHEME: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{8,}").expect("auth pattern")
+    });
+    static API_KEY_HEADER: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\b(x-api-key|api[-_]?key)\s*[:=]\s*[A-Za-z0-9._~+/=-]{8,}")
+            .expect("api key pattern")
     });
 
     let urls = URL.replace_all(text, |captures: &regex::Captures| redact_url(&captures[0]));
-    BEARER.replace_all(&urls, "$1 [REDACTED]").into_owned()
+    let schemes = AUTH_SCHEME.replace_all(&urls, "$1 [REDACTED]");
+    API_KEY_HEADER
+        .replace_all(&schemes, "$1: [REDACTED]")
+        .into_owned()
 }
 
 /// 设置 panic hook，捕获崩溃信息并写入日志文件

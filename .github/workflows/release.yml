@@ -74,8 +74,10 @@ jobs:
           fi
           jobs_json=$(gh api "repos/$REPOSITORY/actions/runs/$ci_run_id/jobs?per_page=100")
           required_jobs=(
-            "Windows Frontend Validation"
+            "Frontend Validation (windows-2022)"
+            "Frontend Validation (ubuntu-22.04)"
             "Backend Validation (windows-2022)"
+            "Backend Validation (windows-11-arm)"
             "Backend Validation (macos-15)"
             "Backend Validation (ubuntu-22.04)"
           )
@@ -173,8 +175,6 @@ jobs:
             patchelf \
             libssl-dev \
             rpm \
-            flatpak \
-            flatpak-builder \
             elfutils \
             xdg-utils
           # GTK/GLib stack for gdk-3.0, glib-2.0, gio-2.0
@@ -246,15 +246,12 @@ jobs:
         run: node scripts/verify-release-version.mjs --expect "$RELEASE_TAG"
 
       - name: Verify renderer contracts
-        if: runner.os != 'Windows' || matrix.arch != 'arm64'
         run: pnpm exec tsc --noEmit
 
       - name: Verify Codex relay switching
-        if: runner.os != 'Windows' || matrix.arch != 'arm64'
         run: cargo test --manifest-path src-tauri/Cargo.toml --test provider_service provider_service_switch_codex
 
       - name: Verify Codex account startup import
-        if: runner.os != 'Windows' || matrix.arch != 'arm64'
         run: cargo test --manifest-path src-tauri/Cargo.toml --test provider_commands codex_startup_import
 
       - name: Prepare Tauri signing key

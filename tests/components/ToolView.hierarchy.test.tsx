@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ToolView } from "@/views/ToolView";
 import { piApi } from "@/lib/api/pi";
@@ -34,7 +34,8 @@ beforeEach(() => {
 describe("ToolView information hierarchy", () => {
   it("opens on routes and keeps installation checks in their own section", async () => {
     render(<ToolView toolId="claude-code" native />);
-    const route = await screen.findByText("已保存线路");
+    const lines = await screen.findByRole("region", { name: /线路列表$/ });
+    const route = within(lines).getByText("已保存线路");
     const check = await screen.findByText("检测工具：claude");
     expect(route).toBeVisible();
     expect(check).not.toBeVisible();

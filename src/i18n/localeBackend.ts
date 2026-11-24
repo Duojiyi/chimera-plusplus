@@ -1,14 +1,12 @@
 import type { BackendModule } from "i18next";
 
 const translations = {
-  en: () => import("./locales/en.json"),
-  ja: () => import("./locales/ja.json"),
   zh: () => import("./locales/zh.json"),
-  "zh-TW": () => import("./locales/zh-TW.json"),
 };
 
 // i18next owns loading, caching, language changes and fallback resolution.
-// All resources are packaged locally; switching languages needs no network API.
+// While the UI is single-language Chinese, only `zh.json` is imported so
+// unreachable locale bundles are not emitted into `dist/`.
 export const localeBackend: BackendModule = {
   type: "backend",
   init() {},

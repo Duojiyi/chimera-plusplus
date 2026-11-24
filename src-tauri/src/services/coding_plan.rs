@@ -23,21 +23,48 @@ enum CodingPlanProvider {
     Volcengine,
 }
 
+fn parse_https_coding_plan_url(base_url: &str) -> Option<(String, String)> {
+    let parsed = reqwest::Url::parse(base_url.trim()).ok()?;
+    if parsed.scheme() != "https" {
+        return None;
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return None;
+    }
+    if parsed.port().is_some_and(|port| port != 443) {
+        return None;
+    }
+    let host = parsed
+        .host_str()?
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let path = parsed.path().to_ascii_lowercase();
+    Some((host, path))
+}
+
+fn host_is_or_subdomain(host: &str, root: &str) -> bool {
+    host == root || host.ends_with(&format!(".{root}"))
+}
+
+fn path_has_prefix(path: &str, prefix: &str) -> bool {
+    path == prefix || path.starts_with(&format!("{prefix}/"))
+}
+
 fn detect_provider(base_url: &str) -> Option<CodingPlanProvider> {
-    let url = base_url.to_lowercase();
-    if url.contains("api.kimi.com/coding") {
+    let (host, path) = parse_https_coding_plan_url(base_url)?;
+    if host == "api.kimi.com" && path_has_prefix(&path, "/coding") {
         Some(CodingPlanProvider::Kimi)
-    } else if url.contains("open.bigmodel.cn") || url.contains("bigmodel.cn") {
+    } else if host_is_or_subdomain(&host, "bigmodel.cn") {
         Some(CodingPlanProvider::ZhipuCn)
-    } else if url.contains("api.z.ai") {
+    } else if host == "api.z.ai" {
         Some(CodingPlanProvider::ZhipuEn)
-    } else if url.contains("api.minimaxi.com") {
+    } else if host == "api.minimaxi.com" {
         Some(CodingPlanProvider::MiniMaxCn)
-    } else if url.contains("api.minimax.io") {
+    } else if host == "api.minimax.io" {
         Some(CodingPlanProvider::MiniMaxEn)
-    } else if url.contains("zenmux") {
+    } else if host_is_or_subdomain(&host, "zenmux.ai") {
         Some(CodingPlanProvider::ZenMux)
-    } else if url.contains("volces.com/api/coding") {
+    } else if host_is_or_subdomain(&host, "volces.com") && path_has_prefix(&path, "/api/coding") {
         // 仅匹配 Coding/Agent Plan 入口；DouBaoSeed 按量付费走 /api/v3 与
         // /api/compatible，没有套餐额度，不在此命中。
         Some(CodingPlanProvider::Volcengine)
@@ -101,7 +128,7 @@ fn make_error(msg: String) -> SubscriptionQuota {
 // ── Kimi For Coding ─────────────────────────────────────────
 
 async fn query_kimi(api_key: &str) -> Result<SubscriptionQuota, String> {
-    let client = crate::proxy::http_client::get();
+    let client = crate::proxy::http_client::get_for_auth_probe()?;
 
     let resp = client
         .get("https://api.kimi.com/coding/v1/usages")
@@ -306,20 +333,25 @@ fn parse_zhipu_token_tiers(data: &serde_json::Value) -> Vec<QuotaTier> {
 /// so we route by `base_url` and let the caller's existing reachability
 /// (they're already using this host to run coding) determine success — no
 /// cross-host fallback, no auth-error heuristics.
+#[cfg(test)]
 fn zhipu_quota_base(base_url: &str) -> &'static str {
-    if base_url.to_lowercase().contains("bigmodel.cn") {
+    if parse_https_coding_plan_url(base_url)
+        .is_some_and(|(host, _)| host_is_or_subdomain(&host, "bigmodel.cn"))
+    {
         "https://open.bigmodel.cn"
     } else {
         "https://api.z.ai"
     }
 }
 
-async fn query_zhipu(base_url: &str, api_key: &str) -> Result<SubscriptionQuota, String> {
-    let client = crate::proxy::http_client::get();
-    let url = format!(
-        "{}/api/monitor/usage/quota/limit",
-        zhipu_quota_base(base_url)
-    );
+async fn query_zhipu(is_cn: bool, api_key: &str) -> Result<SubscriptionQuota, String> {
+    let client = crate::proxy::http_client::get_for_auth_probe()?;
+    let base = if is_cn {
+        "https://open.bigmodel.cn"
+    } else {
+        "https://api.z.ai"
+    };
+    let url = format!("{base}/api/monitor/usage/quota/limit");
 
     let resp = client
         .get(&url)
@@ -409,7 +441,7 @@ fn zhipu_quota_from_body(body: &serde_json::Value) -> SubscriptionQuota {
 // ── MiniMax ─────────────────────────────────────────────────
 
 async fn query_minimax(api_key: &str, is_cn: bool) -> Result<SubscriptionQuota, String> {
-    let client = crate::proxy::http_client::get();
+    let client = crate::proxy::http_client::get_for_auth_probe()?;
 
     let api_domain = if is_cn {
         "api.minimaxi.com"
@@ -494,10 +526,20 @@ async fn query_minimax(api_key: &str, is_cn: bool) -> Result<SubscriptionQuota, 
 // ── ZenMux ──────────────────────────────────────────────────
 
 async fn query_zenmux(base_url: &str, api_key: &str) -> Result<SubscriptionQuota, String> {
-    let client = crate::proxy::http_client::get();
+    let Some((host, _)) = parse_https_coding_plan_url(base_url) else {
+        return Ok(coding_plan_not_found("Invalid ZenMux URL"));
+    };
+    if !host_is_or_subdomain(&host, "zenmux.ai") {
+        return Ok(coding_plan_not_found("Untrusted ZenMux host"));
+    }
+    query_zenmux_at(base_url.trim(), api_key).await
+}
+
+async fn query_zenmux_at(url: &str, api_key: &str) -> Result<SubscriptionQuota, String> {
+    let client = crate::proxy::http_client::get_for_auth_probe()?;
 
     let resp = client
-        .get(base_url)
+        .get(url)
         .header("Authorization", format!("Bearer {api_key}"))
         .header("Accept", "application/json")
         .timeout(std::time::Duration::from_secs(15))
@@ -733,15 +775,15 @@ enum VolcCall {
 /// `ark.cn-beijing.volces.com` → `cn-beijing`）；无法识别时回落 cn-beijing。
 /// 控制面 Host 是固定网关（`VOLCENGINE_OPENAPI_HOST`），不随 base_url 变化。
 fn volcengine_region(base_url: &str) -> String {
-    let host = base_url
-        .split_once("://")
-        .map(|(_, rest)| rest)
-        .unwrap_or(base_url)
-        .split('/')
-        .next()
-        .unwrap_or("");
+    let Some((host, _)) = parse_https_coding_plan_url(base_url) else {
+        return VOLCENGINE_DEFAULT_REGION.to_string();
+    };
     host.split('.')
-        .find(|p| p.starts_with("cn-") || p.starts_with("ap-"))
+        .find(|p| {
+            (p.starts_with("cn-") || p.starts_with("ap-"))
+                && p.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
         .map(|p| p.to_string())
         .unwrap_or_else(|| VOLCENGINE_DEFAULT_REGION.to_string())
 }
@@ -897,7 +939,10 @@ async fn volcengine_openapi_call(
     secret_access_key: &str,
     action: &str,
 ) -> VolcCall {
-    let client = crate::proxy::http_client::get();
+    let client = match crate::proxy::http_client::get_for_auth_probe() {
+        Ok(c) => c,
+        Err(e) => return VolcCall::Transient(format!("HTTP client error: {e}")),
+    };
     // canonical query 同时用于签名与实际 URL，确保两者逐字一致（否则签名不匹配）。
     let canonical_query = volcengine_canonical_query(action, region);
     let url = format!("https://{VOLCENGINE_OPENAPI_HOST}/?{canonical_query}");
@@ -1211,7 +1256,7 @@ async fn query_zhipu_team_at(
     organization_id: &str,
     project_id: &str,
 ) -> Result<SubscriptionQuota, String> {
-    let client = crate::proxy::http_client::get();
+    let client = crate::proxy::http_client::get_for_auth_probe()?;
     let url = format!("{quota_url_base}?type=2");
 
     let resp = client
@@ -1322,9 +1367,8 @@ pub async fn get_coding_plan_quota(
 
     match provider {
         CodingPlanProvider::Kimi => query_kimi(api_key).await,
-        CodingPlanProvider::ZhipuCn | CodingPlanProvider::ZhipuEn => {
-            query_zhipu(base_url, api_key).await
-        }
+        CodingPlanProvider::ZhipuCn => query_zhipu(true, api_key).await,
+        CodingPlanProvider::ZhipuEn => query_zhipu(false, api_key).await,
         CodingPlanProvider::MiniMaxCn => query_minimax(api_key, true).await,
         CodingPlanProvider::MiniMaxEn => query_minimax(api_key, false).await,
         CodingPlanProvider::ZenMux => query_zenmux(base_url, api_key).await,
@@ -1958,9 +2002,21 @@ mod tests {
     // balance / subscription 服务与本文件共用同一折叠模式，这里的用例同时充当
     // 三个服务的语义回归锚。
 
-    use super::get_coding_plan_quota;
+    use super::{detect_provider, get_coding_plan_quota, query_zenmux_at};
     use crate::services::subscription::CredentialStatus;
     use std::io::{Read, Write};
+
+    #[test]
+    fn detect_provider_rejects_substring_spoofing_and_http_urls() {
+        assert!(detect_provider("http://127.0.0.1:9000/zenmux").is_none());
+        assert!(detect_provider("http://evil.example/?zenmux").is_none());
+        assert!(detect_provider("https://relay.example/bigmodel.cn").is_none());
+        assert!(detect_provider("https://relay.example/api.kimi.com/coding").is_none());
+        assert!(detect_provider("https://user:pass@open.bigmodel.cn/api/paas/v4").is_none());
+        assert!(detect_provider("https://open.bigmodel.cn:8443/api/paas/v4").is_none());
+        assert!(detect_provider("https://zenmux.ai/api/quota").is_some());
+        assert!(detect_provider("https://api.zenmux.ai/v1/quota").is_some());
+    }
 
     /// 测试进程内可能有其他用例临时 set_var HTTP_PROXY（http_client 的
     /// loopback 检测测试），NO_PROXY 保证本地回环请求始终直连。
@@ -1973,7 +2029,7 @@ mod tests {
     }
 
     /// 起一个只服务一次连接的本地 HTTP server。`response=None` 表示读完请求
-    /// 直接断开（模拟响应前连接中断）。返回可命中 ZenMux 分支的 base_url。
+    /// 直接断开（模拟响应前连接中断）。返回指向本地测试端点的 URL。
     fn spawn_once_server(response: Option<String>) -> (String, std::thread::JoinHandle<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind local listener");
         let port = listener.local_addr().expect("local addr").port();
@@ -2005,16 +2061,7 @@ mod tests {
         let port = listener.local_addr().expect("local addr").port();
         drop(listener);
 
-        let result = get_coding_plan_quota(
-            &format!("http://127.0.0.1:{port}/zenmux"),
-            "k",
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
+        let result = query_zenmux_at(&format!("http://127.0.0.1:{port}/zenmux"), "k").await;
         let err = result.expect_err("send 失败必须走 Err 通道（瞬时，前端 reject 后重试）");
         assert!(err.contains("Network error"), "err={err}");
     }
@@ -2024,7 +2071,7 @@ mod tests {
         ensure_no_proxy_for_loopback();
         let (base_url, handle) = spawn_once_server(None);
 
-        let result = get_coding_plan_quota(&base_url, "k", None, None, None, None, None).await;
+        let result = query_zenmux_at(&base_url, "k").await;
         let err = result.expect_err("响应前连接中断必须走 Err 通道（瞬时）");
         assert!(err.contains("Network error"), "err={err}");
         handle.join().expect("server thread");
@@ -2041,7 +2088,7 @@ mod tests {
                 .to_string(),
         ));
 
-        let result = get_coding_plan_quota(&base_url, "k", None, None, None, None, None).await;
+        let result = query_zenmux_at(&base_url, "k").await;
         let err = result.expect_err("读体中断必须走 Err 通道（瞬时，前端 reject 后重试）");
         assert!(err.contains("Failed to read response"), "err={err}");
         handle.join().expect("server thread");
@@ -2052,7 +2099,7 @@ mod tests {
         ensure_no_proxy_for_loopback();
         let (base_url, handle) = spawn_once_server(Some(http_response("401 Unauthorized", "{}")));
 
-        let quota = get_coding_plan_quota(&base_url, "k", None, None, None, None, None)
+        let quota = query_zenmux_at(&base_url, "k")
             .await
             .expect("鉴权失败是确定性失败，必须保持 Ok(success:false) 展示文案");
         assert!(!quota.success);
@@ -2068,7 +2115,7 @@ mod tests {
         let (base_url, handle) =
             spawn_once_server(Some(http_response("429 Too Many Requests", "slow down")));
 
-        let quota = get_coding_plan_quota(&base_url, "k", None, None, None, None, None)
+        let quota = query_zenmux_at(&base_url, "k")
             .await
             .expect("非 2xx 保持 Ok(success:false)，状态码留在文案里交前端分类");
         assert!(!quota.success);
@@ -2085,7 +2132,7 @@ mod tests {
         // 完整读到响应体但不是 JSON → is_decode → 确定性解析失败
         let (base_url, handle) = spawn_once_server(Some(http_response("200 OK", "not-json")));
 
-        let quota = get_coding_plan_quota(&base_url, "k", None, None, None, None, None)
+        let quota = query_zenmux_at(&base_url, "k")
             .await
             .expect("完整但非法的响应体是确定性失败，必须保持 Ok(success:false)");
         assert!(!quota.success);

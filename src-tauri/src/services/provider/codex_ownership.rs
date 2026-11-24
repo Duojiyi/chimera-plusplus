@@ -272,3 +272,51 @@ impl Database {
         Ok(review)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::Provider;
+    use serde_json::json;
+
+    #[test]
+    fn migrate_legacy_codex_common_config_sets_aside_unreadable_toml() {
+        let db = Database::memory().expect("memory db");
+        db.set_setting("common_config_codex", "not = [valid toml")
+            .unwrap();
+        let migrated = db.migrate_legacy_codex_common_config().unwrap();
+        assert!(!migrated);
+        assert!(db.get_setting("common_config_codex").unwrap().is_none());
+        assert_eq!(
+            db.get_setting("common_config_codex_unreadable_backup_v1")
+                .unwrap()
+                .as_deref(),
+            Some("not = [valid toml")
+        );
+        assert_eq!(
+            db.get_setting("common_config_codex_cleared")
+                .unwrap()
+                .as_deref(),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn record_codex_key_ownership_report_once_is_idempotent() {
+        let db = Database::memory().expect("memory db");
+        let p = Provider::with_id(
+            "p1".to_string(),
+            "Line 1".to_string(),
+            json!({
+                "config": "model_provider = \"custom\"\napproval_policy = \"never\"\n[model_providers.custom]\nbase_url = \"https://api.example.com/v1\"\n"
+            }),
+            None,
+        );
+        db.save_provider("codex", &p).unwrap();
+
+        let first = db.record_codex_key_ownership_report_once().unwrap();
+        assert_eq!(first, Some(1));
+        let second = db.record_codex_key_ownership_report_once().unwrap();
+        assert_eq!(second, None);
+    }
+}

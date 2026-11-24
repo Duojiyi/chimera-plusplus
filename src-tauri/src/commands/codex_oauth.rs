@@ -26,6 +26,8 @@ pub async fn get_codex_oauth_quota(
     account_id: Option<String>,
     state: State<'_, CodexOAuthState>,
 ) -> Result<SubscriptionQuota, String> {
+    crate::product_policy::require(crate::product_policy::Capability::ManagedAccounts)
+        .map_err(|e| e.to_string())?;
     let manager = state.0.read().await;
 
     // 解析最终使用的账号 ID：显式 > 默认账号 > 无账号 (not_found)
@@ -69,6 +71,8 @@ pub async fn get_codex_oauth_models(
     account_id: Option<String>,
     state: State<'_, CodexOAuthState>,
 ) -> Result<Vec<FetchedModel>, String> {
+    crate::product_policy::require(crate::product_policy::Capability::ManagedAccounts)
+        .map_err(|e| e.to_string())?;
     let manager = state.0.read().await;
     let resolved = match account_id
         .as_deref()

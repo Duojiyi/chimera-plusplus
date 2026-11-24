@@ -146,6 +146,9 @@ export function FailoverQueueManager({
           </p>
         </div>
         <Switch
+          aria-label={t("proxy.failover.autoSwitch", {
+            defaultValue: "启用自动故障转移",
+          })}
           checked={isFailoverEnabled}
           onCheckedChange={handleToggleFailover}
           disabled={disabled || setFailoverEnabled.isPending}
@@ -153,7 +156,7 @@ export function FailoverQueueManager({
       </div>
 
       {/* 说明信息 */}
-      <Alert className="border-blue-500/40 bg-blue-500/10">
+      <Alert className="border-[var(--accent-petrol)]/30 bg-[var(--accent-petrol)]/5">
         <Info className="h-4 w-4" />
         <AlertDescription className="text-sm">
           {t(
@@ -204,6 +207,9 @@ export function FailoverQueueManager({
           disabled={disabled || !selectedProviderId || addToQueue.isPending}
           size="icon"
           variant="outline"
+          aria-label={t("proxy.failoverQueue.addProvider", {
+            defaultValue: "添加到故障转移队列",
+          })}
         >
           {addToQueue.isPending ? (
             <Loader2 className="h-4 w-4 animate-spin" />

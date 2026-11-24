@@ -985,6 +985,7 @@ mod tests {
             fs::OpenOptions::new()
                 .write(true)
                 .create(true)
+                .truncate(true)
                 .share_mode(1)
                 .open(dir.join(name))
                 .unwrap()

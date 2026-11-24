@@ -123,6 +123,30 @@ impl Database {
         Ok(affected > 0)
     }
 
+    /// 在单一事务内删除项目并清除指向该项目的各分组 current 标记。
+    pub fn delete_profile_and_clear_current(
+        &self,
+        id: &str,
+        scopes: &[&str],
+    ) -> Result<(), AppError> {
+        let mut conn = lock_conn!(self.conn);
+        let tx = conn
+            .transaction()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        tx.execute("DELETE FROM profiles WHERE id = ?1", params![id])
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        for scope in scopes {
+            let key = current_profile_key(scope);
+            tx.execute(
+                "DELETE FROM settings WHERE key = ?1 AND value = ?2",
+                params![key, id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        }
+        tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     /// 读取某分组当前激活的项目 id（未使用项目时为 None）
     pub fn get_current_profile_id(&self, scope: &str) -> Result<Option<String>, AppError> {
         self.get_setting(&current_profile_key(scope))

@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Chimera++">
-  <path d="M108 152h72c48 0 60 104 112 104h112M108 360h72c48 0 60-104 112-104h112" fill="none" stroke="#202429" stroke-width="42" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="108" cy="152" r="28" fill="#202429"/>
-  <circle cx="108" cy="360" r="28" fill="#202429"/>
-  <circle cx="404" cy="256" r="35" fill="#ff5a3d" stroke="#fafbfc" stroke-width="12"/>
-</svg>

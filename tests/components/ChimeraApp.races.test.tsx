@@ -289,7 +289,12 @@ describe("Chimera runtime request ownership", () => {
       await screen.findByRole("button", { name: "安装方式与更新源" }),
     );
     fireEvent.click(screen.getByRole("button", { name: /卸载 Codex/ }));
-    fireEvent.click(screen.getByRole("button", { name: "确认继续" }));
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: "我已保存当前工作，确认仅移除程序文件",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "确认卸载" }));
     expect(
       await screen.findByRole("heading", { name: "尚未安装 Codex" }),
     ).toBeVisible();
@@ -548,7 +553,7 @@ describe("release capability navigation", () => {
       expect(screen.getByRole("button", { name })).toBeDisabled();
     }
     // The other tools are listed, disabled, in the tool switcher.
-    if (!screen.queryByRole("group", { name: "工具" }))
+    if (!screen.queryByRole("group", { name: "切换运行工具" }))
       fireEvent.click(screen.getByRole("button", { name: /^切换工具/ }));
     for (const name of ["Claude Code", "Gemini CLI", "OpenCode", "Pi"]) {
       expect(screen.getByRole("button", { name })).toBeDisabled();

@@ -1,6 +1,6 @@
 [package]
 name = "chimera-plus-plus"
-version = "2.9.2"
+version = "2.9.3"
 description = "Clean Codex provider switcher and desktop runtime manager"
 authors = ["Duojiyi", "CC Switch contributors"]
 license = "MIT AND AGPL-3.0-only"
@@ -27,7 +27,7 @@ serde_json = { version = "1.0", features = ["preserve_order"] }
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
-tauri = { version = "2.8.2", features = ["tray-icon", "protocol-asset", "image-png"] }
+tauri = { version = "2.8.2", features = ["tray-icon", "image-png"] }
 tauri-plugin-log = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-process = "2"
@@ -131,9 +131,11 @@ objc2-app-kit = { version = "0.2", features = ["NSColor"] }
 codegen-units = 1
 lto = "thin"
 opt-level = "s"
-# 使用 unwind 以便 panic hook 能捕获 backtrace（abort 会直接终止无法捕获）
+# 使用 unwind 以便 panic hook 能捕获 backtrace（abort 会直接终止无法捕获）。
+# Linux / macOS 仅剥离 DWARF debuginfo、保留函数符号表以供 panic_hook 解析崩溃帧；
+# Windows MSVC 符号位于外部 .pdb，strip = "debuginfo" 不会生成无符号栈。
 panic = "unwind"
-strip = "symbols"
+strip = "debuginfo"
 
 [dev-dependencies]
 serial_test = "3"

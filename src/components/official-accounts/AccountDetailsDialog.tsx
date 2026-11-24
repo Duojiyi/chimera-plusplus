@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -60,6 +60,17 @@ export function AccountDetailsDialog({
     id: string;
   } | null>(null);
   const [confirmDeleteGroup, setConfirmDeleteGroup] = useState(false);
+  const [renamingGroup, setRenamingGroup] = useState(false);
+  const [renameGroupName, setRenameGroupName] = useState("");
+  const busyRef = useRef(false);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!account) return;
@@ -69,6 +80,8 @@ export function AccountDetailsDialog({
     setNewGroup("");
     setCreatedGroup(null);
     setConfirmDeleteGroup(false);
+    setRenamingGroup(false);
+    setRenameGroupName("");
     setDisabled(Boolean(account.disabled));
     let alive = true;
     officialAccountsApi
@@ -85,7 +98,8 @@ export function AccountDetailsDialog({
   }, [account]);
 
   const save = async () => {
-    if (!account) return;
+    if (!account || busyRef.current) return;
+    busyRef.current = true;
     setSaving(true);
     try {
       const key = account.key;
@@ -101,7 +115,7 @@ export function AccountDetailsDialog({
         else if (createdGroup?.name === name) groupId = createdGroup.id;
         else {
           groupId = (await officialAccountsApi.createGroup(name)).id;
-          setCreatedGroup({ name, id: groupId });
+          if (mountedRef.current) setCreatedGroup({ name, id: groupId });
         }
       }
       if (groupId !== (account.groupId ?? null))
@@ -116,25 +130,92 @@ export function AccountDetailsDialog({
       // Fields written before the failing one are saved: show them.
       onSaved();
     } finally {
-      setSaving(false);
+      busyRef.current = false;
+      if (mountedRef.current) setSaving(false);
     }
   };
 
   const selectedGroup = groups.find((item) => item.id === group);
+  const selectedGroupIndex = groups.findIndex((item) => item.id === group);
+  const renameGroup = async () => {
+    if (!selectedGroup || busyRef.current) return;
+    const trimmed = renameGroupName.trim();
+    if (!trimmed || trimmed === selectedGroup.name) {
+      setRenamingGroup(false);
+      return;
+    }
+    busyRef.current = true;
+    setSaving(true);
+    try {
+      await officialAccountsApi.updateGroup(
+        selectedGroup.id,
+        trimmed,
+        selectedGroup.color ?? null,
+        selectedGroup.sortIndex,
+      );
+      if (mountedRef.current) {
+        setGroups((list) =>
+          list.map((item) =>
+            item.id === selectedGroup.id ? { ...item, name: trimmed } : item,
+          ),
+        );
+        setRenamingGroup(false);
+      }
+      toast.success(`已重命名分组为「${trimmed}」`);
+      onSaved();
+    } catch (cause) {
+      toast.error("重命名分组失败", { description: errorText(cause) });
+    } finally {
+      busyRef.current = false;
+      if (mountedRef.current) setSaving(false);
+    }
+  };
+  const moveGroup = async (delta: -1 | 1) => {
+    if (!selectedGroup || busyRef.current) return;
+    const targetIndex = selectedGroupIndex + delta;
+    if (
+      selectedGroupIndex < 0 ||
+      targetIndex < 0 ||
+      targetIndex >= groups.length
+    ) {
+      return;
+    }
+    busyRef.current = true;
+    setSaving(true);
+    try {
+      const next = [...groups];
+      const [picked] = next.splice(selectedGroupIndex, 1);
+      next.splice(targetIndex, 0, picked);
+      await officialAccountsApi.reorderGroups(next.map((item) => item.id));
+      if (mountedRef.current) setGroups(next);
+      onSaved();
+    } catch (cause) {
+      toast.error("调整分组顺序失败", { description: errorText(cause) });
+    } finally {
+      busyRef.current = false;
+      if (mountedRef.current) setSaving(false);
+    }
+  };
   const deleteGroup = async () => {
-    if (!selectedGroup) return;
+    if (!selectedGroup || busyRef.current) return;
+    busyRef.current = true;
     setSaving(true);
     try {
       await officialAccountsApi.deleteGroup(selectedGroup.id);
-      setGroups((list) => list.filter((item) => item.id !== selectedGroup.id));
-      setGroup("");
-      setConfirmDeleteGroup(false);
+      if (mountedRef.current) {
+        setGroups((list) =>
+          list.filter((item) => item.id !== selectedGroup.id),
+        );
+        setGroup("");
+        setConfirmDeleteGroup(false);
+      }
       toast.success(`已删除分组「${selectedGroup.name}」`);
       onSaved();
     } catch (cause) {
       toast.error("删除分组失败", { description: errorText(cause) });
     } finally {
-      setSaving(false);
+      busyRef.current = false;
+      if (mountedRef.current) setSaving(false);
     }
   };
 
@@ -183,6 +264,7 @@ export function AccountDetailsDialog({
             onChange={(event) => {
               setGroup(event.target.value);
               setConfirmDeleteGroup(false);
+              setRenamingGroup(false);
             }}
           >
             <option value="">不分组</option>
@@ -204,7 +286,7 @@ export function AccountDetailsDialog({
             />
           ) : null}
           {selectedGroup ? (
-            <p className="account-details-group-actions">
+            <div className="account-details-group-actions">
               {confirmDeleteGroup ? (
                 <>
                   <span>
@@ -231,17 +313,80 @@ export function AccountDetailsDialog({
                     取消
                   </Button>
                 </>
+              ) : renamingGroup ? (
+                <>
+                  <Input
+                    aria-label="重命名分组"
+                    value={renameGroupName}
+                    maxLength={40}
+                    placeholder="分组名称"
+                    onChange={(event) => setRenameGroupName(event.target.value)}
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={saving}
+                    onClick={() => void renameGroup()}
+                  >
+                    确认重命名
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    disabled={saving}
+                    onClick={() => setRenamingGroup(false)}
+                  >
+                    取消
+                  </Button>
+                </>
               ) : (
-                <button
-                  type="button"
-                  className="account-details-link"
-                  disabled={saving}
-                  onClick={() => setConfirmDeleteGroup(true)}
-                >
-                  删除这个分组…
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="account-details-link"
+                    disabled={saving}
+                    onClick={() => {
+                      setRenameGroupName(selectedGroup.name);
+                      setRenamingGroup(true);
+                    }}
+                  >
+                    重命名分组…
+                  </button>
+                  {groups.length > 1 ? (
+                    <>
+                      <button
+                        type="button"
+                        className="account-details-link"
+                        disabled={saving || selectedGroupIndex <= 0}
+                        onClick={() => void moveGroup(-1)}
+                      >
+                        分组上移
+                      </button>
+                      <button
+                        type="button"
+                        className="account-details-link"
+                        disabled={
+                          saving || selectedGroupIndex >= groups.length - 1
+                        }
+                        onClick={() => void moveGroup(1)}
+                      >
+                        分组下移
+                      </button>
+                    </>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="account-details-link"
+                    disabled={saving}
+                    onClick={() => setConfirmDeleteGroup(true)}
+                  >
+                    删除这个分组…
+                  </button>
+                </>
               )}
-            </p>
+            </div>
           ) : null}
           <label className="account-details-check">
             <input
