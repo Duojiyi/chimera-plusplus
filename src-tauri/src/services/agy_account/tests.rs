@@ -72,7 +72,7 @@ async fn add(manager: &AgyAccountManager, sub: &str) {
 }
 
 // 以下测试只在支持切号的平台上有意义。
-#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+#[cfg(any(target_os = "macos", windows))]
 mod switching {
     use super::*;
 

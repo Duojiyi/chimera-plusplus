@@ -1765,7 +1765,6 @@ fn live_sync_outcome(failures: Vec<String>) -> Result<(), AppError> {
 }
 
 /// Populate newly encountered DSH profiles with managed providers and enabled MCP servers.
-#[allow(dead_code)]
 pub(crate) fn initialize_dsh_profiles(state: &AppState) -> Result<(), AppError> {
     let providers_res = state.db.get_all_providers(AppType::Dsh.as_str());
     let server_rows = state.db.get_mcp_server_rows()?;

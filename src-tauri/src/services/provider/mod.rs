@@ -32,10 +32,8 @@ pub use live::{
 };
 
 // Internal re-exports (pub(crate))
-#[cfg(test)]
-pub(crate) use live::initialize_dsh_profiles;
 pub(crate) use live::{
-    build_effective_settings_with_common_config, codex_common_snippet,
+    build_effective_settings_with_common_config, codex_common_snippet, initialize_dsh_profiles,
     normalize_provider_common_config_for_storage, provider_exists_in_live_config,
     provider_uses_common_config, strip_common_config_from_live_settings,
     sync_current_provider_for_app_to_live, write_live_with_common_config, LiveSnapshot,
@@ -331,6 +329,11 @@ impl ProviderService {
         }
         if app_type == AppType::Omp {
             return omp::list(state);
+        }
+        if app_type == AppType::Dsh {
+            if let Err(err) = initialize_dsh_profiles(state) {
+                log::warn!("Failed to initialize DeepSeek Harness profiles: {err}");
+            }
         }
         let mut providers = state.db.get_all_providers(app_type.as_str())?;
         if app_type == AppType::OpenCode {

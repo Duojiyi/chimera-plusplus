@@ -19,9 +19,6 @@ use serde_json::Value;
 
 use crate::error::AppError;
 
-#[cfg(target_os = "linux")]
-mod linux;
-
 const GO_KEYRING_PREFIX: &str = "go-keyring-base64:";
 
 /// 钥匙串里那一条的读写。测试换成内存实现，别碰真实钥匙串。
@@ -140,7 +137,7 @@ impl SystemKeychain {
 }
 
 pub fn supported() -> bool {
-    cfg!(any(target_os = "macos", windows, target_os = "linux"))
+    cfg!(any(target_os = "macos", windows))
 }
 
 #[cfg(target_os = "macos")]
@@ -340,19 +337,10 @@ impl AgyLoginStore for SystemKeychain {
         {
             wincred::read(self.service, self.account)
         }
-        #[cfg(target_os = "linux")]
-        {
-            linux::read(self.service, self.account, false)
-        }
-        #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             Err(unsupported_error())
         }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn read_for_switch(&self) -> Result<Option<String>, AppError> {
-        linux::read(self.service, self.account, true)
     }
 
     fn write(&self, value: &str) -> Result<(), AppError> {
@@ -364,11 +352,7 @@ impl AgyLoginStore for SystemKeychain {
         {
             wincred::write(self.service, self.account, value)
         }
-        #[cfg(target_os = "linux")]
-        {
-            linux::write(self.service, self.account, value)
-        }
-        #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = value;
             Err(unsupported_error())
