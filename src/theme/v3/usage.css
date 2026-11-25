@@ -690,7 +690,7 @@
 }
 
 .chimera-shell .usage-total dd strong {
-  font-size: 28px;
+  font-size: clamp(20px, 2.5cqi, 28px);
   line-height: 34px;
   font-weight: 700;
   letter-spacing: -0.01em;
@@ -705,7 +705,7 @@
 }
 
 html[data-text-scale="comfortable"] .chimera-shell .usage-total dd strong {
-  font-size: 31px;
+  font-size: clamp(22px, 2.7cqi, 31px);
   line-height: 38px;
 }
 
@@ -834,6 +834,66 @@ html[data-text-scale="comfortable"] .chimera-shell .usage-total dd strong {
   max-width: 100%;
 }
 
+/* 明细表横向滚动条需在隐藏全局滚动条的壳层里保持可见，防止窄窗口静默截断 */
+.usage-table-scroll,
+.usage-table-scroll > div {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(17, 19, 24, 0.22) transparent;
+}
+.usage-table-scroll::-webkit-scrollbar,
+.usage-table-scroll > div::-webkit-scrollbar {
+  display: block;
+  width: 6px;
+  height: 6px;
+}
+.usage-table-scroll::-webkit-scrollbar-thumb,
+.usage-table-scroll > div::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(17, 19, 24, 0.2);
+}
+.usage-table-scroll::-webkit-scrollbar-track,
+.usage-table-scroll > div::-webkit-scrollbar-track {
+  background: transparent;
+}
+.usage-log-table :is(th, td):first-child {
+  padding-left: 12px;
+}
+.usage-log-table :is(th, td):last-child {
+  padding-right: 12px;
+}
+.usage-log-provider {
+  max-width: 120px;
+}
+.usage-log-model {
+  max-width: 152px;
+}
+.usage-log-sub {
+  line-height: 1.25;
+}
+.usage-stat-name {
+  max-width: 220px;
+}
+.usage-stat-model {
+  max-width: 240px;
+}
+.usage-select-trigger {
+  width: auto;
+  min-width: 112px;
+  max-width: 172px;
+}
+.usage-refresh-trigger {
+  width: auto;
+  min-width: 96px;
+}
+.usage-range-trigger {
+  width: auto;
+  min-width: 104px;
+  max-width: 220px;
+}
+.usage-detail-dl > div {
+  min-width: 0;
+}
+
 @media (forced-colors: active) {
   .usage-calendar-cell {
     border: 1px solid CanvasText;
@@ -855,7 +915,7 @@ html[data-text-scale="comfortable"] .chimera-shell .usage-total dd strong {
 
 .chimera-shell .usage-design-view .usage-plot {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
+  grid-template-columns: minmax(48px, max-content) minmax(0, 1fr);
   gap: 8px;
   height: 216px;
   padding: 34px 19px 12px;
@@ -876,6 +936,8 @@ html[data-text-scale="comfortable"] .chimera-shell .usage-total dd strong {
   font-size: var(--fs-xs);
   line-height: 0;
   color: var(--text-3);
+  text-align: right;
+  white-space: nowrap;
 }
 
 .chimera-shell .usage-design-view .usage-bars {
@@ -1152,7 +1214,13 @@ html[data-text-scale="comfortable"] .chimera-shell .usage-total dd strong {
 }
 .chimera-shell .usage-ranking-table :is(td, th) {
   text-align: right;
-  padding-block: 9px;
+  padding: 9px 6px;
+}
+.chimera-shell .usage-ranking-table :is(td, th):first-child {
+  padding-left: 0;
+}
+.chimera-shell .usage-ranking-table :is(td, th):last-child {
+  padding-right: 0;
 }
 .chimera-shell .usage-ranking-table th:first-child {
   width: 42%;
@@ -1319,9 +1387,6 @@ html[data-text-scale="comfortable"] .chimera-shell .usage-total dd strong {
   .chimera-shell .usage-design-view .usage-heading-text {
     flex: 1 0 100%;
   }
-}
-
-@container usage-content (max-width: 640px) {
   .chimera-shell .usage-design-view .usage-breakdown {
     grid-template-columns: minmax(0, 1fr);
   }

@@ -405,7 +405,7 @@ export function PricingConfigPanel() {
               </AlertDescription>
             </Alert>
           ) : (
-            <div className="rounded-md bg-card/60 shadow-sm">
+            <div className="usage-table-scroll rounded-md bg-card/60 shadow-sm overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow>

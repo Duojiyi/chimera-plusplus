@@ -370,7 +370,8 @@
   white-space: nowrap;
   font-size: 14px;
 }
-[data-current] .tool-line-name > span:last-child {
+[data-current] .tool-line-name > .tool-line-title,
+[data-current] .tool-line-name > span:only-of-type {
   font-weight: 700;
 }
 /* Cell text. Addresses and model ids are mono; labels and fallbacks such as

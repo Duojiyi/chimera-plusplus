@@ -302,8 +302,7 @@
 .tray-tool summary .tray-quota-chip {
   display: inline-flex;
   align-items: center;
-  margin-left: auto;
-  padding: 1px 7px;
+  padding: 1px 6px;
   border-radius: 999px;
   border: 1px solid var(--success-border);
   background: var(--success-bg);
@@ -312,6 +311,7 @@
   font-size: 11px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .tray-tool summary .tray-auto-chip {
@@ -638,21 +638,23 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
 }
 
 .tray-footer-actions button {
   display: inline-flex;
   min-height: 34px;
+  min-width: 0;
   align-items: center;
   justify-content: center;
   gap: 5px;
-  padding: 0 11px;
+  padding: 0 9px;
   border: 1px solid var(--btn-secondary-border);
   border-radius: 10px;
   background: var(--btn-secondary-bg);
   box-shadow: var(--v5-btn-shadow);
   color: var(--text-1);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-xs);
   font-weight: 550;
   white-space: nowrap;
   flex-shrink: 0;
@@ -668,7 +670,11 @@
 }
 
 .tray-footer-actions button.tray-action-primary {
-  flex: 1;
+  flex: 1 1 auto;
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   border-color: #16181d;
   background: var(--cta-obsidian);
   box-shadow:

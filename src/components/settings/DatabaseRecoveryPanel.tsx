@@ -122,66 +122,71 @@ export function DatabaseRecoveryPanel({
           数据库备份读取失败，请刷新重试。
         </p>
       ) : query.data?.length ? (
-        <table className="settings-backup-table">
-          <thead>
-            <tr>
-              <th scope="col">文件</th>
-              <th scope="col" className="is-time">
-                时间
-              </th>
-              <th scope="col" className="is-size">
-                大小
-              </th>
-              <th scope="col" className="is-actions">
-                操作
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {query.data.map((backup) => (
-              <tr key={backup.filename}>
-                <td>
-                  <span className="db-backups-name" title={backup.filename}>
-                    {backup.filename}
-                  </span>
-                </td>
-                <td className="is-time">
-                  {formatBackupTime(backup.createdAt)}
-                  {/* Shown only when the narrow window hides the size column. */}
-                  <small className="settings-backup-subline is-inline-size">
-                    {(backup.sizeBytes / 1024).toFixed(1)} KiB
-                  </small>
-                </td>
-                <td className="is-size">
-                  {(backup.sizeBytes / 1024).toFixed(1)} KiB
-                </td>
-                <td className="is-actions">
-                  <button
-                    type="button"
-                    aria-label={`恢复 ${backup.filename}`}
-                    disabled={busy || query.isFetching}
-                    onClick={() =>
-                      setAction({ kind: "restore", filename: backup.filename })
-                    }
-                  >
-                    恢复
-                  </button>
-                  <button
-                    type="button"
-                    className="is-danger"
-                    aria-label={`删除 ${backup.filename}`}
-                    disabled={busy || query.isFetching}
-                    onClick={() =>
-                      setAction({ kind: "delete", filename: backup.filename })
-                    }
-                  >
-                    删除
-                  </button>
-                </td>
+        <div className="live-backups-table-wrap">
+          <table className="settings-backup-table">
+            <thead>
+              <tr>
+                <th scope="col">文件</th>
+                <th scope="col" className="is-time">
+                  时间
+                </th>
+                <th scope="col" className="is-size">
+                  大小
+                </th>
+                <th scope="col" className="is-actions">
+                  操作
+                </th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {query.data.map((backup) => (
+                <tr key={backup.filename}>
+                  <td>
+                    <span className="db-backups-name" title={backup.filename}>
+                      {backup.filename}
+                    </span>
+                  </td>
+                  <td className="is-time">
+                    {formatBackupTime(backup.createdAt)}
+                    {/* Shown only when the narrow window hides the size column. */}
+                    <small className="settings-backup-subline is-inline-size">
+                      {(backup.sizeBytes / 1024).toFixed(1)} KiB
+                    </small>
+                  </td>
+                  <td className="is-size">
+                    {(backup.sizeBytes / 1024).toFixed(1)} KiB
+                  </td>
+                  <td className="is-actions">
+                    <button
+                      type="button"
+                      aria-label={`恢复 ${backup.filename}`}
+                      disabled={busy || query.isFetching}
+                      onClick={() =>
+                        setAction({
+                          kind: "restore",
+                          filename: backup.filename,
+                        })
+                      }
+                    >
+                      恢复
+                    </button>
+                    <button
+                      type="button"
+                      className="is-danger"
+                      aria-label={`删除 ${backup.filename}`}
+                      disabled={busy || query.isFetching}
+                      onClick={() =>
+                        setAction({ kind: "delete", filename: backup.filename })
+                      }
+                    >
+                      删除
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       ) : (
         <p className="db-backups-empty">暂无数据库备份。</p>
       )}

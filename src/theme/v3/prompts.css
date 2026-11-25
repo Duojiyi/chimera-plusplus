@@ -313,9 +313,9 @@
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: 10px 16px;
   min-height: 44px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
 }
 
 .chimera-shell .prompts-page .prompts-title-row {
@@ -1255,18 +1255,26 @@
   color: var(--accent-petrol);
 }
 .prompt-record-tools {
+  position: absolute;
+  right: 10px;
+  bottom: 6px;
+  z-index: 2;
   display: flex;
   align-items: center;
-  grid-column: 1/-1;
-  justify-self: end;
+  gap: 2px;
+  padding: 2px 4px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 2px 8px rgba(17, 19, 24, 0.08);
 }
 .prompt-record-tools:empty,
 .prompt-record:not(:hover):not(:focus-within) .prompt-record-tools {
-  position: absolute;
   width: 1px;
   height: 1px;
+  padding: 0;
   overflow: hidden;
   clip-path: inset(50%);
+  box-shadow: none;
 }
 .prompt-record-tools button {
   height: 24px;
@@ -1345,6 +1353,7 @@
 }
 .chimera-shell .prompt-inspector .prompts-summary {
   flex: none;
+  flex-wrap: wrap;
   margin: 0;
   border-radius: 0;
 }

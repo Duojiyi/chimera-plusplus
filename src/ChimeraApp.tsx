@@ -3156,7 +3156,9 @@ export default function ChimeraApp({
                 <span className="v3-tool-switch-sub">当前工具</span>
                 <span className="v3-tool-switch-text">
                   <AppGlyph app={currentToolKey} size={15} />
-                  <span className="v3-tool-switch-name">{currentToolName}</span>
+                  <span className="v3-tool-switch-name" title={currentToolName}>
+                    {currentToolName}
+                  </span>
                   <span className="v5-tool-selected" aria-hidden="true">
                     活跃
                   </span>
@@ -3216,7 +3218,10 @@ export default function ChimeraApp({
                       onClick={() => switchTool(id)}
                     >
                       <AppGlyph app={toolKeyFor(id)} size={15} />
-                      <span className="v3-tool-menu-name">
+                      <span
+                        className="v3-tool-menu-name"
+                        title={viewLabels[id]}
+                      >
                         {viewLabels[id]}
                       </span>
                       <span

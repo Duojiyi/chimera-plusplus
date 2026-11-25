@@ -42,7 +42,7 @@ export function ProviderStatsTable({
   }
 
   return (
-    <div className="rounded-lg border border-border/50 bg-card/40 backdrop-blur-sm overflow-hidden">
+    <div className="usage-table-scroll rounded-lg border border-border/50 bg-card/40 backdrop-blur-sm overflow-x-auto">
       <Table>
         <TableHeader>
           <TableRow>
@@ -75,8 +75,12 @@ export function ProviderStatsTable({
           ) : (
             stats?.map((stat) => (
               <TableRow key={stat.providerId}>
-                <TableCell className={cn(usageTable.td, "font-medium")}>
-                  {stat.providerName}
+                <TableCell
+                  className={cn(usageTable.td, "usage-stat-name font-medium")}
+                >
+                  <div className="truncate" title={stat.providerName}>
+                    {stat.providerName}
+                  </div>
                 </TableCell>
                 <TableCell className={usageTable.tdNum}>
                   {stat.requestCount.toLocaleString("zh-CN")}

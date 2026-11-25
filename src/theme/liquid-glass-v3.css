@@ -73,66 +73,6 @@
 
 /* 当前项：全站唯一编码 —— 浅底 + 左缘 2px 墨条 + 反白 chip。 */
 
-/* 工具身份：一条 3×16 的线路色竖条，替代原来的双字母徽标。 */
-.v3-tool-bar {
-  width: 3px;
-  height: 16px;
-  border-radius: 2px;
-  background: var(--p-line-cobalt);
-  flex: none;
-}
-.v3-tool-bar[data-tool="codex"] {
-  background: #4a6fa5;
-}
-.v3-tool-bar[data-tool="claude"] {
-  background: #2c7175;
-}
-.v3-tool-bar[data-tool="claude-desktop"] {
-  background: #2c7175;
-}
-.v3-tool-bar[data-tool="gemini"] {
-  background: #2c7175;
-}
-.v3-tool-bar[data-tool="opencode"] {
-  background: #6b6f8a;
-}
-.v3-tool-bar[data-tool="pi"] {
-  background: #54683f;
-}
-.v3-tool-bar[data-tool="omp"] {
-  background: #7d5570;
-}
-.v3-tool-bar[data-tool="grokbuild"] {
-  background: #7d5738;
-}
-.v3-tool-bar[data-tool="openclaw"] {
-  background: #b93848;
-}
-.v3-tool-bar[data-tool="hermes"] {
-  background: #6c4ea8;
-}
-.v3-tool-bar[data-tool="agy"] {
-  background: #2f78b7;
-}
-.v3-tool-bar[data-tool="mcode"] {
-  background: #c85845;
-}
-.v3-tool-bar[data-tool="kimi"] {
-  background: #2e70c4;
-}
-.v3-tool-bar[data-tool="dsh"] {
-  background: #4059b3;
-}
-.v3-tool-bar[data-tool="copilot"] {
-  background: #4a5568;
-}
-.v3-tool-bar[data-tool="workbuddy"] {
-  background: #1a8a78;
-}
-.v3-tool-bar[data-tool="codebuddy"] {
-  background: #2b65b8;
-}
-
 /* ---------- 3b. 侧栏结构 ---------- */
 
 /* 232px：比 v2.8 的 216px 宽一点，给 4 字工具名和线路色竖条留位置。 */

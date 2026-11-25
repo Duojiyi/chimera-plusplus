@@ -64,7 +64,7 @@
   overflow-x: auto;
 }
 .live-backups-table {
-  min-width: 400px;
+  min-width: 0;
 }
 .live-backup-time {
   display: block;

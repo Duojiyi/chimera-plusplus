@@ -42,7 +42,7 @@ export function ModelStatsTable({
   }
 
   return (
-    <div className="rounded-lg border border-border/50 bg-card/40 backdrop-blur-sm overflow-hidden">
+    <div className="usage-table-scroll rounded-lg border border-border/50 bg-card/40 backdrop-blur-sm overflow-x-auto">
       <Table>
         <TableHeader>
           <TableRow>
@@ -74,8 +74,15 @@ export function ModelStatsTable({
           ) : (
             stats?.map((stat) => (
               <TableRow key={stat.model}>
-                <TableCell className={cn(usageTable.td, "font-mono text-xs")}>
-                  {stat.model}
+                <TableCell
+                  className={cn(
+                    usageTable.td,
+                    "usage-stat-model font-mono text-xs",
+                  )}
+                >
+                  <div className="truncate" title={stat.model}>
+                    {stat.model}
+                  </div>
                 </TableCell>
                 <TableCell className={usageTable.tdNum}>
                   {stat.requestCount.toLocaleString("zh-CN")}

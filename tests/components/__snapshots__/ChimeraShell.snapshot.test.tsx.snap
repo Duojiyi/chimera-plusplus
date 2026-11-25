@@ -32,7 +32,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         class="v3-sidebar-version"
       >
         v
-        2.9.4
+        2.9.5
       </span>
     </span>
   </div>
@@ -83,6 +83,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       </span>
       <span
         class="v3-tool-switch-name"
+        title="Codex"
       >
         Codex
       </span>
@@ -587,7 +588,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
         class="v3-sidebar-version"
       >
         v
-        2.9.4
+        2.9.5
       </span>
     </span>
   </div>
@@ -638,6 +639,7 @@ exports[`keeps the shell markup stable across views and the line editor > sideba
       </span>
       <span
         class="v3-tool-switch-name"
+        title="Codex"
       >
         Codex
       </span>
@@ -1139,7 +1141,7 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
       class="v5-version"
     >
       v
-      2.9.4
+      2.9.5
     </span>
     <span
       class="v3-preview-chip"
@@ -1320,7 +1322,7 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
       class="v5-version"
     >
       v
-      2.9.4
+      2.9.5
     </span>
     <span
       class="v3-preview-chip"
@@ -1531,7 +1533,7 @@ exports[`keeps the shell markup stable across views and the line editor > titleb
     CHIMERA++ 
     <small>
       v
-      2.9.4
+      2.9.5
     </small>
   </span>
   <div

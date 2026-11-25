@@ -521,6 +521,20 @@
   padding: 12px 0 0;
   border: 0;
 }
+@media (max-width: 980px) {
+  body.is-mac .provider-editor-page .mapping-head {
+    display: none;
+  }
+  body.is-mac .provider-editor-page .mapping-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  body.is-mac .provider-editor-page .mapping-field > span {
+    display: block;
+  }
+  body.is-mac .provider-editor-page .mapping-actions {
+    grid-column: 1 / -1;
+  }
+}
 @media (max-width: 700px) {
   .provider-editor-page .provider-editor {
     --editor-inset: 24px;

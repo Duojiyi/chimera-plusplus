@@ -335,7 +335,7 @@ export function UsageDashboard({
             onValueChange={(v) => changeProviderName(decodeOptionValue(v))}
           >
             <SelectTrigger
-              className="h-9 w-[100px] bg-background text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
+              className="usage-select-trigger h-9 bg-background text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
               title={providerName ?? t("usage.filterBySource")}
             >
               <SelectValue />
@@ -360,7 +360,7 @@ export function UsageDashboard({
             onValueChange={(v) => setModel(decodeOptionValue(v))}
           >
             <SelectTrigger
-              className="h-9 w-[100px] bg-background text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
+              className="usage-select-trigger h-9 bg-background text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
               title={model ?? t("usage.filterByModel")}
             >
               <SelectValue />
@@ -386,13 +386,15 @@ export function UsageDashboard({
               onValueChange={(v) => changeRefreshInterval(Number(v))}
             >
               <SelectTrigger
-                className="h-9 w-[100px] bg-background text-xs focus:border-border-default"
+                className="usage-refresh-trigger h-9 bg-background text-xs focus:border-border-default"
                 title={t("usage.refreshInterval")}
                 aria-label={t("usage.refreshInterval")}
               >
-                <span className="flex items-center gap-2">
+                <span className="flex min-w-0 items-center gap-1.5">
                   <RefreshCw className="h-3.5 w-3.5 shrink-0" />
-                  <SelectValue />
+                  <span className="truncate">
+                    <SelectValue />
+                  </span>
                 </span>
               </SelectTrigger>
               <SelectContent>

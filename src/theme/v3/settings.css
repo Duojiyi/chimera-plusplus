@@ -683,7 +683,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  flex: 1 1 auto;
+  flex: 1 1 200px;
   min-width: 0;
   color: var(--text-1);
 }
@@ -1151,6 +1151,12 @@
 .chimera-shell .v3-settings-page .settings-backup-table th:first-child,
 .chimera-shell .v3-settings-page .settings-backup-table td:first-child {
   padding-left: 0;
+}
+.chimera-shell .v3-settings-page .settings-backup-table th.is-actions,
+.chimera-shell .v3-settings-page .settings-backup-table td.is-actions {
+  width: 112px;
+  padding-right: 0;
+  white-space: nowrap;
 }
 .chimera-shell .v3-settings-page .settings-backup-table .is-size {
   font-family: var(--font-mono), ui-monospace, monospace;

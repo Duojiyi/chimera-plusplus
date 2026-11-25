@@ -835,12 +835,7 @@ select:focus-visible {
    left edge; the brand shifts right to make room, matching how a native macOS
    window lays out. Icons stay hidden until the group is hovered, as in the OS. */
 body.is-mac .chimera-titlebar {
-  /* Containing block for the absolutely-positioned lights below. Without this
-     they would resolve against `.chimera-main`, which spans the whole window —
-     the vertical centering would then land mid-page instead of in the titlebar. */
   position: relative;
-  /* Space for the 3 lights + their inset, so the brand never sits under them. */
-  padding-left: 88px;
 }
 /* Icons appear only while the cluster is hovered — the macOS behaviour. */
 /* Fixed-size window: the zoom light renders in the OS's disabled-window style

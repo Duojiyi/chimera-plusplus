@@ -150,16 +150,21 @@ export function RepoManagerPanel({
             {repos.map((repo) => (
               <div
                 key={`${repo.owner}/${repo.name}`}
-                className="flex items-center justify-between glass-card rounded-xl px-4 py-3"
+                className="flex items-center justify-between gap-3 glass-card rounded-xl px-4 py-3"
               >
-                <div>
-                  <div className="text-sm font-medium text-foreground">
+                <div className="min-w-0 flex-1">
+                  <div
+                    className="truncate text-sm font-medium text-foreground"
+                    title={`${repo.owner}/${repo.name}`}
+                  >
                     {repo.owner}/{repo.name}
                   </div>
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    {t("skills.repo.branch")}: {repo.branch || "main"}
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    <span>
+                      {t("skills.repo.branch")}: {repo.branch || "main"}
+                    </span>
                     {skills && (
-                      <span className="ml-3 inline-flex items-center rounded-full border border-border-default px-2 py-0.5 text-xs">
+                      <span className="inline-flex items-center rounded-full border border-border-default px-2 py-0.5 text-xs">
                         {t("skills.repo.skillCount", {
                           count: getSkillCount(repo, skills),
                         })}
@@ -167,7 +172,7 @@ export function RepoManagerPanel({
                     )}
                   </div>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex shrink-0 gap-2">
                   <Button
                     variant="ghost"
                     size="icon"

@@ -812,11 +812,13 @@ export function OmpProviders({
           </>
         ) : (
           <div className="tool-empty">
-            <h3>尚未配置自定义线路</h3>
-            <p>
-              添加 API 地址和模型即可接入。OMP
-              内置服务商及已有登录不会在这里列出。
-            </p>
+            <div className="tool-empty-copy">
+              <h3>尚未配置自定义线路</h3>
+              <p>
+                添加 API 地址和模型即可接入。OMP
+                内置服务商及已有登录不会在这里列出。
+              </p>
+            </div>
             <button
               type="button"
               className="tool-btn is-primary"

@@ -71,12 +71,12 @@ export function RequestDetailPanel({
             <h3 className="mb-3 font-semibold">
               {t("usage.basicInfo", "基本信息")}
             </h3>
-            <dl className="grid grid-cols-2 gap-3 text-sm">
+            <dl className="usage-detail-dl grid grid-cols-2 gap-3 text-sm">
               <div>
                 <dt className="text-muted-foreground">
                   {t("usage.requestId", "请求ID")}
                 </dt>
-                <dd className="font-mono">{request.requestId}</dd>
+                <dd className="font-mono break-all">{request.requestId}</dd>
               </div>
               <div>
                 <dt className="text-muted-foreground">
@@ -92,11 +92,11 @@ export function RequestDetailPanel({
                 <dt className="text-muted-foreground">
                   {t("usage.provider", "供应商")}
                 </dt>
-                <dd className="text-sm">
+                <dd className="text-sm break-words">
                   <span className="font-medium">
                     {request.providerName || t("usage.unknownProvider", "未知")}
                   </span>
-                  <span className="ml-2 font-mono text-xs text-muted-foreground">
+                  <span className="ml-2 font-mono text-xs text-muted-foreground break-all">
                     {request.providerId}
                   </span>
                 </dd>
@@ -111,14 +111,14 @@ export function RequestDetailPanel({
                 <dt className="text-muted-foreground">
                   {t("usage.model", "模型")}
                 </dt>
-                <dd className="font-mono">{request.model}</dd>
+                <dd className="font-mono break-all">{request.model}</dd>
                 {request.requestModel &&
                   request.requestModel !== request.model && (
                     <>
                       <dt className="mt-1 text-muted-foreground">
                         {t("usage.requestModel", "请求模型")}
                       </dt>
-                      <dd className="font-mono text-xs">
+                      <dd className="font-mono text-xs break-all">
                         {request.requestModel}
                       </dd>
                     </>
@@ -129,7 +129,7 @@ export function RequestDetailPanel({
                       <dt className="mt-1 text-muted-foreground">
                         {t("usage.pricingModel", "计价模型")}
                       </dt>
-                      <dd className="font-mono text-xs">
+                      <dd className="font-mono text-xs break-all">
                         {request.pricingModel}
                       </dd>
                     </>

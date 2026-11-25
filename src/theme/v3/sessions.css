@@ -229,13 +229,14 @@
 
 .chimera-shell .session-manager-page .session-search-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   margin-top: 10px;
 }
 
 .chimera-shell .session-manager-page .session-search-row .session-search {
-  flex: 1;
+  flex: 1 1 140px;
   min-width: 0;
   margin-top: 0;
 }
@@ -410,14 +411,16 @@
 }
 
 .chimera-shell .session-manager-page .session-resume-command {
+  display: flex;
+  align-items: center;
   min-height: 34px;
-  padding: 0 10px;
+  padding: 4px 10px;
   border: 1px solid var(--v3-hairline);
   border-radius: 8px;
   background: var(--input-bg);
   color: var(--text-2);
   font-size: var(--fs-xs);
-  line-height: 26px;
+  line-height: 1.45;
 }
 
 .chimera-shell .session-manager-page .session-conversation-head {

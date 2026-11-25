@@ -31,11 +31,19 @@ import {
   fmtInt,
   fmtUsd,
   formatSeconds,
+  formatTokensShort,
   getLocaleFromLanguage,
   parseFiniteNumber,
   usageSourceLabel,
 } from "./format";
 import { usageTable } from "./usageTable";
+
+const logCell = {
+  th: "h-9 px-2 text-left text-xs whitespace-nowrap",
+  thNum: "h-9 px-2 text-right text-xs whitespace-nowrap",
+  td: "px-2 py-2 text-left text-xs",
+  tdNum: "px-2 py-2 text-right text-xs tabular-nums whitespace-nowrap",
+} as const;
 
 interface RequestLogTableProps {
   range: UsageRangeSelection;
@@ -167,32 +175,32 @@ export function RequestLogTable({
         </>
       ) : (
         <>
-          <div className="rounded-lg border border-border/50 bg-card/40 backdrop-blur-sm overflow-x-auto">
+          <div className="usage-table-scroll usage-log-table rounded-lg border border-border/50 bg-card/40 backdrop-blur-sm overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className={usageTable.th}>
+                  <TableHead className={logCell.th}>
                     {t("usage.time")}
                   </TableHead>
-                  <TableHead className={usageTable.th}>线路</TableHead>
-                  <TableHead className={usageTable.th}>
+                  <TableHead className={logCell.th}>线路</TableHead>
+                  <TableHead className={logCell.th}>
                     {t("usage.billingModel")}
                   </TableHead>
-                  <TableHead className={usageTable.thNum}>
+                  <TableHead className={logCell.thNum}>
                     {t("usage.inputTokens")}
                   </TableHead>
-                  <TableHead className={usageTable.thNum}>
+                  <TableHead className={logCell.thNum}>
                     {t("usage.outputTokens")}
                   </TableHead>
-                  <TableHead className={usageTable.thNum}>
+                  <TableHead className={logCell.thNum}>
                     {t("usage.totalCost")}
                   </TableHead>
-                  <TableHead className={usageTable.thNum}>用时</TableHead>
-                  <TableHead className={usageTable.thNum}>首字</TableHead>
-                  <TableHead className={usageTable.th}>
+                  <TableHead className={logCell.thNum}>用时</TableHead>
+                  <TableHead className={logCell.thNum}>首字</TableHead>
+                  <TableHead className={logCell.th}>
                     {t("usage.status")}
                   </TableHead>
-                  <TableHead className={usageTable.th}>
+                  <TableHead className={logCell.th}>
                     {t("usage.source", { defaultValue: "来源" })}
                   </TableHead>
                 </TableRow>
@@ -202,10 +210,7 @@ export function RequestLogTable({
                   <TableRow>
                     <TableCell
                       colSpan={10}
-                      className={cn(
-                        usageTable.td,
-                        "py-8 text-muted-foreground",
-                      )}
+                      className={cn(logCell.td, "py-8 text-muted-foreground")}
                     >
                       所选范围内没有请求记录
                     </TableCell>
@@ -215,14 +220,17 @@ export function RequestLogTable({
                     const unpriced = isUnpricedUsage(log);
                     const freshInput = getFreshInputTokens(log);
                     const multiplier = parseFiniteNumber(log.costMultiplier);
-                    const cacheNote = [
-                      log.cacheReadTokens > 0 &&
-                        `缓存命中 ${fmtInt(log.cacheReadTokens, locale)}`,
-                      log.cacheCreationTokens > 0 &&
-                        `缓存写入 ${fmtInt(log.cacheCreationTokens, locale)}`,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ");
+                    const inputTitleParts = [
+                      log.inputTokens !== freshInput
+                        ? `含缓存的原始输入 ${fmtInt(log.inputTokens, locale)}`
+                        : null,
+                      log.cacheReadTokens > 0
+                        ? `缓存命中 ${fmtInt(log.cacheReadTokens, locale)}`
+                        : null,
+                      log.cacheCreationTokens > 0
+                        ? `缓存写入 ${fmtInt(log.cacheCreationTokens, locale)}`
+                        : null,
+                    ].filter(Boolean);
                     const modelTitle =
                       log.requestModel && log.requestModel !== log.model
                         ? `${log.requestModel} → ${log.model}`
@@ -233,8 +241,8 @@ export function RequestLogTable({
                       <TableRow key={log.requestId}>
                         <TableCell
                           className={cn(
-                            usageTable.td,
-                            "whitespace-nowrap text-xs tabular-nums",
+                            logCell.td,
+                            "whitespace-nowrap tabular-nums",
                           )}
                         >
                           {new Date(log.createdAt * 1000).toLocaleString(
@@ -248,7 +256,7 @@ export function RequestLogTable({
                           )}
                         </TableCell>
                         <TableCell
-                          className={cn(usageTable.td, "max-w-[160px]")}
+                          className={cn(logCell.td, "usage-log-provider")}
                         >
                           <div className="truncate" title={provider}>
                             {provider}
@@ -256,8 +264,8 @@ export function RequestLogTable({
                         </TableCell>
                         <TableCell
                           className={cn(
-                            usageTable.td,
-                            "max-w-[220px] font-mono text-xs",
+                            logCell.td,
+                            "usage-log-model font-mono",
                           )}
                         >
                           <div className="truncate" title={modelTitle}>
@@ -276,24 +284,39 @@ export function RequestLogTable({
                           </div>
                         </TableCell>
                         <TableCell
-                          className={usageTable.tdNum}
+                          className={logCell.tdNum}
                           title={
-                            log.inputTokens !== freshInput
-                              ? `含缓存的原始输入 ${fmtInt(log.inputTokens, locale)}`
+                            inputTitleParts.length > 0
+                              ? inputTitleParts.join(" · ")
                               : undefined
                           }
                         >
                           <div>{fmtInt(freshInput, locale)}</div>
-                          {cacheNote && (
-                            <div className="text-[11px] text-muted-foreground">
-                              {cacheNote}
+                          {log.cacheReadTokens > 0 && (
+                            <div className="usage-log-sub text-[11px] text-muted-foreground">
+                              命中{" "}
+                              {formatTokensShort(
+                                log.cacheReadTokens,
+                                language,
+                                1,
+                              )}
+                            </div>
+                          )}
+                          {log.cacheCreationTokens > 0 && (
+                            <div className="usage-log-sub text-[11px] text-muted-foreground">
+                              写入{" "}
+                              {formatTokensShort(
+                                log.cacheCreationTokens,
+                                language,
+                                1,
+                              )}
                             </div>
                           )}
                         </TableCell>
-                        <TableCell className={usageTable.tdNum}>
+                        <TableCell className={logCell.tdNum}>
                           {fmtInt(log.outputTokens, locale)}
                         </TableCell>
-                        <TableCell className={usageTable.tdNum}>
+                        <TableCell className={logCell.tdNum}>
                           <div
                             className={cn(
                               "font-medium",
@@ -305,25 +328,20 @@ export function RequestLogTable({
                               : fmtUsd(log.totalCostUsd, 4)}
                           </div>
                           {multiplier != null && multiplier !== 1 && (
-                            <div className="text-[11px] text-muted-foreground">
-                              倍率 ×{multiplier.toFixed(2)}
+                            <div className="usage-log-sub text-[11px] text-muted-foreground">
+                              ×{multiplier.toFixed(2)}
                             </div>
                           )}
                         </TableCell>
-                        <TableCell className={cn(usageTable.tdNum, "text-xs")}>
+                        <TableCell className={logCell.tdNum}>
                           {formatSeconds(log.latencyMs)}
                         </TableCell>
                         <TableCell
-                          className={cn(
-                            usageTable.tdNum,
-                            "text-xs text-muted-foreground",
-                          )}
+                          className={cn(logCell.tdNum, "text-muted-foreground")}
                         >
                           {formatSeconds(log.firstTokenMs)}
                         </TableCell>
-                        <TableCell
-                          className={cn(usageTable.td, "tabular-nums")}
-                        >
+                        <TableCell className={cn(logCell.td, "tabular-nums")}>
                           <span
                             className={
                               log.statusCode >= 200 && log.statusCode < 300
@@ -336,8 +354,8 @@ export function RequestLogTable({
                         </TableCell>
                         <TableCell
                           className={cn(
-                            usageTable.td,
-                            "whitespace-nowrap text-xs text-muted-foreground",
+                            logCell.td,
+                            "whitespace-nowrap text-muted-foreground",
                           )}
                         >
                           {usageSourceLabel(log.dataSource)}
@@ -350,9 +368,9 @@ export function RequestLogTable({
             </Table>
           </div>
 
-          <div className="flex items-center justify-between text-sm text-muted-foreground">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
             <span>{t("usage.totalRecords", { total })}</span>
-            <div className="flex items-center gap-1">
+            <div className="flex flex-wrap items-center gap-1">
               <Button
                 size="sm"
                 variant="outline"

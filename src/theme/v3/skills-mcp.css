@@ -635,7 +635,7 @@
 }
 .chimera-shell .v3-res-empty .resource-empty-paths {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
   gap: 8px;
   width: 100%;
   margin-top: 6px;
@@ -937,15 +937,17 @@
 }
 .chimera-shell .v3-drawer-inset {
   flex: 1;
+  min-width: 0;
   min-height: 34px;
   display: flex;
   align-items: center;
-  padding: 0 12px;
+  padding: 6px 12px;
   border-radius: 8px;
   background: rgba(17, 19, 24, 0.035);
   font-family: var(--font-mono), ui-monospace, monospace;
   font-size: var(--fs-xs);
   color: var(--text-1);
+  overflow-wrap: anywhere;
 }
 .chimera-shell .v3-drawer-section .v3-drawer-note {
   display: flex;
@@ -970,6 +972,7 @@
   font-family: var(--font-mono), ui-monospace, monospace;
   font-size: var(--fs-xs);
   color: var(--text-1);
+  overflow-wrap: anywhere;
 }
 .chimera-shell .v3-drawer-foot {
   flex: none;
