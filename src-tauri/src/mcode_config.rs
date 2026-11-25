@@ -436,14 +436,11 @@ mod tests {
         let path = dir.path().join("config.yaml");
         let target = dir.path().join("target.yaml");
         std::os::unix::fs::symlink(&target, &path).unwrap();
-        assert!(std::panic::catch_unwind(|| {
-            let _: Result<(), AppError> = write_and_commit(
-                &path,
-                || atomic_write_private(&path, b"ours"),
-                || panic!("commit interrupted"),
-            );
-        })
-        .is_err());
+        // Chimera++ intentionally refuses to write through symlinks (`atomic_write_private`),
+        // so the write fails closed without creating `target` or replacing the symlink.
+        let result: Result<(), AppError> =
+            write_and_commit(&path, || atomic_write_private(&path, b"ours"), || Ok(()));
+        assert!(result.is_err());
         assert!(fs::symlink_metadata(&path)
             .unwrap()
             .file_type()
